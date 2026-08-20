@@ -6,6 +6,8 @@ import pandas as pd
 import pytest
 
 from core.phase36 import run_phase36
+from universe.diagnostics import UniverseHealthRules, diagnose_universe, stress_test_universe
+from universe.snapshots import UniverseSnapshotStore
 from universe.validation import UniverseRules, UniverseValidationError, validate_universe
 
 FIXTURE = Path("tests/fixtures/universe.csv")
@@ -83,12 +85,16 @@ def test_phase36_writes_validation_and_preserves_safety(tmp_path: Path) -> None:
         rules=_rules(),
         as_of=datetime.datetime(2026, 8, 20, tzinfo=datetime.UTC),
         output_root=tmp_path,
+        snapshot_root=tmp_path / "snapshots",
     )
     validation = json.loads((result.output_dir / "universe_validation.json").read_text())
     summary = json.loads((result.output_dir / "run_summary.json").read_text())
-    assert validation["eligible"] == 1
-    assert validation["excluded"] == 3
+    assert validation["counts"]["eligible"] == 1
+    assert validation["counts"]["excluded"] == 3
     assert validation["rules"]["minimum_market_cap"] == 100_000_000
+    assert validation["distributions"]["sector"] == {"Technology": 1}
+    assert validation["stress_tests"]
+    assert result.snapshot_dir.name == "2026-08-20"
     assert summary["trade_decision"] == "NO_TRADE"
     assert summary["live_execution_enabled"] is False
 
@@ -102,6 +108,7 @@ def test_failure_audit_trail_is_written_and_error_is_reraised(tmp_path: Path) ->
             rules=_rules(),
             as_of=datetime.datetime(2026, 8, 20, tzinfo=datetime.UTC),
             output_root=tmp_path / "outputs",
+            snapshot_root=tmp_path / "snapshots",
         )
     run_dir = next((tmp_path / "outputs").iterdir())
     validation = json.loads((run_dir / "universe_validation.json").read_text())
@@ -110,3 +117,96 @@ def test_failure_audit_trail_is_written_and_error_is_reraised(tmp_path: Path) ->
     assert validation["trade_decision"] == "NO_TRADE"
     assert manifest["critical_errors"] == 1
     assert not (run_dir / "universe_membership.csv").exists()
+
+
+def test_historical_snapshots_are_reconstructible_and_immutable(tmp_path: Path) -> None:
+    store = UniverseSnapshotStore(tmp_path)
+    first = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    validation = {"status": "PASS"}
+    store.save(first, as_of=AS_OF, validation=validation)
+    reconstructed = store.load("2026-08-20").set_index("symbol")
+    assert reconstructed.loc["AAA", "eligibility_status"] == "ELIGIBLE"
+    changed = first.copy()
+    changed.loc[changed["symbol"] == "AAA", "eligibility_status"] = "EXCLUDED"
+    with pytest.raises(UniverseValidationError, match="immutable universe snapshot"):
+        store.save(changed, as_of=AS_OF, validation=validation)
+
+
+def test_snapshot_history_prevents_survivorship_bias_when_asset_later_disappears(
+    tmp_path: Path,
+) -> None:
+    store = UniverseSnapshotStore(tmp_path)
+    first = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    store.save(first, as_of=AS_OF, validation={"status": "PASS"})
+    later_records = _records().loc[_records()["symbol"] != "AAA"]
+    later_date = pd.Timestamp("2026-09-20T00:00:00Z")
+    later = validate_universe(later_records, rules=_rules(), as_of=later_date)
+    store.save(later, as_of=later_date, validation={"status": "PASS"})
+    assert "AAA" in set(store.load("2026-08-20")["symbol"])
+    assert "AAA" not in set(store.load("2026-09-20")["symbol"])
+
+
+def test_entries_exits_and_exclusion_reasons_are_audited() -> None:
+    previous = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    current_records = _records().copy()
+    current_records.loc[current_records["symbol"] == "AAA", "market_cap"] = 1
+    current_records.loc[current_records["symbol"] == "SMALL", "market_cap"] = 1_000_000_000
+    current_records.loc[current_records["symbol"] == "SMALL", "average_volume"] = 1_000_000
+    current_records.loc[current_records["symbol"] == "SMALL", "average_dollar_volume"] = 20_000_000
+    current = validate_universe(current_records, rules=_rules(), as_of=AS_OF)
+    diagnostic = diagnose_universe(
+        current,
+        rules=_rules(),
+        health_rules=UniverseHealthRules(),
+        stress_tests=[],
+        previous=previous,
+    )
+    assert diagnostic["changes"]["entries"] == ["SMALL"]
+    assert diagnostic["changes"]["exits"] == ["AAA"]
+    aaa = next(change for change in diagnostic["changes"]["changes"] if change["symbol"] == "AAA")
+    assert aaa["reason"] == "market_cap_below_minimum"
+
+
+def test_threshold_sensitivity_reports_coverage_impact() -> None:
+    records = _records().iloc[[0]].copy()
+    records.loc[:, "market_cap"] = 110_000_000
+    tests = stress_test_universe(records, rules=_rules(), as_of=AS_OF)
+    stricter = next(test for test in tests if test["scenario"] == "minimum_market_cap_plus_20pct")
+    assert stricter["eligible"] == 0
+    assert stricter["coverage_loss"] == 1.0
+
+
+def test_empty_universe_is_fail_with_auditable_reason() -> None:
+    membership = validate_universe(_records(), rules=_rules(minimum_market_cap=99e12), as_of=AS_OF)
+    diagnostic = diagnose_universe(
+        membership,
+        rules=_rules(minimum_market_cap=99e12),
+        health_rules=UniverseHealthRules(),
+        stress_tests=[],
+    )
+    assert diagnostic["status"] == "FAIL"
+    assert {reason["code"] for reason in diagnostic["reasons"]} >= {"empty_eligible_universe"}
+
+
+def test_excessive_concentration_is_warning() -> None:
+    membership = validate_universe(_records().iloc[[0]], rules=_rules(), as_of=AS_OF)
+    diagnostic = diagnose_universe(
+        membership,
+        rules=_rules(),
+        health_rules=UniverseHealthRules(maximum_group_concentration=0.5),
+        stress_tests=[],
+    )
+    assert diagnostic["status"] == "WARNING"
+    assert "excessive_sector_concentration" in {
+        reason["code"] for reason in diagnostic["reasons"]
+    }
+
+
+def test_snapshot_checksum_failure_leaves_detectable_audit_violation(tmp_path: Path) -> None:
+    store = UniverseSnapshotStore(tmp_path)
+    membership = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    directory = store.save(membership, as_of=AS_OF, validation={"status": "PASS"})
+    membership_path = directory / "universe_membership.csv"
+    membership_path.write_text(membership_path.read_text() + "corrupt", encoding="utf-8")
+    with pytest.raises(UniverseValidationError, match="checksum mismatch"):
+        store.load(AS_OF)

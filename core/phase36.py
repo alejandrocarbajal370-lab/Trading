@@ -10,7 +10,13 @@ import pandas as pd
 from core.phase0 import _git_commit
 from core.run_context import RunContext, build_run_context
 from monitoring.manifest import ValidationManifest, write_manifest
-from universe.validation import UniverseRules, universe_health, validate_universe
+from universe.diagnostics import (
+    UniverseHealthRules,
+    diagnose_universe,
+    stress_test_universe,
+)
+from universe.snapshots import UniverseSnapshotStore
+from universe.validation import UniverseRules, validate_universe
 
 
 @dataclass(frozen=True)
@@ -18,6 +24,7 @@ class Phase36Result:
     context: RunContext
     membership: pd.DataFrame
     output_dir: Path
+    snapshot_dir: Path
 
 
 def _write(path: Path, value: dict[str, object]) -> None:
@@ -30,6 +37,8 @@ def run_phase36(
     rules: UniverseRules,
     as_of: datetime.date | datetime.datetime,
     output_root: Path = Path("validation_outputs"),
+    snapshot_root: Path = Path("universe_snapshots"),
+    health_rules: UniverseHealthRules | None = None,
     now: datetime.datetime | None = None,
 ) -> Phase36Result:
     context = build_run_context(
@@ -42,9 +51,21 @@ def run_phase36(
     output_dir = output_root / context.run_id
     output_dir.mkdir(parents=True, exist_ok=False)
     try:
+        health_rules = health_rules or UniverseHealthRules()
         records = pd.read_csv(source_path)
-        membership = validate_universe(records, rules=rules, as_of=pd.Timestamp(as_of))
-        validation = universe_health(membership, rules=rules)
+        cutoff = pd.Timestamp(as_of)
+        membership = validate_universe(records, rules=rules, as_of=cutoff)
+        store = UniverseSnapshotStore(snapshot_root)
+        previous_date = store.previous_date(cutoff)
+        previous = store.load(previous_date) if previous_date else None
+        stress_tests = stress_test_universe(records, rules=rules, as_of=cutoff)
+        validation = diagnose_universe(
+            membership,
+            rules=rules,
+            health_rules=health_rules,
+            stress_tests=stress_tests,
+            previous=previous,
+        )
         status = str(validation["status"])
         membership.to_csv(output_dir / "universe_membership.csv", index=False)
         _write(output_dir / "universe_validation.json", validation)
@@ -54,8 +75,8 @@ def run_phase36(
                 "run_id": context.run_id,
                 "overall_status": status,
                 "universe_validation": status,
-                "eligible_assets": validation["eligible"],
-                "excluded_assets": validation["excluded"],
+                "eligible_assets": validation["counts"]["eligible"],
+                "excluded_assets": validation["counts"]["excluded"],
                 "trade_decision": "NO_TRADE",
                 "live_execution_enabled": False,
             },
@@ -75,6 +96,7 @@ def run_phase36(
             ),
             output_dir,
         )
+        snapshot_dir = store.save(membership, as_of=cutoff, validation=validation)
     except Exception as error:
         failure = {
             "status": "FAIL",
@@ -114,4 +136,6 @@ def run_phase36(
             output_dir,
         )
         raise
-    return Phase36Result(context=context, membership=membership, output_dir=output_dir)
+    return Phase36Result(
+        context=context, membership=membership, output_dir=output_dir, snapshot_dir=snapshot_dir
+    )

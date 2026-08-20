@@ -20,6 +20,12 @@ investment_universe:
   allowed_asset_types: [COMMON_STOCK]
   minimum_listing_age_days: 365
   allowed_exchanges: [NASDAQ, NYSE]
+  health:
+    minimum_eligible_assets: 1
+    minimum_eligible_ratio: 0.25
+    maximum_group_concentration: 0.60
+    maximum_top_10_market_cap_concentration: 0.80
+    maximum_stress_coverage_loss: 0.35
 
 portfolio:
   rebalance_frequency: monthly

@@ -192,6 +192,14 @@ leave an audit trail. This foundation contains no QVM, alpha score, ranking, por
 backtesting, broker integration, or execution. It always remains `NO_TRADE` with live execution
 disabled.
 
+Universe validation also writes immutable, date-addressed snapshots so a historical eligible set
+can be reconstructed without substituting today's listings. Diagnostics report eligible/excluded
+counts, sector/industry/country/exchange and market-cap distributions, concentration, and entries or
+exits versus the previous snapshot. Threshold stress scenarios expose coverage loss. Health is an
+auditable `PASS`, `WARNING`, or `FAIL`; an empty or undersized universe fails, while destructive
+coverage, concentration, and threshold sensitivity produce warnings. No alpha or QVM logic is
+included.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
