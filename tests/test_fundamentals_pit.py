@@ -28,7 +28,9 @@ def test_success_path_writes_pit_outputs_and_preserves_safety(tmp_path: Path) ->
     )
     assert result.snapshot["value"].tolist() == [100]
     assert {path.name for path in result.output_dir.iterdir()} == {
+        "fundamental_history.csv",
         "fundamental_snapshot.csv",
+        "data_confidence.csv",
         "fundamental_health.json",
         "run_summary.json",
         "validation_manifest.json",

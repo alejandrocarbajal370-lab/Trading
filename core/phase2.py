@@ -9,7 +9,9 @@ import pandas as pd
 
 from core.phase0 import _git_commit
 from core.run_context import RunContext, build_run_context
+from fundamentals.confidence import metric_confidence
 from fundamentals.csv_source import CsvFundamentalSource
+from fundamentals.history import preserve_version_history
 from fundamentals.pit import assert_point_in_time, select_point_in_time
 from fundamentals.source import FundamentalSource
 from monitoring.manifest import ValidationManifest, write_manifest
@@ -83,7 +85,8 @@ def run_phase2(
             fundamental_source = CsvFundamentalSource(source_path)
         source_name = fundamental_source.name
         records = fundamental_source.fetch(symbols=symbols)
-        snapshot = select_point_in_time(records, data_date=data_date)
+        history = preserve_version_history(records)
+        snapshot = select_point_in_time(history, data_date=data_date)
         assert_point_in_time(snapshot, data_date=data_date)
     except Exception as error:
         _write_failure(
@@ -92,7 +95,9 @@ def run_phase2(
         raise
 
     output_dir.mkdir(parents=True, exist_ok=False)
+    history.to_csv(output_dir / "fundamental_history.csv", index=False)
     snapshot.to_csv(output_dir / "fundamental_snapshot.csv", index=False)
+    metric_confidence(history).to_csv(output_dir / "data_confidence.csv", index=False)
     health = {
         "status": "PASS",
         "point_in_time": "PASS",

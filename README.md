@@ -149,6 +149,33 @@ original exception. The manifest preserves existing critical checks and counts. 
 `live_execution_enabled: false`. Phase 3 contains no scores, signals, ranking, valuation,
 portfolio construction, backtesting, broker integration, or execution.
 
+## Pre-QVM hardening foundation
+
+Before Quality/Value/Momentum work, the fundamental layer also provides non-investment
+infrastructure:
+
+- Raw provider concepts remain separate from canonical metrics. Normalization accepts only
+  explicit `(source, raw_concept)` mappings and rejects unknown concepts; it never uses proxies.
+- `fundamental_history.csv` preserves filing/restatement versions by `filed_at` and
+  `available_at`; historical snapshots select only versions public at their cutoff.
+- Period utilities classify instant, quarterly, FY, and YTD facts. TTM requires four contiguous,
+  non-overlapping quarters available at the PIT cutoff and retains component lineage.
+- Reporting currency, functional currency, and optional FX rate/date/source metadata are stored
+  separately. No value is converted automatically.
+- Accounting-quality diagnostics emit CFO/Net Income and accrual-ratio checks. Their health
+  document declares `is_investment_signal: false`; warnings are QA, not alpha inputs.
+- Per-fact data confidence documents source quality, completeness, same-version conflicts, and
+  numeric validation. It measures data reliability, not expected return.
+- PIT-aware sector and management/capital-allocation contracts are defined without rankings or
+  scores.
+- The append-only research registry preregisters hypothesis, outcome, universe, and sample window
+  under a unique experiment ID to reduce repeated-test and overfitting risk.
+
+Phase 2 adds `fundamental_history.csv` and `data_confidence.csv`; Phase 3 adds
+`accounting_quality.csv` and `accounting_quality_health.json`. These layers do not implement QVM,
+alpha scores, portfolio construction, backtesting, or execution. `NO_TRADE` and
+`live_execution_enabled: false` remain mandatory.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.

@@ -107,7 +107,9 @@ def test_phase3_writes_outputs_and_preserves_no_trade(tmp_path: Path) -> None:
     summary = json.loads((result.phase2.output_dir / "run_summary.json").read_text())
     manifest = json.loads((result.phase2.output_dir / "validation_manifest.json").read_text())
     assert health["status"] == "PASS"
-    assert summary["overall_status"] == "PASS"
+    assert summary["overall_status"] == "WARNING"
+    assert summary["financial_health"] == "PASS"
+    assert summary["accounting_quality_health"] == "WARNING"
     assert manifest["checks"]["financial_metrics"] == "PASS"
     assert summary["trade_decision"] == "NO_TRADE"
     assert summary["live_execution_enabled"] is False
