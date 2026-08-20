@@ -1,0 +1,11 @@
+symbol,fiscal_period_end,filed_at,available_at,metric,value,source
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,cash_from_operations,120,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,capital_expenditures,20,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,revenue,500,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,total_debt,100,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,cash,25,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,ebitda,150,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,net_income,80,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,operating_income,125,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,tax_rate,0.2,manual_fixture
+TEST,2025-12-31,2026-02-01T00:00:00Z,2026-02-02T00:00:00Z,total_equity,325,manual_fixture

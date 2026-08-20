@@ -106,6 +106,31 @@ This phase performs ingest, normalization, PIT gating, and validation only. It d
 ratios, scores, signals, valuation, portfolios, orders, or backtests. Every run remains
 `NO_TRADE` with live execution disabled.
 
+## Phase 3 financial calculation engine V1
+
+Phase 3 calculates a deliberately small set of auditable metrics only from the Phase 2 PIT
+snapshot. Missing facts remain `MISSING`; duplicate, conflicting, non-finite, or mathematically
+invalid inputs remain `NOT_COMPUTED` with a reason. No input is silently replaced by zero or a
+proxy. Each output retains its symbol, fiscal period, status, reason, and input source lineage.
+
+V1 definitions:
+
+- `Free Cash Flow = Cash from Operations - Capital Expenditures`. Capital expenditures are
+  expected as a positive cash outflow magnitude.
+- `Free Cash Flow Margin = Free Cash Flow / Revenue`; zero revenue is not computed.
+- `Net Debt = Total Debt - Cash`. Explicit zero debt is valid; missing debt is not zero.
+- `Net Debt / EBITDA = Net Debt / EBITDA`; zero or negative EBITDA is not computed.
+- `CFO / Net Income = Cash from Operations / Net Income`; zero net income is not computed.
+- `ROIC V1 = NOPAT / Invested Capital`, where `NOPAT = Operating Income * (1 - Tax Rate)` and
+  `Invested Capital = Total Debt + Total Equity - Cash`. Tax rate must be within `[0, 1]`, and
+  invested capital must be positive. These inputs must be reported facts; no effective-tax or
+  balance-sheet proxy is inferred.
+
+The validation bundle adds `financial_metrics.csv` and `financial_health.json`; manifest and run
+summary status is `PASS`, `WARNING`, or `FAIL` as applicable and always records `NO_TRADE` and
+`live_execution_enabled: false`. Phase 3 contains no scores, signals, ranking, valuation,
+portfolio construction, backtesting, broker integration, or execution.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
