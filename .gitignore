@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Local databases / research data
+*.db
+*.duckdb
+*.sqlite
+*.sqlite3
+*.parquet
+data/raw/
+data/processed/
+
+# Validation/runtime outputs
+validation_outputs/*
+!validation_outputs/README.md
+
+# Reports
+reports/generated/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

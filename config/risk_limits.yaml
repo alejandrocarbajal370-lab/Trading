@@ -1,0 +1,18 @@
+# Conservative V1 defaults. These are configuration placeholders, not validated investment parameters.
+risk:
+  leverage_allowed: false
+  margin_borrowing_allowed: false
+  short_selling_allowed: false
+  naked_options_allowed: false
+  live_swing_capital_mxn: 0
+
+  max_position_weight: 0.12
+  max_sector_weight: 0.30
+  max_industry_weight: 0.20
+
+  hard_gates:
+    stale_critical_data: block
+    point_in_time_violation: block
+    reconciliation_failure: block
+    unknown_order_state: block
+    duplicate_order_detected: block
