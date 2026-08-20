@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from datetime import datetime
-from hashlib import sha256
-from typing import Any
+import dataclasses
+import datetime
+import hashlib
 from zoneinfo import ZoneInfo
 
 
 DEFAULT_TIMEZONE = "America/Mexico_City"
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class RunContext:
     run_id: str
     started_at: str
@@ -19,8 +18,8 @@ class RunContext:
     git_commit: str | None
     data_date: str | None
 
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, object]:
+        return dataclasses.asdict(self)
 
 
 def build_run_context(
@@ -29,12 +28,12 @@ def build_run_context(
     model_version: str,
     git_commit: str | None = None,
     data_date: str | None = None,
-    now: datetime | None = None,
+    now: datetime.datetime | None = None,
 ) -> RunContext:
     tz = ZoneInfo(DEFAULT_TIMEZONE)
-    timestamp = now.astimezone(tz) if now else datetime.now(tz)
+    timestamp = now.astimezone(tz) if now else datetime.datetime.now(tz)
     seed = f"{timestamp.isoformat()}|{mode}|{model_version}|{git_commit}|{data_date}"
-    suffix = sha256(seed.encode("utf-8")).hexdigest()[:8]
+    suffix = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
     run_id = f"{timestamp:%Y%m%d_%H%M%S}_{mode.upper()}_{suffix}"
     return RunContext(
         run_id=run_id,
