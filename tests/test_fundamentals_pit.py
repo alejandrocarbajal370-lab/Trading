@@ -91,6 +91,21 @@ def test_latest_available_amendment_replaces_original() -> None:
     assert snapshot["value"].tolist() == [105]
 
 
+def test_pit_identity_preserves_different_start_and_period_type() -> None:
+    records = CsvFundamentalSource(FIXTURE).fetch(symbols={"AAPL"}).iloc[[0]].copy()
+    ytd = records.copy()
+    ytd["fiscal_period_start"] = datetime.date(2025, 1, 1)
+    instant = records.copy()
+    instant["fiscal_period_start"] = None
+    instant["period_type"] = "instant"
+    snapshot = select_point_in_time(
+        pd.concat([records, ytd, instant], ignore_index=True),
+        data_date=datetime.datetime(2025, 11, 1, tzinfo=datetime.UTC),
+    )
+    assert len(snapshot) == 3
+    assert set(snapshot["period_type"]) == {"duration", "instant"}
+
+
 def test_explicit_future_snapshot_is_a_pit_violation() -> None:
     records = CsvFundamentalSource(FIXTURE).fetch(symbols={"AAPL"})
     with pytest.raises(PointInTimeViolation, match="PIT violation"):

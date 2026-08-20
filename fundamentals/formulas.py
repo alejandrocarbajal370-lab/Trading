@@ -25,6 +25,17 @@ def subtract(left: float, right: float) -> FormulaResult:
     return FormulaResult(value, "PASS")
 
 
+def free_cash_flow(cfo: float, capital_expenditures: float) -> FormulaResult:
+    """CFO less CapEx, where CapEx is a positive cash-outflow magnitude."""
+    if invalid := _finite_inputs(cfo=cfo, capital_expenditures=capital_expenditures):
+        return invalid
+    if capital_expenditures < 0:
+        return FormulaResult(
+            None, "NOT_COMPUTED", "capital_expenditures must be a non-negative outflow magnitude"
+        )
+    return FormulaResult(cfo - capital_expenditures, "PASS")
+
+
 def ratio(numerator: float, denominator: float, *, denominator_name: str) -> FormulaResult:
     if invalid := _finite_inputs(numerator=numerator, denominator=denominator):
         return invalid
