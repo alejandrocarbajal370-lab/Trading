@@ -12,6 +12,7 @@ from fundamentals.pit import assert_point_in_time, select_point_in_time
 from fundamentals.source import (
     FundamentalSourceResponseError,
     PointInTimeViolation,
+    normalize_data_timestamp,
 )
 
 FIXTURE = Path("tests/fixtures/fundamentals_pit.csv")
@@ -44,6 +45,34 @@ def test_future_filing_is_excluded_without_lookahead() -> None:
     )
     assert snapshot["available_at"].max() <= pd.Timestamp("2025-11-01T00:00:00Z")
     assert snapshot["value"].tolist() == [100]
+
+
+def test_date_cutoff_includes_filing_available_before_market_end_of_day() -> None:
+    records = CsvFundamentalSource(FIXTURE).fetch(symbols={"AAPL"})
+    same_day = records.iloc[[0]].copy()
+    same_day["available_at"] = pd.Timestamp("2025-11-01T20:00:00Z")
+
+    snapshot = select_point_in_time(same_day, data_date=datetime.date(2025, 11, 1))
+
+    assert snapshot["value"].tolist() == [100]
+
+
+def test_date_cutoff_excludes_filing_available_after_market_end_of_day() -> None:
+    records = CsvFundamentalSource(FIXTURE).fetch(symbols={"AAPL"})
+    after_cutoff = records.iloc[[0]].copy()
+    after_cutoff["available_at"] = pd.Timestamp("2025-11-02T04:00:00Z")
+
+    snapshot = select_point_in_time(after_cutoff, data_date=datetime.date(2025, 11, 1))
+
+    assert snapshot.empty
+
+
+def test_datetime_cutoff_preserves_exact_instant_and_naive_means_utc() -> None:
+    aware = datetime.datetime(2025, 11, 1, 16, 30, tzinfo=ZoneInfo("America/New_York"))
+    naive = datetime.datetime(2025, 11, 1, 20, 30, tzinfo=datetime.UTC).replace(tzinfo=None)
+
+    assert normalize_data_timestamp(aware) == pd.Timestamp("2025-11-01T20:30:00Z")
+    assert normalize_data_timestamp(naive) == pd.Timestamp("2025-11-01T20:30:00Z")
 
 
 def test_late_filing_is_unavailable_for_earlier_economic_period() -> None:

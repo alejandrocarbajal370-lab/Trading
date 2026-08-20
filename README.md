@@ -94,6 +94,10 @@ availability timestamps (`filed_at`, `available_at`). A snapshot includes only r
 symbol/period/metric are available, the latest publicly available amendment replaces the earlier
 version. The validation bundle adds `fundamental_snapshot.csv` and `fundamental_health.json`.
 
+A `data_date` supplied without a time is interpreted as end-of-day
+(`23:59:59.999999`) in `America/New_York`, then converted to UTC. A timezone-aware `datetime`
+keeps its exact instant and is normalized to UTC; a naive `datetime` is interpreted as UTC.
+
 CSV is the first adapter so point-in-time behavior remains deterministic and CI stays offline.
 Provider-specific network ingestion and credentials are intentionally deferred; future adapters
 must implement the same interface and retain their raw availability timestamps.
