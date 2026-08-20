@@ -21,6 +21,26 @@ dev = [
   "ruff>=0.6",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = [
+  "core*",
+  "data*",
+  "monitoring*",
+  "fundamentals*",
+  "alpha*",
+  "backtesting*",
+  "portfolio*",
+  "risk*",
+  "execution*",
+  "accounting*",
+  "treasury*",
+  "database*",
+  "reports*",
+  "dashboard*",
+]
+exclude = ["tests*", "research*", "validation_outputs*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
