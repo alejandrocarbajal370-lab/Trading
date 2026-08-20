@@ -41,8 +41,9 @@ include = [
   "database*",
   "reports*",
   "dashboard*",
+  "research*",
 ]
-exclude = ["tests*", "research*", "validation_outputs*"]
+exclude = ["tests*", "research.notebooks*", "validation_outputs*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
