@@ -3,7 +3,7 @@ name: tests
 on:
   pull_request:
   push:
-    branches: [main, foundation-v1]
+    branches: [main]
 
 jobs:
   test:

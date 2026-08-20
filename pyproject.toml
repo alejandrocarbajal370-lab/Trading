@@ -21,6 +21,9 @@ dev = [
   "ruff>=0.6",
 ]
 
+[project.scripts]
+phase0-validate = "core.phase0:main"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [

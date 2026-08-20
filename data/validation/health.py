@@ -18,6 +18,7 @@ class DataHealthResult:
     duplicate_rows: int
     stale_critical_rows: int
     invalid_price_rows: int
+    invalid_volume_rows: int
     critical_missing_rows: int
     point_in_time_violations: int
     status: HealthStatus
@@ -36,6 +37,7 @@ def evaluate_data_health(
     duplicate_rows: int = 0,
     stale_critical_rows: int = 0,
     invalid_price_rows: int = 0,
+    invalid_volume_rows: int = 0,
     critical_missing_rows: int = 0,
     point_in_time_violations: int = 0,
     minimum_coverage: float = 0.98,
@@ -57,6 +59,8 @@ def evaluate_data_health(
         critical_reasons.append(f"{stale_critical_rows} stale critical rows")
     if invalid_price_rows > 0:
         critical_reasons.append(f"{invalid_price_rows} invalid price rows")
+    if invalid_volume_rows > 0:
+        critical_reasons.append(f"{invalid_volume_rows} invalid volume rows")
     if critical_missing_rows > 0:
         critical_reasons.append(f"{critical_missing_rows} critical missing rows")
     if point_in_time_violations > 0:
@@ -78,6 +82,7 @@ def evaluate_data_health(
         duplicate_rows=duplicate_rows,
         stale_critical_rows=stale_critical_rows,
         invalid_price_rows=invalid_price_rows,
+        invalid_volume_rows=invalid_volume_rows,
         critical_missing_rows=critical_missing_rows,
         point_in_time_violations=point_in_time_violations,
         status=status,
