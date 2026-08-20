@@ -5,7 +5,6 @@ import datetime
 import hashlib
 from zoneinfo import ZoneInfo
 
-
 DEFAULT_TIMEZONE = "America/Mexico_City"
 
 
