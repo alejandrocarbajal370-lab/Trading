@@ -28,4 +28,8 @@ validation_outputs/<run_id>/
 └── validation_report.xlsx
 ```
 
+Phase 0 currently emits `ingested_prices.csv`, `data_health.json`, `run_summary.json`, and
+`validation_manifest.json`. Every Phase 0 summary explicitly records live execution as disabled
+and the trade decision as `NO_TRADE`.
+
 Not all files exist in Phase 0. A report is enabled only when its underlying subsystem exists.
