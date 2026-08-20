@@ -1,0 +1,4 @@
+symbol,fiscal_period_end,filed_at,available_at,metric,value,source
+AAPL,2025-09-27,2025-10-31T20:00:00Z,2025-10-31T20:05:00Z,revenue,100,sec_fixture
+AAPL,2025-09-27,2025-11-15T20:00:00Z,2025-11-15T20:05:00Z,revenue,105,sec_fixture
+AAPL,2025-12-27,2026-01-30T20:00:00Z,2026-01-30T20:05:00Z,revenue,120,sec_fixture

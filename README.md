@@ -85,6 +85,23 @@ credentials, transport exhaustion, provider rate-limit/error messages, malformed
 missing requested EOD rows produce explicit source errors. CI tests use mocks and fixtures and do
 not access the network.
 
+## Phase 2 point-in-time fundamentals
+
+Phase 2 adds a deliberately small, fixture-backed `FundamentalSource` contract. Every normalized
+fact keeps its economic period (`fiscal_period_end`) separate from its filing and public
+availability timestamps (`filed_at`, `available_at`). A snapshot includes only records whose
+`available_at` is at or before the requested cutoff. When multiple versions of the same
+symbol/period/metric are available, the latest publicly available amendment replaces the earlier
+version. The validation bundle adds `fundamental_snapshot.csv` and `fundamental_health.json`.
+
+CSV is the first adapter so point-in-time behavior remains deterministic and CI stays offline.
+Provider-specific network ingestion and credentials are intentionally deferred; future adapters
+must implement the same interface and retain their raw availability timestamps.
+
+This phase performs ingest, normalization, PIT gating, and validation only. It does not calculate
+ratios, scores, signals, valuation, portfolios, orders, or backtests. Every run remains
+`NO_TRADE` with live execution disabled.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
