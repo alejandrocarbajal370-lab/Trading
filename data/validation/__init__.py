@@ -1,0 +1,1 @@
+"""Hard data-integrity checks."""

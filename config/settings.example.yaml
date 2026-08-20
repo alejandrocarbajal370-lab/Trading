@@ -1,0 +1,23 @@
+project:
+  name: Trading
+  reporting_currency: MXN
+  investment_currency: USD
+
+run:
+  timezone: America/Mexico_City
+  mode: research
+  human_approval_required: true
+
+data_health:
+  minimum_universe_coverage: 0.98
+  maximum_critical_missing: 0
+  maximum_point_in_time_violations: 0
+
+portfolio:
+  rebalance_frequency: monthly
+  allow_cash: true
+
+execution:
+  live_enabled: false
+  block_on_unknown_order: true
+  block_on_reconciliation_failure: true
