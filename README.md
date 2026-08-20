@@ -4,7 +4,8 @@ Systematic Equity Research & Portfolio Engine built with a capital-preservation-
 
 ## Current stage
 
-`phase-0-data-validation` adds the first end-to-end data flow on top of the project foundation. No live trading logic is enabled.
+`phase-1-market-data` introduces a replaceable EOD price-source contract and a real provider
+adapter while preserving the Phase 0 validation bundle. No live trading logic is enabled.
 
 ## Core principles
 
@@ -59,6 +60,30 @@ phase0-validate \
 The command writes `ingested_prices.csv`, `data_health.json`, `run_summary.json`, and
 `validation_manifest.json` under `validation_outputs/<run_id>/`. The run summary always records
 `live_execution_enabled: false` and `trade_decision: NO_TRADE` in this phase.
+
+## Phase 1 EOD provider
+
+Alpha Vantage is the V1 real-data adapter because its documented `TIME_SERIES_DAILY` endpoint
+provides the required daily OHLCV fields through a small API-key-authenticated HTTP interface.
+The adapter is isolated behind `PriceSource`, while CSV remains the deterministic source for
+tests, fixtures, and offline validation. Phase 1 uses unadjusted daily prices intentionally;
+corporate-action adjustment policy remains outside this minimal ingest phase.
+
+Copy `.env.example` to your local environment configuration and set the value without committing
+it, or export the credential directly:
+
+```bash
+export ALPHA_VANTAGE_API_KEY="..."
+phase0-validate \
+  --provider alpha-vantage \
+  --symbols AAPL,MSFT \
+  --data-date 2026-08-19
+```
+
+Requests use a 10-second timeout and two retries with short exponential backoff. Missing
+credentials, transport exhaustion, provider rate-limit/error messages, malformed payloads, and
+missing requested EOD rows produce explicit source errors. CI tests use mocks and fixtures and do
+not access the network.
 
 ## Safety
 
