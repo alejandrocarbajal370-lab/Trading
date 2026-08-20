@@ -28,7 +28,9 @@ def test_success_path_writes_pit_outputs_and_preserves_safety(tmp_path: Path) ->
     )
     assert result.snapshot["value"].tolist() == [100]
     assert {path.name for path in result.output_dir.iterdir()} == {
+        "fundamental_history.csv",
         "fundamental_snapshot.csv",
+        "data_confidence.csv",
         "fundamental_health.json",
         "run_summary.json",
         "validation_manifest.json",
@@ -89,6 +91,21 @@ def test_latest_available_amendment_replaces_original() -> None:
         records, data_date=datetime.datetime(2025, 12, 1, tzinfo=datetime.UTC)
     )
     assert snapshot["value"].tolist() == [105]
+
+
+def test_pit_identity_preserves_different_start_and_period_type() -> None:
+    records = CsvFundamentalSource(FIXTURE).fetch(symbols={"AAPL"}).iloc[[0]].copy()
+    ytd = records.copy()
+    ytd["fiscal_period_start"] = datetime.date(2025, 1, 1)
+    instant = records.copy()
+    instant["fiscal_period_start"] = None
+    instant["period_type"] = "instant"
+    snapshot = select_point_in_time(
+        pd.concat([records, ytd, instant], ignore_index=True),
+        data_date=datetime.datetime(2025, 11, 1, tzinfo=datetime.UTC),
+    )
+    assert len(snapshot) == 3
+    assert set(snapshot["period_type"]) == {"duration", "instant"}
 
 
 def test_explicit_future_snapshot_is_a_pit_violation() -> None:

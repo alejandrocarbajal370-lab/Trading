@@ -88,11 +88,14 @@ not access the network.
 ## Phase 2 point-in-time fundamentals
 
 Phase 2 adds a deliberately small, fixture-backed `FundamentalSource` contract. Every normalized
-fact keeps its economic period (`fiscal_period_end`) separate from its filing and public
-availability timestamps (`filed_at`, `available_at`). A snapshot includes only records whose
+fact carries `period_type` (`duration` or `instant`), nullable `fiscal_period_start`, required
+`fiscal_period_end`, and `unit`, separately from filing and public availability timestamps
+(`filed_at`, `available_at`). Duration facts require a start; instant facts require a null start.
+A snapshot includes only records whose
 `available_at` is at or before the requested cutoff. When multiple versions of the same
-symbol/period/metric are available, the latest publicly available amendment replaces the earlier
-version. The validation bundle adds `fundamental_snapshot.csv` and `fundamental_health.json`.
+symbol/start/end/type/metric identity are available, the latest publicly available amendment
+replaces the earlier version. Facts with the same end but a different start or type remain
+distinct. The validation bundle adds `fundamental_snapshot.csv` and `fundamental_health.json`.
 
 A `data_date` supplied without a time is interpreted as end-of-day
 (`23:59:59.999999`) in `America/New_York`, then converted to UTC. A timezone-aware `datetime`
@@ -100,11 +103,78 @@ keeps its exact instant and is normalized to UTC; a naive `datetime` is interpre
 
 CSV is the first adapter so point-in-time behavior remains deterministic and CI stays offline.
 Provider-specific network ingestion and credentials are intentionally deferred; future adapters
-must implement the same interface and retain their raw availability timestamps.
+must implement the same interface and retain their raw availability timestamps. A future SEC
+adapter must normalize monetary values to a documented canonical currency/scale per company
+before calculation; the engine never converts currencies or scales silently.
 
 This phase performs ingest, normalization, PIT gating, and validation only. It does not calculate
 ratios, scores, signals, valuation, portfolios, orders, or backtests. Every run remains
 `NO_TRADE` with live execution disabled.
+
+## Phase 3 financial calculation engine V1
+
+Phase 3 calculates a deliberately small set of auditable metrics only from the Phase 2 PIT
+snapshot. Missing facts remain `MISSING`; duplicate, conflicting, non-finite, or mathematically
+invalid inputs remain `NOT_COMPUTED` with a reason. No input is silently replaced by zero or a
+proxy. Each output retains symbol, start/end, period type/basis, metric, value, result unit,
+status, reason, and per-input lineage (source, availability, unit, start/end, and period type).
+
+Flow inputs combined by a formula must have the same start and end. FCF requires matching CFO
+and CapEx periods; FCF margin also requires matching Revenue; CFO / Net Income requires matching
+periods. Flow/instant ratios use balance facts exactly at the flow `period_end`. Period or unit
+incompatibility is `NOT_COMPUTED`; there is no automatic reconciliation or conversion. Monetary
+arithmetic requires one identical currency/scale unit, while Tax Rate must use `RATIO`.
+
+V1 definitions:
+
+- `Free Cash Flow = Cash from Operations - Capital Expenditures`. Capital expenditures are
+  expected as a positive cash outflow magnitude.
+- `Free Cash Flow Margin = Free Cash Flow / Revenue`; zero revenue is not computed.
+- `Net Debt = Total Debt - Cash`. Explicit zero debt is valid; missing debt is not zero.
+- `Net Debt / EBITDA = Net Debt / EBITDA`; zero or negative EBITDA is not computed.
+- `CFO / Net Income = Cash from Operations / Net Income`; zero net income is not computed.
+- `ROIC V1 (period) = NOPAT / Invested Capital`, where `NOPAT = Operating Income * (1 - Tax Rate)` and
+  `Invested Capital = Total Debt + Total Equity - Cash`. Tax rate must be within `[0, 1]`, and
+  invested capital must be positive. These inputs must be reported facts; no effective-tax or
+  balance-sheet proxy is inferred. The output is explicitly the reported flow period's ROIC and
+  is not annualized; only an FY/TTM input period can be interpreted as FY/TTM.
+
+The validation bundle adds `financial_metrics.csv` and `financial_health.json`; manifest and run
+summary status is `PASS` when all emitted metrics pass, `WARNING` when PASS is mixed with
+`MISSING`/`NOT_COMPUTED`, and `FAIL` for an empty snapshot, no emitted expected metrics, or no
+PASS metric. Financial-stage exceptions overwrite the earlier Phase 2 PASS audit state with
+error type/message, financial `FAIL`, `NO_TRADE`, and live execution disabled, then re-raise the
+original exception. The manifest preserves existing critical checks and counts. It always records
+`NO_TRADE` and
+`live_execution_enabled: false`. Phase 3 contains no scores, signals, ranking, valuation,
+portfolio construction, backtesting, broker integration, or execution.
+
+## Pre-QVM hardening foundation
+
+Before Quality/Value/Momentum work, the fundamental layer also provides non-investment
+infrastructure:
+
+- Raw provider concepts remain separate from canonical metrics. Normalization accepts only
+  explicit `(source, raw_concept)` mappings and rejects unknown concepts; it never uses proxies.
+- `fundamental_history.csv` preserves filing/restatement versions by `filed_at` and
+  `available_at`; historical snapshots select only versions public at their cutoff.
+- Period utilities classify instant, quarterly, FY, and YTD facts. TTM requires four contiguous,
+  non-overlapping quarters available at the PIT cutoff and retains component lineage.
+- Reporting currency, functional currency, and optional FX rate/date/source metadata are stored
+  separately. No value is converted automatically.
+- Accounting-quality diagnostics emit CFO/Net Income and accrual-ratio checks. Their health
+  document declares `is_investment_signal: false`; warnings are QA, not alpha inputs.
+- Per-fact data confidence documents source quality, completeness, same-version conflicts, and
+  numeric validation. It measures data reliability, not expected return.
+- PIT-aware sector and management/capital-allocation contracts are defined without rankings or
+  scores.
+- The append-only research registry preregisters hypothesis, outcome, universe, and sample window
+  under a unique experiment ID to reduce repeated-test and overfitting risk.
+
+Phase 2 adds `fundamental_history.csv` and `data_confidence.csv`; Phase 3 adds
+`accounting_quality.csv` and `accounting_quality_health.json`. These layers do not implement QVM,
+alpha scores, portfolio construction, backtesting, or execution. `NO_TRADE` and
+`live_execution_enabled: false` remain mandatory.
 
 ## Safety
 

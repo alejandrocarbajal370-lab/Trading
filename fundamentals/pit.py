@@ -6,7 +6,13 @@ import pandas as pd
 
 from fundamentals.source import PointInTimeViolation, normalize_data_timestamp
 
-KEY_COLUMNS = ["symbol", "fiscal_period_end", "metric"]
+KEY_COLUMNS = [
+    "symbol",
+    "fiscal_period_start",
+    "fiscal_period_end",
+    "period_type",
+    "metric",
+]
 
 
 def select_point_in_time(
@@ -15,8 +21,18 @@ def select_point_in_time(
     """Select the latest publicly available filing/amendment for each economic fact."""
     cutoff = normalize_data_timestamp(data_date)
     eligible = records[records["available_at"] <= cutoff].copy()
-    eligible = eligible.sort_values(KEY_COLUMNS + ["available_at", "filed_at"])
-    snapshot = eligible.drop_duplicates(KEY_COLUMNS, keep="last").reset_index(drop=True)
+    # pandas drops NA group keys by default; use a sentinel so instant facts retain
+    # their explicit null start while amendments are selected.
+    eligible["_period_start_key"] = (
+        eligible["fiscal_period_start"].astype("string").fillna("<instant>")
+    )
+    keys = ["symbol", "_period_start_key", "fiscal_period_end", "period_type", "metric"]
+    eligible = eligible.sort_values(keys + ["available_at", "filed_at"])
+    snapshot = (
+        eligible.drop_duplicates(keys, keep="last")
+        .drop(columns="_period_start_key")
+        .reset_index(drop=True)
+    )
     if (snapshot["available_at"] > cutoff).any():
         raise PointInTimeViolation("PIT violation: snapshot includes future information")
     return snapshot
