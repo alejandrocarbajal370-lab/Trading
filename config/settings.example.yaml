@@ -13,6 +13,14 @@ data_health:
   maximum_critical_missing: 0
   maximum_point_in_time_violations: 0
 
+investment_universe:
+  minimum_market_cap: 100000000
+  minimum_average_volume: 500000
+  minimum_average_dollar_volume: 10000000
+  allowed_asset_types: [COMMON_STOCK]
+  minimum_listing_age_days: 365
+  allowed_exchanges: [NASDAQ, NYSE]
+
 portfolio:
   rebalance_frequency: monthly
   allow_cash: true

@@ -42,6 +42,7 @@ include = [
   "reports*",
   "dashboard*",
   "research*",
+  "universe*",
 ]
 exclude = ["tests*", "research.notebooks*", "validation_outputs*"]
 

@@ -176,6 +176,22 @@ Phase 2 adds `fundamental_history.csv` and `data_confidence.csv`; Phase 3 adds
 alpha scores, portfolio construction, backtesting, or execution. `NO_TRADE` and
 `live_execution_enabled: false` remain mandatory.
 
+## Phase 3.6 investment universe foundation
+
+Phase 3.6 defines which assets the research system may evaluate. The source contract requires
+symbol, exchange, asset type, country/region, optional sector/industry metadata, market cap,
+average share and dollar volume, listing date, source, source timestamp, and PIT availability.
+Validation emits `universe_membership.csv` without dropping any asset: each row is `ELIGIBLE` or
+`EXCLUDED`, with all applicable exclusion reasons, deterministic completeness confidence, and
+source lineage. `universe_validation.json` records counts, reasons, and the exact rules used.
+
+Market-cap, volume, dollar-liquidity, listing-age, asset-type, and exchange rules are configuration
+inputs rather than constants. Missing data needed by an enabled rule causes an explicit exclusion;
+duplicate symbols, unknown asset types, invalid timestamps, and malformed schemas fail the run and
+leave an audit trail. This foundation contains no QVM, alpha score, ranking, portfolio,
+backtesting, broker integration, or execution. It always remains `NO_TRADE` with live execution
+disabled.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.

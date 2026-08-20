@@ -1,0 +1,5 @@
+symbol,exchange,asset_type,country,region,sector,industry,market_cap,average_volume,average_dollar_volume,listing_date,source,source_timestamp,available_at
+AAA,NASDAQ,COMMON_STOCK,US,North America,Technology,Software,5000000000,2000000,120000000,2010-01-04,fixture,2026-08-19T22:00:00Z,2026-08-19T22:05:00Z
+SMALL,NYSE,COMMON_STOCK,US,North America,Industrials,Machinery,50000000,300000,9000000,2000-05-01,fixture,2026-08-19T22:00:00Z,2026-08-19T22:05:00Z
+ETF1,NYSE,ETF,US,North America,,,10000000000,5000000,250000000,2005-06-01,fixture,2026-08-19T22:00:00Z,2026-08-19T22:05:00Z
+NEW,NASDAQ,COMMON_STOCK,US,North America,Technology,Software,2000000000,1000000,50000000,2026-08-01,fixture,2026-08-19T22:00:00Z,2026-08-19T22:05:00Z
