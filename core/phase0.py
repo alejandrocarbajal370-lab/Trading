@@ -35,10 +35,56 @@ def _git_commit() -> str | None:
         return None
 
 
+def _write_source_failure_bundle(
+    *,
+    context: RunContext,
+    output_dir: Path,
+    source_name: str,
+    source_path: Path | None,
+    error: Exception,
+) -> None:
+    """Persist an auditable, non-trading run before a source error escapes."""
+    output_dir.mkdir(parents=True, exist_ok=False)
+    (output_dir / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "run_id": context.run_id,
+                "data_source": source_name,
+                "source_path": str(source_path) if source_path is not None else None,
+                "error_type": type(error).__name__,
+                "error_message": str(error),
+                "overall_status": "FAIL",
+                "data_health": "NOT_RUN",
+                "live_execution_enabled": False,
+                "trade_decision": "NO_TRADE",
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    write_manifest(
+        ValidationManifest(
+            context=context,
+            overall_status="FAIL",
+            critical_errors=1,
+            warnings=0,
+            checks={
+                "market_data_source": "FAIL",
+                "data_health": "NOT_RUN",
+                "live_execution": "DISABLED",
+                "trade_decision": "NO_TRADE",
+            },
+        ),
+        output_dir,
+    )
+
+
 def run_phase0(
     *,
     source_path: Path | None = None,
     price_source: PriceSource | None = None,
+    provider: str | None = None,
     symbols: set[str],
     data_date: datetime.date,
     output_root: Path = Path("validation_outputs"),
@@ -54,11 +100,28 @@ def run_phase0(
     )
     output_dir = output_root / context.run_id
 
-    if price_source is None:
-        if source_path is None:
-            raise ValueError("source_path is required when price_source is not provided")
-        price_source = CsvPriceSource(source_path)
-    prices = price_source.fetch(symbols=symbols, data_date=data_date)
+    source_name = provider or "csv"
+    try:
+        if price_source is not None:
+            source_name = price_source.name
+        if price_source is None:
+            if provider == "alpha-vantage":
+                price_source = AlphaVantagePriceSource.from_env()
+            else:
+                if source_path is None:
+                    raise ValueError("source_path is required when price_source is not provided")
+                price_source = CsvPriceSource(source_path)
+        source_name = price_source.name
+        prices = price_source.fetch(symbols=symbols, data_date=data_date)
+    except Exception as error:
+        _write_source_failure_bundle(
+            context=context,
+            output_dir=output_dir,
+            source_name=source_name,
+            source_path=source_path,
+            error=error,
+        )
+        raise
     health = validate_prices(prices, expected_symbols=symbols, data_date=data_date)
     output_dir.mkdir(parents=True, exist_ok=False)
     prices.to_csv(output_dir / "ingested_prices.csv", index=False)
@@ -101,10 +164,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.provider == "csv" and args.source is None:
         parser.error("--source is required when --provider=csv")
-    price_source = AlphaVantagePriceSource.from_env() if args.provider == "alpha-vantage" else None
     result = run_phase0(
         source_path=args.source,
-        price_source=price_source,
+        provider=args.provider,
         symbols={symbol.strip().upper() for symbol in args.symbols.split(",") if symbol.strip()},
         data_date=args.data_date,
         output_root=args.output_root,
