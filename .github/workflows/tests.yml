@@ -16,6 +16,6 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Ruff
-        run: ruff check . --diff
+        run: ruff check .
       - name: Tests
         run: pytest
