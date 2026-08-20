@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from core.run_context import RunContext, build_run_context
+from data.connectors.alpha_vantage import AlphaVantagePriceSource
+from data.connectors.base import PriceSource
 from data.connectors.csv_prices import CsvPriceSource
 from data.validation.health import DataHealthResult, HealthStatus
 from data.validation.prices import validate_prices
@@ -35,7 +37,8 @@ def _git_commit() -> str | None:
 
 def run_phase0(
     *,
-    source_path: Path,
+    source_path: Path | None = None,
+    price_source: PriceSource | None = None,
     symbols: set[str],
     data_date: datetime.date,
     output_root: Path = Path("validation_outputs"),
@@ -51,7 +54,11 @@ def run_phase0(
     )
     output_dir = output_root / context.run_id
 
-    prices = CsvPriceSource(source_path).fetch()
+    if price_source is None:
+        if source_path is None:
+            raise ValueError("source_path is required when price_source is not provided")
+        price_source = CsvPriceSource(source_path)
+    prices = price_source.fetch(symbols=symbols, data_date=data_date)
     health = validate_prices(prices, expected_symbols=symbols, data_date=data_date)
     output_dir.mkdir(parents=True, exist_ok=False)
     prices.to_csv(output_dir / "ingested_prices.csv", index=False)
@@ -62,8 +69,8 @@ def run_phase0(
         json.dumps(
             {
                 "run_id": context.run_id,
-                "data_source": "csv",
-                "source_path": str(source_path),
+                "data_source": price_source.name,
+                "source_path": str(source_path) if source_path is not None else None,
                 "live_execution_enabled": False,
                 "trade_decision": "NO_TRADE",
             },
@@ -86,13 +93,18 @@ def run_phase0(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run the minimal Phase 0 validation flow")
-    parser.add_argument("--source", type=Path, required=True)
+    parser.add_argument("--provider", choices=("csv", "alpha-vantage"), default="csv")
+    parser.add_argument("--source", type=Path)
     parser.add_argument("--symbols", required=True, help="Comma-separated expected symbols")
     parser.add_argument("--data-date", type=datetime.date.fromisoformat, required=True)
     parser.add_argument("--output-root", type=Path, default=Path("validation_outputs"))
     args = parser.parse_args()
+    if args.provider == "csv" and args.source is None:
+        parser.error("--source is required when --provider=csv")
+    price_source = AlphaVantagePriceSource.from_env() if args.provider == "alpha-vantage" else None
     result = run_phase0(
         source_path=args.source,
+        price_source=price_source,
         symbols={symbol.strip().upper() for symbol in args.symbols.split(",") if symbol.strip()},
         data_date=args.data_date,
         output_root=args.output_root,

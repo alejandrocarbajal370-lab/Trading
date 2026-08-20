@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,7 +15,13 @@ class CsvPriceSource:
 
     path: Path
 
-    def fetch(self) -> pd.DataFrame:
+    @property
+    def name(self) -> str:
+        return "csv"
+
+    def fetch(
+        self, *, symbols: set[str] | None = None, data_date: datetime.date | None = None
+    ) -> pd.DataFrame:
         frame = pd.read_csv(self.path)
         missing = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
         if missing:

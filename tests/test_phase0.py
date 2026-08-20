@@ -47,6 +47,7 @@ def test_phase0_writes_a_complete_validation_bundle(tmp_path: Path) -> None:
     summary = json.loads((result.output_dir / "run_summary.json").read_text())
     assert manifest["checks"]["live_execution"] == "DISABLED"
     assert summary["trade_decision"] == "NO_TRADE"
+    assert summary["data_source"] == "csv"
 
 
 def test_phase0_fails_health_for_invalid_price(tmp_path: Path) -> None:
