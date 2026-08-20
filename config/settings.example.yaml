@@ -14,12 +14,16 @@ data_health:
   maximum_point_in_time_violations: 0
 
 investment_universe:
+  ruleset_version: universe-v1
   minimum_market_cap: 100000000
   minimum_average_volume: 500000
   minimum_average_dollar_volume: 10000000
   allowed_asset_types: [COMMON_STOCK]
   minimum_listing_age_days: 365
   allowed_exchanges: [NASDAQ, NYSE]
+  rebalance_schedule:
+    frequency: monthly
+    interval: 1
   health:
     minimum_eligible_assets: 1
     minimum_eligible_ratio: 0.25

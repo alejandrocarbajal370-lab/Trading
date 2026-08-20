@@ -7,7 +7,8 @@ from typing import Any
 
 import pandas as pd
 
-from universe.validation import OUTPUT_COLUMNS, UniverseValidationError
+from universe.schedule import UniverseRebalanceSchedule
+from universe.validation import OUTPUT_COLUMNS, UniverseRules, UniverseValidationError
 
 
 def _canonical_csv(membership: pd.DataFrame) -> bytes:
@@ -40,7 +41,17 @@ class UniverseSnapshotStore:
         payload = path.read_bytes()
         if hashlib.sha256(payload).hexdigest() != metadata["membership_sha256"]:
             raise UniverseValidationError(f"universe snapshot checksum mismatch: {key}")
+        validation_payload = (path.parent / "universe_validation.json").read_bytes()
+        if hashlib.sha256(validation_payload).hexdigest() != metadata["validation_sha256"]:
+            raise UniverseValidationError(f"universe validation checksum mismatch: {key}")
         return pd.read_csv(path)
+
+    def metadata(self, as_of: str | pd.Timestamp) -> dict[str, Any]:
+        key = pd.Timestamp(as_of).date().isoformat()
+        path = self.root / key / "snapshot_metadata.json"
+        if not path.exists():
+            raise UniverseValidationError(f"universe snapshot not found: {key}")
+        return json.loads(path.read_text(encoding="utf-8"))
 
     def save(
         self,
@@ -48,6 +59,9 @@ class UniverseSnapshotStore:
         *,
         as_of: pd.Timestamp,
         validation: dict[str, Any],
+        rules: UniverseRules,
+        schedule: UniverseRebalanceSchedule,
+        recorded_at: pd.Timestamp,
     ) -> Path:
         key = pd.Timestamp(as_of).date().isoformat()
         directory = self.root / key
@@ -57,18 +71,34 @@ class UniverseSnapshotStore:
             metadata = json.loads((directory / "snapshot_metadata.json").read_text(encoding="utf-8"))
             if metadata["membership_sha256"] != digest:
                 raise UniverseValidationError(f"immutable universe snapshot already exists: {key}")
+            serialized_rules = json.loads(json.dumps(rules.to_dict(), sort_keys=True))
+            if metadata.get("ruleset", {}).get("parameters") != serialized_rules:
+                raise UniverseValidationError(
+                    f"immutable universe snapshot ruleset already exists: {key}"
+                )
+            if metadata.get("rebalance_schedule") != schedule.to_dict():
+                raise UniverseValidationError(
+                    f"immutable universe snapshot schedule already exists: {key}"
+                )
+            self.load(key)
             return directory
         directory.mkdir(parents=True, exist_ok=False)
         (directory / "universe_membership.csv").write_bytes(payload)
-        (directory / "universe_validation.json").write_text(
-            json.dumps(validation, indent=2, sort_keys=True), encoding="utf-8"
-        )
+        validation_payload = json.dumps(validation, indent=2, sort_keys=True).encode()
+        (directory / "universe_validation.json").write_bytes(validation_payload)
+        recorded = pd.Timestamp(recorded_at)
+        recorded = recorded.tz_localize("UTC") if recorded.tzinfo is None else recorded.tz_convert("UTC")
         metadata = {
             "as_of": pd.Timestamp(as_of).isoformat(),
+            "next_expected_date": schedule.next_expected_date(as_of).isoformat(),
+            "rebalance_schedule": schedule.to_dict(),
+            "ruleset": {
+                "version": rules.ruleset_version,
+                "parameters": rules.to_dict(),
+                "recorded_at": recorded.isoformat(),
+            },
             "membership_sha256": digest,
-            "validation_sha256": hashlib.sha256(
-                json.dumps(validation, sort_keys=True).encode()
-            ).hexdigest(),
+            "validation_sha256": hashlib.sha256(validation_payload).hexdigest(),
             "records": len(membership),
             "trade_decision": "NO_TRADE",
             "live_execution_enabled": False,

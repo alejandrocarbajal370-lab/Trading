@@ -22,7 +22,13 @@ REQUIRED_COLUMNS = (
     "source_timestamp",
     "available_at",
 )
-OUTPUT_COLUMNS = (*REQUIRED_COLUMNS, "eligibility_status", "exclusion_reason", "confidence", "lineage")
+OUTPUT_COLUMNS = (
+    *REQUIRED_COLUMNS,
+    "eligibility_status",
+    "exclusion_reason",
+    "universe_confidence",
+    "lineage",
+)
 VALID_ASSET_TYPES = frozenset({"COMMON_STOCK", "PREFERRED_STOCK", "ADR", "ETF", "REIT"})
 
 
@@ -32,6 +38,7 @@ class UniverseValidationError(ValueError):
 
 @dataclass(frozen=True)
 class UniverseRules:
+    ruleset_version: str = "universe-v1"
     minimum_market_cap: float | None = None
     minimum_average_volume: float | None = None
     minimum_average_dollar_volume: float | None = None
@@ -40,6 +47,8 @@ class UniverseRules:
     allowed_exchanges: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        if not self.ruleset_version.strip():
+            raise UniverseValidationError("ruleset_version must be present")
         numeric = {
             "minimum_market_cap": self.minimum_market_cap,
             "minimum_average_volume": self.minimum_average_volume,
@@ -140,7 +149,7 @@ def validate_universe(
         row.update(
             eligibility_status="EXCLUDED" if reasons else "ELIGIBLE",
             exclusion_reason=";".join(reasons),
-            confidence=round(completeness, 4),
+            universe_confidence=round(completeness, 4),
             lineage=json.dumps(
                 {
                     "source": source_row["source"],

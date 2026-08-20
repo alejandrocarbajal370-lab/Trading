@@ -74,9 +74,23 @@ def _market_cap_concentration(frame: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def compare_membership(current: pd.DataFrame, previous: pd.DataFrame | None) -> dict[str, Any]:
+def compare_membership(
+    current: pd.DataFrame,
+    previous: pd.DataFrame | None,
+    *,
+    current_ruleset_version: str,
+    previous_ruleset_version: str | None = None,
+) -> dict[str, Any]:
     if previous is None:
-        return {"previous_snapshot": False, "entries": [], "exits": [], "changes": []}
+        return {
+            "previous_snapshot": False,
+            "current_ruleset_version": current_ruleset_version,
+            "previous_ruleset_version": None,
+            "ruleset_changed": False,
+            "entries": [],
+            "exits": [],
+            "changes": [],
+        }
     current_status = current.set_index("symbol")["eligibility_status"].to_dict()
     previous_status = previous.set_index("symbol")["eligibility_status"].to_dict()
     current_eligible = {symbol for symbol, status in current_status.items() if status == "ELIGIBLE"}
@@ -99,6 +113,9 @@ def compare_membership(current: pd.DataFrame, previous: pd.DataFrame | None) -> 
             )
     return {
         "previous_snapshot": True,
+        "current_ruleset_version": current_ruleset_version,
+        "previous_ruleset_version": previous_ruleset_version,
+        "ruleset_changed": previous_ruleset_version != current_ruleset_version,
         "entries": sorted(current_eligible - previous_eligible),
         "exits": sorted(previous_eligible - current_eligible),
         "changes": changes,
@@ -144,6 +161,7 @@ def diagnose_universe(
     health_rules: UniverseHealthRules,
     stress_tests: list[dict[str, Any]],
     previous: pd.DataFrame | None = None,
+    previous_ruleset_version: str | None = None,
 ) -> dict[str, Any]:
     eligible = membership.loc[membership["eligibility_status"] == "ELIGIBLE"].copy()
     total = len(membership)
@@ -190,7 +208,12 @@ def diagnose_universe(
         "eligible_ratio": round(ratio, 6),
         "distributions": distributions,
         "concentration": concentration,
-        "changes": compare_membership(membership, previous),
+        "changes": compare_membership(
+            membership,
+            previous,
+            current_ruleset_version=rules.ruleset_version,
+            previous_ruleset_version=previous_ruleset_version,
+        ),
         "stress_tests": stress_tests,
         "exclusion_reasons": {str(key): int(value) for key, value in exclusion_reasons.items()},
         "rules": rules.to_dict(),

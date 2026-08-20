@@ -23,6 +23,7 @@ dev = [
 
 [project.scripts]
 phase0-validate = "core.phase0:main"
+universe-validate = "core.phase36:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -43,6 +44,7 @@ include = [
   "dashboard*",
   "research*",
   "universe*",
+  "factors*",
 ]
 exclude = ["tests*", "research.notebooks*", "validation_outputs*"]
 

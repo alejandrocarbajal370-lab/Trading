@@ -1,5 +1,7 @@
 import datetime
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -7,6 +9,7 @@ import pytest
 
 from core.phase36 import run_phase36
 from universe.diagnostics import UniverseHealthRules, diagnose_universe, stress_test_universe
+from universe.schedule import UniverseRebalanceSchedule
 from universe.snapshots import UniverseSnapshotStore
 from universe.validation import UniverseRules, UniverseValidationError, validate_universe
 
@@ -47,7 +50,7 @@ def test_missing_threshold_data_is_an_explicit_exclusion() -> None:
     result = validate_universe(records, rules=_rules(), as_of=AS_OF).iloc[0]
     assert result["eligibility_status"] == "EXCLUDED"
     assert result["exclusion_reason"] == "missing_market_cap"
-    assert result["confidence"] < 1
+    assert result["universe_confidence"] < 1
 
 
 def test_thresholds_and_etf_policy_are_configurable() -> None:
@@ -123,13 +126,27 @@ def test_historical_snapshots_are_reconstructible_and_immutable(tmp_path: Path) 
     store = UniverseSnapshotStore(tmp_path)
     first = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
     validation = {"status": "PASS"}
-    store.save(first, as_of=AS_OF, validation=validation)
+    store.save(
+        first,
+        as_of=AS_OF,
+        validation=validation,
+        rules=_rules(),
+        schedule=UniverseRebalanceSchedule(),
+        recorded_at=AS_OF,
+    )
     reconstructed = store.load("2026-08-20").set_index("symbol")
     assert reconstructed.loc["AAA", "eligibility_status"] == "ELIGIBLE"
     changed = first.copy()
     changed.loc[changed["symbol"] == "AAA", "eligibility_status"] = "EXCLUDED"
     with pytest.raises(UniverseValidationError, match="immutable universe snapshot"):
-        store.save(changed, as_of=AS_OF, validation=validation)
+        store.save(
+            changed,
+            as_of=AS_OF,
+            validation=validation,
+            rules=_rules(),
+            schedule=UniverseRebalanceSchedule(),
+            recorded_at=AS_OF,
+        )
 
 
 def test_snapshot_history_prevents_survivorship_bias_when_asset_later_disappears(
@@ -137,11 +154,25 @@ def test_snapshot_history_prevents_survivorship_bias_when_asset_later_disappears
 ) -> None:
     store = UniverseSnapshotStore(tmp_path)
     first = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
-    store.save(first, as_of=AS_OF, validation={"status": "PASS"})
+    store.save(
+        first,
+        as_of=AS_OF,
+        validation={"status": "PASS"},
+        rules=_rules(),
+        schedule=UniverseRebalanceSchedule(),
+        recorded_at=AS_OF,
+    )
     later_records = _records().loc[_records()["symbol"] != "AAA"]
     later_date = pd.Timestamp("2026-09-20T00:00:00Z")
     later = validate_universe(later_records, rules=_rules(), as_of=later_date)
-    store.save(later, as_of=later_date, validation={"status": "PASS"})
+    store.save(
+        later,
+        as_of=later_date,
+        validation={"status": "PASS"},
+        rules=_rules(),
+        schedule=UniverseRebalanceSchedule(),
+        recorded_at=later_date,
+    )
     assert "AAA" in set(store.load("2026-08-20")["symbol"])
     assert "AAA" not in set(store.load("2026-09-20")["symbol"])
 
@@ -205,8 +236,113 @@ def test_excessive_concentration_is_warning() -> None:
 def test_snapshot_checksum_failure_leaves_detectable_audit_violation(tmp_path: Path) -> None:
     store = UniverseSnapshotStore(tmp_path)
     membership = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
-    directory = store.save(membership, as_of=AS_OF, validation={"status": "PASS"})
+    directory = store.save(
+        membership,
+        as_of=AS_OF,
+        validation={"status": "PASS"},
+        rules=_rules(),
+        schedule=UniverseRebalanceSchedule(),
+        recorded_at=AS_OF,
+    )
     membership_path = directory / "universe_membership.csv"
     membership_path.write_text(membership_path.read_text() + "corrupt", encoding="utf-8")
     with pytest.raises(UniverseValidationError, match="checksum mismatch"):
         store.load(AS_OF)
+
+
+def test_ruleset_version_and_schedule_are_persisted_in_snapshot(tmp_path: Path) -> None:
+    rules = _rules(ruleset_version="universe-v2")
+    result = run_phase36(
+        source_path=FIXTURE,
+        rules=rules,
+        schedule=UniverseRebalanceSchedule(frequency="monthly"),
+        as_of=AS_OF,
+        output_root=tmp_path / "outputs",
+        snapshot_root=tmp_path / "snapshots",
+        now=datetime.datetime(2026, 8, 20, 12, tzinfo=datetime.UTC),
+    )
+    metadata = json.loads((result.snapshot_dir / "snapshot_metadata.json").read_text())
+    assert metadata["ruleset"]["version"] == "universe-v2"
+    assert metadata["ruleset"]["parameters"]["minimum_market_cap"] == 100_000_000
+    assert metadata["next_expected_date"] == "2026-09-20"
+    assert metadata["rebalance_schedule"] == {"frequency": "monthly", "interval": 1}
+
+    with pytest.raises(UniverseValidationError, match="snapshot ruleset already exists"):
+        UniverseSnapshotStore(tmp_path / "snapshots").save(
+            result.membership,
+            as_of=AS_OF,
+            validation={"status": "PASS"},
+            rules=_rules(ruleset_version="universe-v3"),
+            schedule=UniverseRebalanceSchedule(),
+            recorded_at=AS_OF,
+        )
+
+
+def test_same_inputs_reproduce_identical_membership(tmp_path: Path) -> None:
+    first = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    second = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    pd.testing.assert_frame_equal(first, second)
+    store = UniverseSnapshotStore(tmp_path)
+    directory = store.save(
+        first,
+        as_of=AS_OF,
+        validation={"status": "PASS"},
+        rules=_rules(),
+        schedule=UniverseRebalanceSchedule(),
+        recorded_at=AS_OF,
+    )
+    original = (directory / "universe_membership.csv").read_bytes()
+    store.save(
+        second,
+        as_of=AS_OF,
+        validation={"status": "PASS"},
+        rules=_rules(),
+        schedule=UniverseRebalanceSchedule(),
+        recorded_at=AS_OF,
+    )
+    assert (directory / "universe_membership.csv").read_bytes() == original
+
+
+def test_ruleset_change_is_explicit_in_membership_comparison() -> None:
+    previous = validate_universe(_records(), rules=_rules(ruleset_version="v1"), as_of=AS_OF)
+    current = validate_universe(_records(), rules=_rules(ruleset_version="v2"), as_of=AS_OF)
+    report = diagnose_universe(
+        current,
+        rules=_rules(ruleset_version="v2"),
+        health_rules=UniverseHealthRules(),
+        stress_tests=[],
+        previous=previous,
+        previous_ruleset_version="v1",
+    )
+    assert report["changes"]["ruleset_changed"] is True
+
+
+def test_universe_confidence_is_not_financial_confidence() -> None:
+    membership = validate_universe(_records(), rules=_rules(), as_of=AS_OF)
+    assert "universe_confidence" in membership
+    assert "financial_confidence" not in membership
+    assert "confidence" not in membership
+
+
+def test_universe_validation_entry_point_generates_outputs(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "core.phase36",
+            "--source",
+            str(FIXTURE),
+            "--as-of",
+            "2026-08-20",
+            "--output-root",
+            str(tmp_path / "outputs"),
+            "--snapshot-root",
+            str(tmp_path / "snapshots"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    output_dir, snapshot_dir = (Path(line) for line in result.stdout.strip().splitlines())
+    assert (output_dir / "universe_validation.json").exists()
+    assert (snapshot_dir / "snapshot_metadata.json").exists()
