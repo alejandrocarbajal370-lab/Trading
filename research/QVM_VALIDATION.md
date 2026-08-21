@@ -11,15 +11,27 @@ metric, its point-in-time availability, confidence, lineage, and governed-univer
 | Boundary | Control | Result |
 |---|---|---|
 | Quality / Value / Momentum | Existing factor outputs are adapted, not recalculated | PASS |
-| Governed universe | One identical `universe_snapshot_id` is required | PASS |
+| Governed universe | One identical snapshot ID and SHA-256 are required | PASS |
 | Point in time | One `as_of`; every `available_at` must be known by that date | PASS |
 | Availability | One explicit availability policy is required | PASS |
 | Entity | One entity policy and matching symbols are required | PASS |
-| Lineage | One integrated lineage identity plus per-observation lineage is required | PASS |
+| Lineage | Canonical universe, factor-dataset, PIT, ruleset, and policy identity is verified by SHA-256 | PASS |
 | Market data | Momentum's adjusted-price and calendar lineage remains intact | PASS |
 | Reproducibility | Canonical input and governance fingerprint; immutable outputs | PASS |
 
-Any alignment mismatch fails before a matrix is generated.
+Each factor dataset hash is recomputed from its canonical observations. The integrated lineage
+hash is then recomputed from the universe snapshot, factor hashes, PIT date, ruleset version,
+availability policy, and entity policy. Any declared/recomputed mismatch fails closed before a
+matrix is generated.
+
+Correlation diagnostics are metric-to-metric only. The Metric Semantics Registry permits a
+calculation only when both metrics share an explicit comparison group; incompatible or unknown
+pairs return `NOT_AVAILABLE` and an explicit reason. No aggregate factor correlation is emitted.
+
+Conflict diagnostics also use the registry. `higher_is_better` and `lower_is_better` metrics are
+interpreted relative to the governed cross-sectional median; `contextual` and `non_directional`
+metrics are excluded. Thus a high positive EV/EBIT value is economically negative (expensive),
+not positive merely because its numeric sign is positive.
 
 ## Outputs
 
