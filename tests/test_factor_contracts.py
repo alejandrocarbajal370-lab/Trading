@@ -56,7 +56,6 @@ def test_factor_input_contracts_validate_required_schemas_without_scores() -> No
         ebitda_ttm=_metric(),
         earnings_ttm=_metric(),
     )
-    value.validate_valuation_compatibility()
     momentum = MomentumFactorInputs(
         symbol="AAA",
         as_of=AS_OF,
@@ -75,30 +74,31 @@ def test_factor_input_contracts_validate_required_schemas_without_scores() -> No
         assert "rank" not in fields
 
 
-def test_value_contract_rejects_currency_and_period_mismatch() -> None:
-    mixed_currency = ValueFactorInputs(
-        symbol="AAA",
-        as_of=AS_OF,
-        market_cap=_metric(period_kind="instant"),
-        enterprise_value=_metric(unit="EUR", period_kind="instant"),
-        fcf_ttm=_metric(),
-        ebitda_ttm=_metric(),
-        earnings_ttm=_metric(),
-    )
-    with pytest.raises(ValueError, match="compatible currency"):
-        mixed_currency.validate_valuation_compatibility()
+def test_value_contract_automatically_rejects_currency_and_period_mismatch() -> None:
+    with pytest.raises(ValidationError, match="compatible currency"):
+        ValueFactorInputs(
+            symbol="AAA",
+            as_of=AS_OF,
+            market_cap=_metric(period_kind="instant"),
+            enterprise_value=_metric(unit="EUR", period_kind="instant"),
+            fcf_ttm=_metric(),
+            ebitda_ttm=_metric(),
+            earnings_ttm=_metric(),
+        )
 
-    wrong_period = mixed_currency.model_copy(
-        update={
-            "enterprise_value": _metric(period_kind="instant"),
-            "fcf_ttm": _metric(period_kind="fy"),
-        }
-    )
-    with pytest.raises(ValueError, match="must be TTM"):
-        wrong_period.validate_valuation_compatibility()
+    with pytest.raises(ValidationError, match="must be TTM"):
+        ValueFactorInputs(
+            symbol="AAA",
+            as_of=AS_OF,
+            market_cap=_metric(period_kind="instant"),
+            enterprise_value=_metric(period_kind="instant"),
+            fcf_ttm=_metric(period_kind="fy"),
+            ebitda_ttm=_metric(),
+            earnings_ttm=_metric(),
+        )
 
 
-def test_factor_contracts_reject_unknown_fields_and_invalid_confidence() -> None:
+def test_factor_contracts_reject_unknown_fields_invalid_confidence_and_naive_time() -> None:
     with pytest.raises(ValidationError):
         FinancialConfidence(score=1.1)
     with pytest.raises(ValidationError):
@@ -112,5 +112,16 @@ def test_factor_contracts_reject_unknown_fields_and_invalid_confidence() -> None
             unit="USD",
             period_kind="ttm",
             confidence=1.1,
+            lineage=("fixture",),
+        )
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        MetricObservation(
+            value=1,
+            as_of=AS_OF,
+            available_at=NOW.replace(tzinfo=None),
+            source="fixture",
+            unit="USD",
+            period_kind="ttm",
+            confidence=0.9,
             lineage=("fixture",),
         )
