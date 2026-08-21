@@ -1,0 +1,452 @@
+from __future__ import annotations
+
+import datetime
+import json
+import math
+from dataclasses import dataclass
+from typing import Any, Literal
+
+import numpy as np
+import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
+
+MOMENTUM_HYPOTHESIS = (
+    "Trailing price persistence can be described with point-in-time, market-data-aware "
+    "metrics. Phase 4.3 calculates individual observations only and makes no investment claim."
+)
+MOMENTUM_RULESET_VERSION = "momentum-v1.0"
+OUTPUT_COLUMNS = [
+    "experiment_id",
+    "symbol",
+    "metric",
+    "value",
+    "unit",
+    "currency",
+    "as_of",
+    "available_at",
+    "confidence",
+    "status",
+    "reason",
+    "benchmark_symbol",
+    "price_basis",
+    "corporate_action_status",
+    "trading_calendar",
+    "warnings",
+    "lineage",
+]
+
+
+class MomentumContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class MomentumMetricDefinition(MomentumContractModel):
+    name: str
+    formula: str
+    unit: Literal["return", "return_per_volatility", "r_squared"]
+    lookback_days: int = Field(gt=0)
+
+
+class MomentumFactorContract(MomentumContractModel):
+    version: str = MOMENTUM_RULESET_VERSION
+    hypothesis: str = MOMENTUM_HYPOTHESIS
+    required_dataset_columns: tuple[str, ...] = (
+        "symbol",
+        "date",
+        "close",
+        "currency",
+        "available_at",
+        "confidence",
+        "input_lineage",
+        "price_basis",
+        "corporate_action_status",
+        "trading_calendar",
+        "session_status",
+    )
+    definitions: tuple[MomentumMetricDefinition, ...]
+    benchmark_configurable: Literal[True] = True
+    composite_score: Literal[False] = False
+    ranking_calculated: Literal[False] = False
+
+
+MOMENTUM_CONTRACT = MomentumFactorContract(
+    definitions=(
+        MomentumMetricDefinition(
+            name="momentum_12_1",
+            formula="close(as_of-1M) / close(as_of-12M) - 1",
+            unit="return",
+            lookback_days=365,
+        ),
+        MomentumMetricDefinition(
+            name="momentum_6m",
+            formula="close(as_of) / close(as_of-6M) - 1",
+            unit="return",
+            lookback_days=183,
+        ),
+        MomentumMetricDefinition(
+            name="relative_strength_6m",
+            formula="asset 6M return - configured benchmark 6M return",
+            unit="return",
+            lookback_days=183,
+        ),
+        MomentumMetricDefinition(
+            name="volatility_adjusted_momentum_12_1",
+            formula="12-1 return / annualized standard deviation of daily log returns (sqrt(252))",
+            unit="return_per_volatility",
+            lookback_days=365,
+        ),
+        MomentumMetricDefinition(
+            name="trend_stability_12m",
+            formula="R-squared of OLS log(close) on elapsed calendar days over trailing 12M",
+            unit="r_squared",
+            lookback_days=365,
+        ),
+    )
+)
+
+
+@dataclass(frozen=True)
+class MomentumEvaluation:
+    metrics: pd.DataFrame
+    health: dict[str, Any]
+    lineage: dict[str, Any]
+    validation_report: dict[str, Any]
+
+
+def _empty_row(
+    *,
+    experiment_id: str,
+    symbol: str,
+    metric: MomentumMetricDefinition,
+    as_of: datetime.date,
+    benchmark_symbol: str,
+    dataset_lineage: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "experiment_id": experiment_id,
+        "symbol": symbol,
+        "metric": metric.name,
+        "value": None,
+        "unit": metric.unit,
+        "currency": None,
+        "as_of": as_of.isoformat(),
+        "available_at": None,
+        "confidence": 0.0,
+        "status": "NOT_COMPUTED",
+        "reason": None,
+        "benchmark_symbol": benchmark_symbol if metric.name == "relative_strength_6m" else None,
+        "price_basis": None,
+        "corporate_action_status": None,
+        "trading_calendar": None,
+        "warnings": "[]",
+        "lineage": json.dumps({"dataset": dataset_lineage, "price_inputs": []}, sort_keys=True),
+    }
+
+
+def _lineage(frame: pd.DataFrame, dataset_lineage: dict[str, Any]) -> tuple[str, str | None]:
+    inputs: list[dict[str, Any]] = []
+    for raw in frame["input_lineage"]:
+        try:
+            parsed = json.loads(raw) if isinstance(raw, str) else raw
+        except (json.JSONDecodeError, TypeError):
+            return json.dumps(
+                {"dataset": dataset_lineage, "price_inputs": []}, sort_keys=True
+            ), "input_lineage is not valid JSON"
+        if (
+            not isinstance(parsed, list)
+            or not parsed
+            or not all(isinstance(x, dict) and x for x in parsed)
+        ):
+            return json.dumps(
+                {"dataset": dataset_lineage, "price_inputs": []}, sort_keys=True
+            ), "input_lineage must be a non-empty list of objects"
+        if any(not (x.get("source") or x.get("primary_source")) for x in parsed):
+            return json.dumps(
+                {"dataset": dataset_lineage, "price_inputs": parsed}, sort_keys=True
+            ), "primary source missing from lineage"
+        inputs.extend(parsed)
+    unique = {json.dumps(item, sort_keys=True): item for item in inputs}
+    return json.dumps(
+        {"dataset": dataset_lineage, "price_inputs": list(unique.values())}, sort_keys=True
+    ), None
+
+
+def _prepare(frame: pd.DataFrame, as_of: datetime.date) -> tuple[pd.DataFrame, str | None]:
+    data = frame.copy()
+    try:
+        data["date"] = pd.to_datetime(data["date"], errors="raise").dt.date
+        data["available_at"] = pd.to_datetime(data["available_at"], errors="raise", utc=False)
+    except (TypeError, ValueError) as error:
+        return data, f"invalid market-data date: {error}"
+    if any(value.tzinfo is None or value.utcoffset() is None for value in data["available_at"]):
+        return data, "available_at must be timezone-aware"
+    cutoff = datetime.datetime.combine(as_of, datetime.time.max, tzinfo=datetime.UTC)
+    if (data["date"] > as_of).any():
+        return data, "future price date exceeds as_of"
+    if any(
+        value.to_pydatetime().astimezone(datetime.UTC) > cutoff for value in data["available_at"]
+    ):
+        return data, "PIT violation: available_at exceeds as_of"
+    if data["date"].duplicated().any():
+        return data, "duplicate market sessions"
+    if data["close"].isna().any():
+        return data, "missing prices"
+    try:
+        data["close"] = data["close"].astype(float)
+    except (TypeError, ValueError):
+        return data, "prices must be numeric"
+    if (~np.isfinite(data["close"])).any() or (data["close"] <= 0).any():
+        return data, "invalid return denominator: prices must be finite and positive"
+    if (data["session_status"].astype(str) != "PRESENT").any():
+        return data, "market-data gaps declared by session_status"
+    return data.sort_values("date").reset_index(drop=True), None
+
+
+def _at_or_before(
+    frame: pd.DataFrame, target: datetime.date, tolerance_days: int
+) -> pd.Series | None:
+    eligible = frame[frame["date"] <= target]
+    if eligible.empty:
+        return None
+    row = eligible.iloc[-1]
+    return row if (target - row["date"]).days <= tolerance_days else None
+
+
+def _return(
+    frame: pd.DataFrame, start: datetime.date, end: datetime.date
+) -> tuple[float | None, pd.DataFrame]:
+    start_row, end_row = _at_or_before(frame, start, 7), _at_or_before(frame, end, 7)
+    if start_row is None or end_row is None or start_row["date"] >= end_row["date"]:
+        return None, frame.iloc[0:0]
+    window = frame[(frame["date"] >= start_row["date"]) & (frame["date"] <= end_row["date"])]
+    return float(end_row["close"] / start_row["close"] - 1), window
+
+
+def _metric_value(
+    name: str, frame: pd.DataFrame, benchmark: pd.DataFrame | None, as_of: datetime.date
+) -> tuple[float | None, pd.DataFrame, str | None]:
+    one_month = as_of - datetime.timedelta(days=30)
+    one_year = as_of - datetime.timedelta(days=365)
+    six_months = as_of - datetime.timedelta(days=183)
+    if name == "momentum_12_1":
+        value, window = _return(frame, one_year, one_month)
+        return value, window, None if value is not None else "insufficient prices for 12-1 window"
+    if name == "momentum_6m":
+        value, window = _return(frame, six_months, as_of)
+        return value, window, None if value is not None else "insufficient prices for 6M window"
+    if name == "relative_strength_6m":
+        asset, window = _return(frame, six_months, as_of)
+        if benchmark is None:
+            return None, window, "configured benchmark is missing"
+        bench, bench_window = _return(benchmark, six_months, as_of)
+        if asset is None or bench is None:
+            return (
+                None,
+                pd.concat([window, bench_window]),
+                "insufficient asset or benchmark prices for relative strength",
+            )
+        return asset - bench, pd.concat([window, bench_window]), None
+    if name == "volatility_adjusted_momentum_12_1":
+        momentum, window = _return(frame, one_year, one_month)
+        if momentum is None:
+            return None, window, "insufficient prices for volatility-adjusted momentum"
+        volatility = float(np.log(window["close"]).diff().dropna().std(ddof=1) * math.sqrt(252))
+        if not math.isfinite(volatility) or volatility <= 0:
+            return None, window, "volatility is zero or invalid"
+        return momentum / volatility, window, None
+    window = frame[frame["date"] >= one_year]
+    if len(window) < 3:
+        return None, window, "insufficient prices for trend stability"
+    x = np.array([(day - window.iloc[0]["date"]).days for day in window["date"]], dtype=float)
+    y = np.log(window["close"].to_numpy(dtype=float))
+    if np.var(x) == 0 or np.var(y) == 0:
+        return None, window, "trend variance is zero or invalid"
+    correlation = float(np.corrcoef(x, y)[0, 1])
+    return correlation**2, window, None
+
+
+def evaluate_momentum_metrics(
+    prices: pd.DataFrame,
+    *,
+    experiment_id: str,
+    dataset_lineage: dict[str, Any],
+    as_of: datetime.date,
+    benchmark_symbol: str,
+    low_confidence_threshold: float = 0.7,
+    stale_after_days: int = 7,
+) -> MomentumEvaluation:
+    if not benchmark_symbol.strip():
+        raise ValueError("benchmark_symbol is required")
+    if not math.isfinite(low_confidence_threshold) or not 0 <= low_confidence_threshold <= 1:
+        raise ValueError("low_confidence_threshold must be finite and between 0 and 1")
+    missing = sorted(set(MOMENTUM_CONTRACT.required_dataset_columns) - set(prices.columns))
+    if missing:
+        raise ValueError(f"missing momentum input columns: {', '.join(missing)}")
+    if prices.empty:
+        raise ValueError("momentum input dataset is empty")
+    grouped = {str(symbol): group for symbol, group in prices.groupby("symbol", sort=True)}
+    prepared: dict[str, tuple[pd.DataFrame, str | None]] = {
+        symbol: _prepare(group, as_of) for symbol, group in grouped.items()
+    }
+    benchmark_key = benchmark_symbol.strip()
+    benchmark = prepared.get(benchmark_key)
+    if not any(symbol != benchmark_key for symbol in grouped):
+        raise ValueError("momentum dataset must contain at least one non-benchmark symbol")
+    rows: list[dict[str, Any]] = []
+    for symbol in sorted(key for key in grouped if key != benchmark_key):
+        frame, input_error = prepared[symbol]
+        for definition in MOMENTUM_CONTRACT.definitions:
+            row = _empty_row(
+                experiment_id=experiment_id,
+                symbol=symbol,
+                metric=definition,
+                as_of=as_of,
+                benchmark_symbol=benchmark_key,
+                dataset_lineage=dataset_lineage,
+            )
+            if input_error:
+                row.update(
+                    status="PIT_VIOLATION" if "PIT violation" in input_error else "INVALID_DATA",
+                    reason=input_error,
+                )
+                rows.append(row)
+                continue
+            benchmark_frame = None
+            if definition.name == "relative_strength_6m" and benchmark:
+                benchmark_frame, benchmark_error = benchmark
+                if benchmark_error:
+                    row.update(status="INVALID_DATA", reason=f"benchmark: {benchmark_error}")
+                    rows.append(row)
+                    continue
+            value, used, error = _metric_value(definition.name, frame, benchmark_frame, as_of)
+            source_frames = [used] if not used.empty else [frame]
+            lineage, lineage_error = _lineage(pd.concat(source_frames), dataset_lineage)
+            confidence_values = pd.to_numeric(
+                pd.concat(source_frames)["confidence"], errors="coerce"
+            )
+            confidence = (
+                float(confidence_values.min())
+                if not confidence_values.empty and confidence_values.notna().all()
+                else 0.0
+            )
+            # Asset and benchmark may legitimately use different bases/providers. Each series is
+            # validated independently; the output contract describes the asset observation.
+            basis = set(frame["price_basis"].astype(str))
+            actions = set(frame["corporate_action_status"].astype(str))
+            currencies = set(frame["currency"].dropna().astype(str))
+            calendars = set(pd.concat(source_frames)["trading_calendar"].astype(str))
+            warnings: list[str] = []
+            status, reason = "PASS", None
+            if (as_of - frame.iloc[-1]["date"]).days > stale_after_days:
+                status, reason = "STALE_PRICE", "latest price is stale relative to as_of"
+            elif error:
+                status, reason = "NOT_COMPUTED", error
+            elif lineage_error:
+                status, reason = "INVALID_LINEAGE", lineage_error
+            elif (
+                confidence_values.isna().any()
+                or not math.isfinite(confidence)
+                or not 0 <= confidence <= 1
+            ):
+                status, reason = (
+                    "MISSING_CONFIDENCE",
+                    "confidence is required and must be finite between 0 and 1",
+                )
+            elif len(basis) != 1 or basis - {"ADJUSTED", "UNADJUSTED"}:
+                status, reason = (
+                    "INVALID_DATA",
+                    "price_basis must be consistently ADJUSTED or UNADJUSTED",
+                )
+            elif len(currencies) != 1 or "" in currencies:
+                status, reason = "INVALID_DATA", "one explicit asset currency is required"
+            elif not actions or actions - {"NONE", "APPLIED", "UNKNOWN"}:
+                status, reason = (
+                    "INVALID_DATA",
+                    "corporate_action_status must be NONE, APPLIED, or UNKNOWN",
+                )
+            elif len(calendars) != 1 or "" in calendars:
+                status, reason = "INVALID_DATA", "one explicit trading_calendar is required"
+            elif confidence < low_confidence_threshold:
+                status, reason = (
+                    "LOW_CONFIDENCE",
+                    f"input confidence {confidence:.4f} below {low_confidence_threshold:.4f}",
+                )
+            if basis == {"UNADJUSTED"}:
+                warnings.append("unadjusted prices may distort returns around splits and dividends")
+                if actions != {"NONE"} and status == "PASS":
+                    status, reason = (
+                        "WARNING",
+                        "unadjusted prices with corporate-action exposure require review",
+                    )
+            row.update(
+                value=value,
+                currency=next(iter(currencies)) if len(currencies) == 1 else None,
+                available_at=max(str(x) for x in pd.concat(source_frames)["available_at"]),
+                confidence=confidence,
+                status=status,
+                reason=reason,
+                price_basis=next(iter(basis)) if len(basis) == 1 else None,
+                corporate_action_status=next(iter(actions)) if len(actions) == 1 else "MIXED",
+                trading_calendar=next(iter(calendars)) if len(calendars) == 1 else None,
+                warnings=json.dumps(warnings, sort_keys=True),
+                lineage=lineage,
+            )
+            rows.append(row)
+    output = (
+        pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+        .sort_values(["symbol", "metric"])
+        .reset_index(drop=True)
+    )
+    counts = {str(k): int(v) for k, v in output["status"].value_counts().sort_index().items()}
+    invalid = int((~output["status"].isin(["PASS", "WARNING"])).sum())
+    health_status = (
+        "FAIL" if invalid else ("WARNING" if (output["status"] == "WARNING").any() else "PASS")
+    )
+    safety = {
+        "adjusted_vs_unadjusted": "contract_enforced",
+        "corporate_actions": "metadata_enforced",
+        "trading_calendar": "contract_enforced",
+        "missing_sessions": "fail_closed",
+        "stale_prices": "fail_closed",
+        "full_market_data_audit": "pending",
+    }
+    health = {
+        "schema_version": "momentum-health-v1",
+        "status": health_status,
+        "observations": len(output),
+        "status_counts": counts,
+        "market_data_safety": safety,
+        "composite_score_calculated": False,
+        "ranking_calculated": False,
+        "trade_decision": "NO_TRADE",
+        "live_execution_enabled": False,
+    }
+    lineage_doc = {
+        "schema_version": "momentum-lineage-v1",
+        "dataset": dataset_lineage,
+        "benchmark_symbol": benchmark_key,
+        "metrics": [
+            {"symbol": r["symbol"], "metric": r["metric"], "lineage": json.loads(r["lineage"])}
+            for r in rows
+        ],
+    }
+    report = {
+        "schema_version": "momentum-validation-report-v1",
+        "status": health_status,
+        "checks": {
+            "contracts": "implemented",
+            "point_in_time": "implemented",
+            "future_dates": "implemented",
+            "price_completeness": "implemented",
+            "market_gaps": "implemented",
+            "return_denominators": "implemented",
+            "zero_volatility": "implemented",
+            "benchmark": "implemented",
+            "lineage_and_confidence": "implemented",
+            "reproducibility": "runner_enforced",
+            "market_data_audit": "pending",
+        },
+        "errors": invalid,
+        "warnings": int((output["status"] == "WARNING").sum()),
+    }
+    return MomentumEvaluation(output, health, lineage_doc, report)
