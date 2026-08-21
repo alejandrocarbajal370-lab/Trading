@@ -327,6 +327,19 @@ forward returns, construct a portfolio, run a complete backtest, connect a broke
 Value and Momentum remain unimplemented. Every output stays `NO_TRADE` and
 `live_execution_enabled: false`.
 
+## Phase 4.2 Value Factor Engine V1
+
+Phase 4.2 adds a conservative research-only Value layer with individual FCF Yield, Earnings Yield,
+EBIT Yield, EV/EBIT, and secondary EV/EBITDA metrics. Absolute Value is calculated independently;
+historical and sector-relative Value remain metadata foundations. Invalid currency, units, periods,
+PIT timestamps, confidence, lineage, denominators, or restricted industries fail closed. Negative FCF
+and economically extreme valuations are warnings, never normal signals.
+
+The engine does not calculate a composite score, ranking, portfolio, or trade. Owner Earnings Yield
+and Quality linkage are explicitly reserved for future work. See
+[`research/VALUE_VALIDATION.md`](research/VALUE_VALIDATION.md) for contracts, limitations, and output
+definitions. Every Value run preserves `NO_TRADE` and `live_execution_enabled=false`.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
