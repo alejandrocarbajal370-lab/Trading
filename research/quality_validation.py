@@ -167,7 +167,11 @@ def _coverage_by_group(
 def _distribution(rows: pd.DataFrame, *, metric: str) -> dict[str, Any]:
     valid = rows[rows["status"].eq("PASS")].copy()
     valid["numeric_value"] = pd.to_numeric(valid["value"], errors="coerce")
-    valid = valid[valid["numeric_value"].map(lambda value: math.isfinite(float(value)) if pd.notna(value) else False)]
+    valid = valid[
+        valid["numeric_value"].map(
+            lambda value: math.isfinite(float(value)) if pd.notna(value) else False
+        )
+    ]
     values = valid["numeric_value"]
     if values.empty:
         return {"metric": metric, "count": 0, "percentiles": {}, "outliers": []}
@@ -180,7 +184,7 @@ def _distribution(rows: pd.DataFrame, *, metric: str) -> dict[str, Any]:
     outliers = valid[(valid["numeric_value"] < lower) | (valid["numeric_value"] > upper)]
     return {
         "metric": metric,
-        "count": int(len(values)),
+        "count": len(values),
         "min": float(values.min()),
         "max": float(values.max()),
         "percentiles": {
@@ -211,7 +215,6 @@ def _availability(quality: pd.DataFrame, eligible: pd.DataFrame) -> pd.DataFrame
             status = "DATA_UNAVAILABLE"
             reason = "no Quality observations for eligible universe member"
         elif passing.empty:
-            status = "NO_PASSING_QUALITY_METRICS"
             statuses = sorted(set(observed["status"].astype(str)))
             status = "NO_PASSING_QUALITY_METRICS"
             reason = f"Quality observations exist but none pass: {', '.join(statuses)}"
@@ -247,7 +250,9 @@ def _trend_rows(financial: pd.DataFrame, eligible_symbols: set[str]) -> pd.DataF
             & frame["status"].eq("PASS")
         ].copy()
         selected["numeric_value"] = pd.to_numeric(selected["value"], errors="coerce")
-        selected = selected[selected["numeric_value"].notna() & selected["fiscal_period_end"].notna()]
+        selected = selected[
+            selected["numeric_value"].notna() & selected["fiscal_period_end"].notna()
+        ]
         for symbol, history in selected.groupby("symbol", sort=True):
             history = history.sort_values("fiscal_period_end")
             if history["fiscal_period_end"].duplicated().any() or len(history) < 2:
@@ -260,7 +265,7 @@ def _trend_rows(financial: pd.DataFrame, eligible_symbols: set[str]) -> pd.DataF
                 {
                     "symbol": str(symbol),
                     "metric": result_metric,
-                    "observations": int(len(history)),
+                    "observations": len(history),
                     "start": start,
                     "end": end,
                     "delta": delta,
@@ -294,8 +299,10 @@ def build_quality_validation_report(
     eligible = _eligible_universe(universe)
     invalid_quality_lineage = int((~quality["lineage"].map(_valid_json_lineage)).sum())
     invalid_universe_lineage = int((~universe["lineage"].map(_valid_json_lineage)).sum())
-    pit_mask = quality.get("reason", pd.Series(index=quality.index, dtype="object")).astype("string").str.contains(
-        "PIT violation", case=False, na=False
+    pit_mask = (
+        quality.get("reason", pd.Series(index=quality.index, dtype="object"))
+        .astype("string")
+        .str.contains("PIT violation", case=False, na=False)
     )
     if financial_metrics is not None:
         pit_mask_financial = financial_metrics["reason"].astype("string").str.contains(
@@ -330,7 +337,11 @@ def build_quality_validation_report(
             warnings.append(
                 f"low pass coverage for {item['metric']}: {item['pass_coverage']:.2%}"
             )
-    unavailable = int((availability["availability_status"] != "AVAILABLE").sum()) if not availability.empty else 0
+    unavailable = (
+        int((availability["availability_status"] != "AVAILABLE").sum())
+        if not availability.empty
+        else 0
+    )
     outlier_count = sum(len(item["outliers"]) for item in distributions)
     if unavailable:
         warnings.append(f"{unavailable} eligible universe members lack passing Quality coverage")
@@ -352,7 +363,7 @@ def build_quality_validation_report(
         "universe_snapshot_id": universe_snapshot_id,
         "dataset_snapshot_id": dataset_snapshot_id,
         "health": health,
-        "eligible_universe_size": int(len(eligible)),
+        "eligible_universe_size": len(eligible),
         "quality_symbols_observed": int(quality["symbol"].nunique()),
         "minimum_pass_coverage": minimum_pass_coverage,
         "coverage": coverage,
