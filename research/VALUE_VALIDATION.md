@@ -27,10 +27,19 @@ common `valuation_as_of`, confidence in `[0, 1]`, upstream status/reason, and no
 lineage. Information available after the valuation date is a PIT violation. Invalid inputs produce
 a null metric and an explicit status/reason rather than an inferred value.
 
+Every Value run also requires the governed Phase 3.6 universe snapshot directory. Membership and
+validation checksums, usable health, ruleset version, research-only safety state, and the canonical
+`universe-YYYY-MM-DD` snapshot identity must match the registered experiment. A mismatch fails
+closed and writes an immutable `value_governance_audit.json` failure record.
+
 EV metrics are disabled for industries such as banks, insurance, consumer finance, capital markets,
 and REITs, where enterprise value and operating debt do not have the same interpretation as for a
 typical industrial company. Non-positive denominators fail closed. Extreme yields or multiples
 remain visible but are marked `WARNING` for economic review.
+
+Negative earnings and negative EBIT are explicit `WARNING` economics, never ordinary cheapness.
+EV/EBIT with negative EBIT has no meaningful multiple, so its value remains null with an explicit
+warning reason; zero EBIT remains an invalid denominator.
 
 ## Why EV/EBITDA is secondary
 
@@ -56,4 +65,5 @@ sector-relative valuation, and Quality linkage are foundations, not implemented 
 - `value_health.json`: coverage and status counts with research-only safety flags.
 - `value_lineage.json`: dataset and per-metric input lineage.
 - `value_validation_report.json`: initial validation-layer structure and implementation status.
-- `value_research_run.json`: reproducibility fingerprint, assumptions, foundations, and safety state.
+- `value_research_run.json`: fingerprinted dataset, universe identity/checksums, runtime dependencies,
+  assumptions, foundations, and safety state.

@@ -1,13 +1,16 @@
+import datetime
 import json
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
+from core.phase36 import run_phase36
 from factors.value import VALUE_CONTRACT, evaluate_value_metrics
-from research.datasets import file_sha256
+from research.datasets import DatasetVersionError, file_sha256
 from research.registry import DatasetRegistration, ResearchExperiment, ResearchRegistry
 from research.value_runner import run_value_experiment
+from universe.validation import UniverseRules
 
 
 def _lineage(metric: str) -> str:
@@ -85,6 +88,24 @@ def test_negative_fcf_is_warning_not_normal_signal() -> None:
     assert "not a normal value signal" in row["reason"]
 
 
+@pytest.mark.parametrize(
+    ("input_metric", "output_metric", "reason"),
+    [
+        ("earnings", "earnings_yield", "negative earnings"),
+        ("ebit", "ebit_yield", "negative EBIT"),
+        ("ebit", "ev_to_ebit", "economically uninterpretable"),
+    ],
+)
+def test_negative_economics_are_explicit_warnings(
+    input_metric: str, output_metric: str, reason: str
+) -> None:
+    frame = _metrics()
+    frame.loc[frame["metric"] == input_metric, "value"] = -10.0
+    row = _evaluate(frame).loc[output_metric]
+    assert row["status"] == "WARNING"
+    assert reason in row["reason"]
+
+
 def test_zero_market_cap_fails_closed() -> None:
     frame = _metrics()
     frame.loc[frame["metric"] == "market_cap", "value"] = 0.0
@@ -138,6 +159,24 @@ def test_outlier_valuation_is_warning() -> None:
     assert "extreme" in row["reason"]
 
 
+@pytest.mark.parametrize("threshold", [-0.01, 1.01, float("nan")])
+def test_low_confidence_threshold_must_be_a_probability(threshold: float) -> None:
+    with pytest.raises(ValueError, match="low_confidence_threshold"):
+        evaluate_value_metrics(
+            _metrics(),
+            experiment_id="value-001",
+            dataset_lineage={"snapshot_id": "financial-2024-12-31"},
+            low_confidence_threshold=threshold,
+        )
+
+
+def test_invalid_valuation_date_names_the_correct_field() -> None:
+    frame = _metrics()
+    frame["valuation_as_of"] = "not-a-date"
+    with pytest.raises(ValueError, match="invalid valuation_as_of"):
+        _evaluate(frame)
+
+
 def _registered(tmp_path: Path) -> tuple[Path, ResearchExperiment]:
     dataset_path = tmp_path / "value_inputs.csv"
     _metrics().to_csv(dataset_path, index=False)
@@ -173,13 +212,46 @@ def _registered(tmp_path: Path) -> tuple[Path, ResearchExperiment]:
     return registry_path, experiment
 
 
+def _governed_universe(tmp_path: Path) -> Path:
+    source = tmp_path / "universe.csv"
+    pd.DataFrame(
+        [
+            {
+                "symbol": "AAA",
+                "exchange": "NYSE",
+                "asset_type": "COMMON_STOCK",
+                "country": "US",
+                "region": "North America",
+                "sector": "Industrials",
+                "industry": "Machinery",
+                "market_cap": 100.0,
+                "average_volume": 1_000_000,
+                "average_dollar_volume": 20_000_000,
+                "listing_date": "2020-01-01T00:00:00Z",
+                "source": "fixture",
+                "source_timestamp": "2024-12-30T00:00:00Z",
+                "available_at": "2024-12-30T00:00:00Z",
+            }
+        ]
+    ).to_csv(source, index=False)
+    return run_phase36(
+        source_path=source,
+        rules=UniverseRules(allowed_exchanges=("NYSE",)),
+        as_of=datetime.datetime(2024, 12, 31, tzinfo=datetime.UTC),
+        output_root=tmp_path / "universe_validation",
+        snapshot_root=tmp_path / "universe_snapshots",
+    ).snapshot_dir
+
+
 def test_value_run_is_reproducible_and_writes_governed_outputs(tmp_path: Path) -> None:
     registry_path, experiment = _registered(tmp_path)
+    universe_snapshot_dir = _governed_universe(tmp_path)
     kwargs = {
         "registry_path": registry_path,
         "experiment_id": experiment.experiment_id,
         "experiment_version": experiment.experiment_version,
         "output_root": tmp_path / "outputs",
+        "universe_snapshot_dir": universe_snapshot_dir,
     }
     first = run_value_experiment(**kwargs)
     second = run_value_experiment(**kwargs)
@@ -190,3 +262,31 @@ def test_value_run_is_reproducible_and_writes_governed_outputs(tmp_path: Path) -
     assert first.research_run["trade_decision"] == "NO_TRADE"
     assert first.research_run["live_execution_enabled"] is False
     assert first.research_run["composite_score_calculated"] is False
+    assert first.research_run["universe_governance"]["verified"] is True
+    assert first.research_run["universe_governance"]["snapshot_id"] == "universe-2024-12-31"
+    assert first.research_run["runtime_environment"]["python"]
+
+
+def test_value_run_fails_closed_with_audit_when_universe_does_not_match(
+    tmp_path: Path,
+) -> None:
+    registry_path, experiment = _registered(tmp_path)
+    universe_snapshot_dir = _governed_universe(tmp_path)
+    metadata_path = universe_snapshot_dir / "snapshot_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["as_of"] = "2024-12-30T00:00:00+00:00"
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+    with pytest.raises(DatasetVersionError, match="snapshot_id does not match"):
+        run_value_experiment(
+            registry_path=registry_path,
+            experiment_id=experiment.experiment_id,
+            experiment_version=experiment.experiment_version,
+            output_root=tmp_path / "outputs",
+            universe_snapshot_dir=universe_snapshot_dir,
+        )
+    audits = list((tmp_path / "outputs").glob("*_value_failed_*/value_governance_audit.json"))
+    assert len(audits) == 1
+    audit = json.loads(audits[0].read_text(encoding="utf-8"))
+    assert audit["status"] == "FAIL"
+    assert audit["trade_decision"] == "NO_TRADE"
+    assert audit["live_execution_enabled"] is False

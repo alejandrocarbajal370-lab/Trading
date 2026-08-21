@@ -261,6 +261,13 @@ def _evaluate_definition(
     if ev_rows and float(ev_rows[0]["value"]) <= 0:
         result = _fail("INVALID_DENOMINATOR", "enterprise_value must be positive")
         return {**base, **result, "warnings": json.dumps(result["warnings"])}
+    if definition.name == "ev_to_ebit" and denominator_value < 0:
+        result = _fail(
+            "WARNING",
+            "negative EBIT makes EV/EBIT economically uninterpretable",
+            warnings=["negative EBIT is operating stress context, not a normal value signal"],
+        )
+        return {**base, **result, "warnings": json.dumps(result["warnings"], sort_keys=True)}
     if denominator_value <= 0:
         result = _fail("INVALID_DENOMINATOR", f"{definition.denominator} must be positive")
         return {**base, **result, "warnings": json.dumps(result["warnings"])}
@@ -270,6 +277,18 @@ def _evaluate_definition(
     if definition.name == "fcf_yield" and numerator_value < 0:
         status, reason = "WARNING", "negative FCF is financial stress context, not a normal value signal"
         warnings.append("reported FCF may differ from maintenance-capex-adjusted owner earnings")
+    if definition.name == "earnings_yield" and numerator_value < 0:
+        status, reason = (
+            "WARNING",
+            "negative earnings are loss-making context, not a normal value signal",
+        )
+        warnings.append("earnings yield is not economically comparable while earnings are negative")
+    if definition.name == "ebit_yield" and numerator_value < 0:
+        status, reason = (
+            "WARNING",
+            "negative EBIT is operating stress context, not a normal value signal",
+        )
+        warnings.append("EBIT yield is not economically comparable while EBIT is negative")
     if definition.name == "ev_to_ebitda":
         warnings.append("secondary metric: EBITDA ignores capital intensity and depreciation economics")
     extreme = abs(value) > (1 if definition.unit == "ratio" else 100)
@@ -289,6 +308,8 @@ def evaluate_value_metrics(
     dataset_lineage: dict[str, Any],
     low_confidence_threshold: float = 0.7,
 ) -> ValueEvaluation:
+    if not math.isfinite(low_confidence_threshold) or not 0 <= low_confidence_threshold <= 1:
+        raise ValueError("low_confidence_threshold must be finite and between 0 and 1")
     missing = sorted(set(VALUE_CONTRACT.required_dataset_columns) - set(metrics.columns))
     if missing:
         raise ValueError(f"missing value input columns: {', '.join(missing)}")
@@ -303,8 +324,8 @@ def evaluate_value_metrics(
             if len(valuation_dates) != 1:
                 raise ValueError("valuation_as_of must be identical for all symbol inputs")
             as_of = datetime.date.fromisoformat(valuation_dates[0])
-        except ValueError as error:
-            raise ValueError(f"invalid fiscal_period_end for {symbol}") from error
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"invalid valuation_as_of for {symbol}: {error}") from error
         for definition in VALUE_CONTRACT.definitions:
             rows.append(_evaluate_definition(
                 definition, metrics=metrics, symbol=symbol, experiment_id=experiment_id,

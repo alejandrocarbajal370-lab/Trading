@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
+import platform
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -10,8 +12,13 @@ from typing import Any
 import pandas as pd
 
 from factors.value import VALUE_CONTRACT, evaluate_value_metrics
-from research.datasets import DatasetVersionError, VerifiedDataset, verify_dataset
-from research.registry import ResearchRegistry
+from research.datasets import (
+    DatasetVersionError,
+    VerifiedDataset,
+    verify_dataset,
+    verify_universe_snapshot,
+)
+from research.registry import ResearchExperiment, ResearchRegistry
 
 
 @dataclass(frozen=True)
@@ -28,6 +35,87 @@ def _write_immutable(path: Path, payload: str) -> None:
     if path.exists() and path.read_text(encoding="utf-8") != payload:
         raise RuntimeError(f"immutable research output differs: {path}")
     path.write_text(payload, encoding="utf-8")
+
+
+def _runtime_environment() -> dict[str, Any]:
+    packages = {}
+    for name in ("numpy", "pandas", "pydantic", "PyYAML"):
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = None
+    return {
+        "python": platform.python_version(),
+        "implementation": platform.python_implementation(),
+        "packages": packages,
+    }
+
+
+def _expected_universe_snapshot_id(as_of: str) -> str:
+    try:
+        snapshot_date = pd.Timestamp(as_of).date().isoformat()
+    except (TypeError, ValueError) as error:
+        raise DatasetVersionError("governed universe snapshot as_of is invalid") from error
+    return f"universe-{snapshot_date}"
+
+
+def _write_governance_failure_audit(
+    *,
+    output_root: Path,
+    experiment: ResearchExperiment,
+    universe_snapshot_dir: Path | None,
+    error: DatasetVersionError,
+) -> None:
+    audit = {
+        "schema_version": "value-governance-audit-v1",
+        "experiment_id": experiment.experiment_id,
+        "experiment_version": experiment.experiment_version,
+        "registered_universe_snapshot_id": experiment.universe_snapshot_id,
+        "registered_ruleset_version": experiment.ruleset_version,
+        "provided_universe_snapshot_dir": (
+            str(universe_snapshot_dir.resolve()) if universe_snapshot_dir is not None else None
+        ),
+        "status": "FAIL",
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "trade_decision": "NO_TRADE",
+        "live_execution_enabled": False,
+    }
+    digest = hashlib.sha256(_canonical_json(audit).encode()).hexdigest()[:12]
+    audit_dir = output_root / (
+        f"{experiment.experiment_id}_{experiment.experiment_version}_value_failed_{digest}"
+    )
+    audit_dir.mkdir(parents=True, exist_ok=True)
+    _write_immutable(
+        audit_dir / "value_governance_audit.json",
+        json.dumps(audit, indent=2, sort_keys=True) + "\n",
+    )
+
+
+def _fingerprint(
+    experiment: ResearchExperiment,
+    datasets: list[VerifiedDataset],
+    assumptions: tuple[str, ...],
+    universe_governance: dict[str, Any],
+    runtime_environment: dict[str, Any],
+) -> str:
+    document = {
+        "experiment": experiment.to_dict(),
+        "datasets": [
+            {
+                "dataset_id": item.registration.dataset_id,
+                "snapshot_id": item.registration.snapshot_id,
+                "sha256": item.observed_sha256,
+            }
+            for item in datasets
+        ],
+        "contract": VALUE_CONTRACT.model_dump(mode="json"),
+        "assumptions": assumptions,
+        "universe_governance": universe_governance,
+        "runtime_environment": runtime_environment,
+        "runner_version": "phase4.2-value-research-v1.1",
+    }
+    return hashlib.sha256(_canonical_json(document).encode()).hexdigest()
 
 
 def _find_financial_dataset(datasets: list[VerifiedDataset]) -> tuple[VerifiedDataset, pd.DataFrame]:
@@ -52,6 +140,7 @@ def run_value_experiment(
     mismatch_policy: str = "fail",
     low_confidence_threshold: float = 0.7,
     assumptions: tuple[str, ...] = (),
+    universe_snapshot_dir: Path | None = None,
 ) -> ValueResearchRunResult:
     experiment = ResearchRegistry(registry_path).get(experiment_id, experiment_version)
     verified: list[VerifiedDataset] = []
@@ -63,6 +152,29 @@ def run_value_experiment(
         verified.append(dataset)
         if warning:
             dataset_warnings.append(warning)
+    try:
+        if universe_snapshot_dir is None:
+            raise DatasetVersionError("governed universe snapshot is required for Value research")
+        universe = verify_universe_snapshot(universe_snapshot_dir)
+        universe_governance = universe.to_dict()
+        expected_snapshot_id = _expected_universe_snapshot_id(str(universe_governance["as_of"]))
+        universe_governance["snapshot_id"] = expected_snapshot_id
+        if expected_snapshot_id != experiment.universe_snapshot_id:
+            raise DatasetVersionError(
+                "governed universe snapshot_id does not match registered experiment snapshot_id"
+            )
+        if universe_governance["ruleset_version"] != experiment.ruleset_version:
+            raise DatasetVersionError(
+                "governed universe ruleset does not match registered experiment ruleset"
+            )
+    except DatasetVersionError as error:
+        _write_governance_failure_audit(
+            output_root=output_root,
+            experiment=experiment,
+            universe_snapshot_dir=universe_snapshot_dir,
+            error=error,
+        )
+        raise
     financial_dataset, frame = _find_financial_dataset(verified)
     dataset_lineage = {
         "dataset_id": financial_dataset.registration.dataset_id,
@@ -76,14 +188,10 @@ def run_value_experiment(
         dataset_lineage=dataset_lineage,
         low_confidence_threshold=low_confidence_threshold,
     )
-    fingerprint_document = {
-        "experiment": experiment.to_dict(),
-        "datasets": dataset_lineage,
-        "contract": VALUE_CONTRACT.model_dump(mode="json"),
-        "assumptions": assumptions,
-        "runner_version": "phase4.2-value-research-v1.0",
-    }
-    fingerprint = hashlib.sha256(_canonical_json(fingerprint_document).encode()).hexdigest()
+    runtime_environment = _runtime_environment()
+    fingerprint = _fingerprint(
+        experiment, verified, assumptions, universe_governance, runtime_environment
+    )
     run_id = f"{experiment.experiment_id}_{experiment.experiment_version}_value_{fingerprint[:12]}"
     output_dir = output_root / run_id
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +199,7 @@ def run_value_experiment(
     if dataset_warnings and health == "PASS":
         health = "WARNING"
     run = {
-        "schema_version": "value-research-run-v1",
+        "schema_version": "value-research-run-v1.1",
         "run_id": run_id,
         "reproducibility_fingerprint": fingerprint,
         "experiment_id": experiment.experiment_id,
@@ -99,6 +207,10 @@ def run_value_experiment(
         "hypothesis": VALUE_CONTRACT.hypothesis,
         "value_ruleset_version": VALUE_CONTRACT.version,
         "dataset_snapshot": dataset_lineage,
+        "universe_snapshot_id": experiment.universe_snapshot_id,
+        "ruleset_version": experiment.ruleset_version,
+        "universe_governance": universe_governance,
+        "runtime_environment": runtime_environment,
         "analysis_period": {"start": experiment.sample_start, "end": experiment.sample_end},
         "assumptions": list(assumptions),
         "health": health,
@@ -144,6 +256,7 @@ def main() -> None:
     parser.add_argument("--dataset-mismatch", choices=("fail", "warn"), default="fail")
     parser.add_argument("--low-confidence-threshold", type=float, default=0.7)
     parser.add_argument("--assumption", action="append", default=[])
+    parser.add_argument("--universe-snapshot-dir", required=True, type=Path)
     args = parser.parse_args()
     try:
         result = run_value_experiment(
@@ -154,6 +267,7 @@ def main() -> None:
             mismatch_policy=args.dataset_mismatch,
             low_confidence_threshold=args.low_confidence_threshold,
             assumptions=tuple(args.assumption),
+            universe_snapshot_dir=args.universe_snapshot_dir,
         )
     except DatasetVersionError as error:
         parser.error(str(error))
