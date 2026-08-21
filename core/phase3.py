@@ -37,13 +37,13 @@ def _update_audit(
     manifest_path = phase2.output_dir / "validation_manifest.json"
     summary = _read(summary_path)
     manifest = _read(manifest_path)
-    overall_status = (
-        "FAIL"
-        if financial_status == "FAIL"
-        else "WARNING"
-        if "WARNING" in {financial_status, quality_status}
-        else "PASS"
-    )
+    statuses = {financial_status, quality_status}
+    if "FAIL" in statuses:
+        overall_status = "FAIL"
+    elif "WARNING" in statuses:
+        overall_status = "WARNING"
+    else:
+        overall_status = "PASS"
     summary.update(
         {
             "financial_health": financial_status,
@@ -60,12 +60,11 @@ def _update_audit(
     checks["live_execution"] = "DISABLED"
     checks["trade_decision"] = "NO_TRADE"
     manifest["overall_status"] = overall_status
-    warning_checks = sum(
+    manifest["warnings"] = sum(
         check == "WARNING" for check in (financial_status, quality_status)
     )
-    manifest["warnings"] = int(manifest.get("warnings", 0)) + warning_checks
-    manifest["critical_errors"] = int(manifest.get("critical_errors", 0)) + (
-        1 if financial_status == "FAIL" else 0
+    manifest["critical_errors"] = sum(
+        check == "FAIL" for check in (financial_status, quality_status)
     )
     if error is not None:
         details = {"error_type": type(error).__name__, "error_message": str(error)}
