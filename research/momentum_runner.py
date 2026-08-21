@@ -172,7 +172,7 @@ def run_momentum_experiment(
         "assumptions": assumptions,
         "universe_governance": universe_governance,
         "runtime_environment": runtime,
-        "runner_version": "phase4.3-momentum-v1.0",
+        "runner_version": "phase4.3-momentum-v1.1",
     }
     fingerprint = hashlib.sha256(_canonical_json(fingerprint_document).encode()).hexdigest()
     run_id = (
@@ -209,7 +209,7 @@ def run_momentum_experiment(
             "momentum_lineage": "momentum_lineage.json",
             "momentum_validation_report": "momentum_validation_report.json",
         },
-        "market_data_audit_completed": False,
+        "market_data_audit_completed": True,
         "composite_score_calculated": False,
         "ranking_calculated": False,
         "qvm_calculated": False,

@@ -8,6 +8,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.phase36 import run_phase36
+from data.market_calendar import get_trading_calendar
 from factors.momentum import MOMENTUM_CONTRACT, MomentumFactorContract, evaluate_momentum_metrics
 from research.datasets import file_sha256
 from research.momentum_runner import run_momentum_experiment
@@ -18,7 +19,9 @@ AS_OF = datetime.date(2025, 1, 31)
 
 
 def _prices() -> pd.DataFrame:
-    dates = pd.bdate_range("2023-12-20", AS_OF)
+    dates = pd.to_datetime(
+        get_trading_calendar("XNYS").sessions(datetime.date(2023, 12, 20), AS_OF)
+    )
     rows = []
     for symbol, daily_growth in (("AAA", 0.001), ("SPY", 0.0004)):
         for index, date in enumerate(dates):
@@ -26,7 +29,8 @@ def _prices() -> pd.DataFrame:
                 {
                     "symbol": symbol,
                     "date": date.date().isoformat(),
-                    "close": 100.0 * (1 + daily_growth) ** index,
+                    "adjusted_close": 100.0 * (1 + daily_growth) ** index,
+                    "raw_close": 100.0 * (1 + daily_growth) ** index,
                     "currency": "USD",
                     "available_at": f"{date.date().isoformat()}T22:00:00+00:00",
                     "confidence": 0.95,
@@ -35,6 +39,7 @@ def _prices() -> pd.DataFrame:
                     "corporate_action_status": "NONE",
                     "trading_calendar": "XNYS",
                     "session_status": "PRESENT",
+                    "timing_policy": "EOD_CLOSE_T_PLUS_0",
                 }
             )
     return pd.DataFrame(rows)
@@ -66,10 +71,8 @@ def test_individual_metrics_are_calculated_without_score_or_ranking() -> None:
 
 def test_12_1_excludes_last_month() -> None:
     frame = _prices()
-    mask = (frame["symbol"] == "AAA") & (
-        pd.to_datetime(frame["date"]).dt.date > AS_OF - datetime.timedelta(days=30)
-    )
-    frame.loc[mask, "close"] *= 10
+    aaa_tail = frame.index[frame["symbol"] == "AAA"][-21:]
+    frame.loc[aaa_tail, "adjusted_close"] *= 10
     assert _evaluate(frame).metrics.set_index("metric").loc[
         "momentum_12_1", "value"
     ] == pytest.approx(_evaluate().metrics.set_index("metric").loc["momentum_12_1", "value"])
@@ -77,8 +80,8 @@ def test_12_1_excludes_last_month() -> None:
 
 def test_relative_strength_uses_configured_benchmark() -> None:
     frame = _prices()
-    frame.loc[frame["symbol"] == "SPY", "close"] = (
-        frame.loc[frame["symbol"] == "SPY", "close"].iloc[::-1].to_numpy()
+    frame.loc[frame["symbol"] == "SPY", "adjusted_close"] = (
+        frame.loc[frame["symbol"] == "SPY", "adjusted_close"].iloc[::-1].to_numpy()
     )
     assert _evaluate(frame).metrics.set_index("metric").loc["relative_strength_6m", "value"] > 0
 
@@ -95,8 +98,8 @@ def test_missing_benchmark_fails_closed() -> None:
     [
         (lambda f: f.assign(available_at="2025-02-01T00:00:00+00:00"), "PIT_VIOLATION", "PIT"),
         (lambda f: f.assign(date="2025-02-01"), "INVALID_DATA", "future"),
-        (lambda f: f.assign(close=np.nan), "INVALID_DATA", "missing prices"),
-        (lambda f: f.assign(close=0.0), "INVALID_DATA", "denominator"),
+        (lambda f: f.assign(adjusted_close=np.nan), "INVALID_DATA", "missing adjusted"),
+        (lambda f: f.assign(adjusted_close=0.0), "INVALID_DATA", "log transformation"),
         (lambda f: f.assign(session_status="MISSING"), "INVALID_DATA", "gaps"),
     ],
 )
@@ -111,7 +114,7 @@ def test_market_data_violations_fail_closed(mutation, expected_status: str, reas
 
 def test_zero_volatility_is_not_computed() -> None:
     frame = _prices()
-    frame.loc[frame["symbol"] == "AAA", "close"] = 100.0
+    frame.loc[frame["symbol"] == "AAA", "adjusted_close"] = 100.0
     row = _evaluate(frame).metrics.set_index("metric").loc["volatility_adjusted_momentum_12_1"]
     assert row["status"] == "NOT_COMPUTED"
     assert "volatility" in row["reason"]
@@ -127,20 +130,93 @@ def test_governance_fields_are_required(column: str, status: str) -> None:
     assert _evaluate(frame).metrics.iloc[0]["status"] == status
 
 
-def test_unadjusted_prices_surface_corporate_action_warning() -> None:
+def test_unadjusted_prices_are_rejected() -> None:
     frame = _prices()
     mask = frame["symbol"] == "AAA"
     frame.loc[mask, "price_basis"] = "UNADJUSTED"
-    frame.loc[mask, "corporate_action_status"] = "UNKNOWN"
+    frame.loc[mask, "corporate_action_status"] = "NONE"
     result = _evaluate(frame).metrics
-    assert set(result["status"]) == {"WARNING"}
-    assert result.iloc[0]["warnings"] != "[]"
+    assert set(result["status"]) == {"INVALID_DATA"}
+    assert "unadjusted" in result.iloc[0]["reason"]
 
 
 def test_stale_prices_fail_closed() -> None:
     frame = _prices()
     frame = frame[pd.to_datetime(frame["date"]).dt.date <= AS_OF - datetime.timedelta(days=10)]
     assert set(_evaluate(frame).metrics["status"]) == {"STALE_PRICE"}
+
+
+def test_missing_expected_session_is_detected_without_self_reported_gap() -> None:
+    frame = _prices()
+    missing_date = datetime.date(2025, 1, 15)
+    frame = frame[~((frame["symbol"] == "AAA") & (frame["date"] == missing_date.isoformat()))]
+    result = _evaluate(frame).metrics
+    assert set(result["status"]) == {"INVALID_DATA"}
+    assert "missing expected market sessions" in result.iloc[0]["reason"]
+
+
+@pytest.mark.parametrize("column", ["trading_calendar", "timing_policy", "price_basis"])
+def test_benchmark_compatibility_mismatch_fails_closed(column: str) -> None:
+    frame = _prices()
+    values = {"trading_calendar": "XLON", "timing_policy": "NEXT_OPEN", "price_basis": "UNADJUSTED"}
+    frame.loc[frame["symbol"] == "SPY", column] = values[column]
+    row = _evaluate(frame).metrics.set_index("metric").loc["relative_strength_6m"]
+    assert row["status"] == "INVALID_DATA"
+    assert "benchmark" in row["reason"]
+
+
+def test_log_transformation_and_session_window_are_explicit_and_correct() -> None:
+    frame = _prices()
+    aaa = frame[frame["symbol"] == "AAA"].reset_index(drop=True)
+    expected = aaa.iloc[-1]["adjusted_close"] / aaa.iloc[-127]["adjusted_close"] - 1
+    evaluation = _evaluate(frame)
+    row = evaluation.metrics.set_index("metric").loc["momentum_6m"]
+    assert row["value"] == pytest.approx(expected)
+    lineage = json.loads(row["lineage"])
+    assert lineage["transformation"] == {
+        "input_price": "adjusted_close",
+        "transform": "natural_log",
+        "formula": "log_price_t = ln(adjusted_close_t)",
+        "version": "log-price-v1",
+    }
+
+
+def test_split_and_dividend_adjustment_lineage_is_preserved() -> None:
+    frame = _prices()
+    affected = (frame["symbol"] == "AAA") & (frame["date"] == "2024-08-01")
+    frame["corporate_action_type"] = None
+    frame["adjustment_factor"] = 1.0
+    frame.loc[affected, "corporate_action_status"] = "APPLIED"
+    frame.loc[affected, "corporate_action_type"] = "SPLIT_AND_DIVIDEND"
+    frame.loc[affected, "adjustment_factor"] = 0.5
+    frame.loc[affected, "raw_close"] = frame.loc[affected, "adjusted_close"] / 0.5
+    result = _evaluate(frame)
+    assert result.health["status"] == "PASS"
+    lineage = json.loads(result.metrics.iloc[0]["lineage"])
+    assert lineage["corporate_actions"] == ["SPLIT_AND_DIVIDEND"]
+
+
+def test_corporate_action_adjustment_must_reconcile_to_raw_close() -> None:
+    frame = _prices()
+    affected = (frame["symbol"] == "AAA") & (frame["date"] == "2024-08-01")
+    frame["corporate_action_type"] = None
+    frame["adjustment_factor"] = 1.0
+    frame.loc[affected, "corporate_action_status"] = "APPLIED"
+    frame.loc[affected, "corporate_action_type"] = "SPLIT"
+    frame.loc[affected, "adjustment_factor"] = 0.5
+    result = _evaluate(frame).metrics
+    assert set(result["status"]) == {"INVALID_DATA"}
+    assert "does not reconcile" in result.iloc[0]["reason"]
+
+
+def test_golden_adjusted_market_data_to_momentum_is_fail_closed_and_interpretable() -> None:
+    evaluation = _evaluate()
+    assert evaluation.health["status"] == "PASS"
+    assert evaluation.validation_report["checks"]["market_data_audit"] == "completed"
+    assert set(evaluation.metrics["price_basis"]) == {"ADJUSTED"}
+    assert set(evaluation.metrics["unit"]) == {"return", "return_per_volatility", "r_squared"}
+    assert evaluation.health["trade_decision"] == "NO_TRADE"
+    assert evaluation.health["live_execution_enabled"] is False
 
 
 def test_contract_is_fail_closed_and_benchmark_configurable() -> None:
@@ -257,4 +333,4 @@ def test_runner_is_reproducible_and_writes_required_outputs(tmp_path: Path) -> N
     assert run["portfolio_constructed"] is False
     assert run["backtest_executed"] is False
     assert run["signals_generated"] is False
-    assert run["market_data_audit_completed"] is False
+    assert run["market_data_audit_completed"] is True

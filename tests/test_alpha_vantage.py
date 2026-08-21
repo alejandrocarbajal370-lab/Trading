@@ -53,6 +53,8 @@ def test_fetch_maps_provider_payload_to_price_contract() -> None:
         }
     ]
     assert "apikey=test-key" in str(seen["url"])
+    assert "function=TIME_SERIES_DAILY_ADJUSTED" in str(seen["url"])
+    assert "outputsize=full" in str(seen["url"])
     assert seen["timeout"] == 3
 
 
@@ -100,3 +102,19 @@ def test_environment_api_key_is_required(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
     with pytest.raises(PriceSourceConfigurationError, match="ALPHA_VANTAGE_API_KEY"):
         AlphaVantagePriceSource.from_env()
+
+
+def test_fetch_history_maps_adjusted_price_and_corporate_action_lineage() -> None:
+    payload = json.loads(Path("tests/fixtures/alpha_vantage_daily.json").read_text())
+    source = AlphaVantagePriceSource(
+        api_key="test-key", opener=lambda *_args, **_kwargs: FakeResponse(payload)
+    )
+    row = source.fetch_history(symbols={"AAPL"}, as_of=datetime.date(2026, 8, 19)).iloc[0]
+    assert row["adjusted_close"] == 231.5
+    assert row["raw_close"] == 232.75
+    assert row["price_basis"] == "ADJUSTED"
+    assert row["corporate_action_status"] == "APPLIED"
+    assert row["corporate_action_type"] == "DIVIDEND"
+    assert json.loads(row["input_lineage"])[0]["provider_function"] == (
+        "TIME_SERIES_DAILY_ADJUSTED"
+    )

@@ -63,11 +63,12 @@ The command writes `ingested_prices.csv`, `data_health.json`, `run_summary.json`
 
 ## Phase 1 EOD provider
 
-Alpha Vantage is the V1 real-data adapter because its documented `TIME_SERIES_DAILY` endpoint
-provides the required daily OHLCV fields through a small API-key-authenticated HTTP interface.
+Alpha Vantage is the V1 real-data adapter. The hardened history path uses
+`TIME_SERIES_DAILY_ADJUSTED` with `outputsize=full` and retains both raw and adjusted closes plus
+provider split/dividend fields and lineage.
 The adapter is isolated behind `PriceSource`, while CSV remains the deterministic source for
-tests, fixtures, and offline validation. Phase 1 uses unadjusted daily prices intentionally;
-corporate-action adjustment policy remains outside this minimal ingest phase.
+tests, fixtures, and offline validation. Momentum accepts only provider-adjusted prices; raw prices
+remain auxiliary audit data and cannot drive Momentum metrics.
 
 Copy `.env.example` to your local environment configuration and set the value without committing
 it, or export the credential directly:
@@ -324,7 +325,7 @@ factor health.
 V1.1 limitations are intentional: it does not calculate sector rankings, annualize partial periods, impute
 missing facts, select thresholds, assign weights, calculate a composite score or rank, evaluate
 forward returns, construct a portfolio, run a complete backtest, connect a broker, or execute.
-Value and Momentum remain unimplemented. Every output stays `NO_TRADE` and
+Value and Momentum remain outside this Quality phase. Every output stays `NO_TRADE` and
 `live_execution_enabled: false`.
 
 ## Phase 4.2 Value Factor Engine V1
@@ -343,6 +344,20 @@ The engine does not calculate a composite score, ranking, portfolio, or trade. O
 and Quality linkage are explicitly reserved for future work. See
 [`research/VALUE_VALIDATION.md`](research/VALUE_VALIDATION.md) for contracts, limitations, and output
 definitions. Every Value run preserves `NO_TRADE` and `live_execution_enabled=false`.
+
+## Phase 4.3 Momentum Factor Engine V1.1
+
+Phase 4.3 calculates research-only 12-1, six-month, relative-strength,
+volatility-adjusted, and trend-stability observations from adjusted prices. Windows use market
+sessions (252/21 and 126), volatility uses daily log returns and calendar-configured annualization,
+and expected sessions are compared with observed sessions. Corporate actions, staleness, PIT,
+confidence, lineage, and asset/benchmark basis, calendar, and timing compatibility fail closed.
+
+The runner writes `momentum_metrics.csv`, `momentum_health.json`, `momentum_lineage.json`, and
+`momentum_validation_report.json`. See
+[`research/MOMENTUM_VALIDATION.md`](research/MOMENTUM_VALIDATION.md) for the completed market-data
+audit and remaining safety boundary. No score, rank, QVM, portfolio, backtest, signal, or execution
+is produced; `NO_TRADE` and `live_execution_enabled=false` remain mandatory.
 
 ## Safety
 
