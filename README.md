@@ -364,6 +364,22 @@ The runner writes `momentum_metrics.csv`, `momentum_health.json`, `momentum_line
 audit and remaining safety boundary. No score, rank, QVM, portfolio, backtest, signal, or execution
 is produced; `NO_TRADE` and `live_execution_enabled=false` remain mandatory.
 
+### Phase 5.5.2 — FX and currency governance
+
+`data/fx.py` defines a provider-neutral, typed FX dataset boundary with distinct market and
+availability timestamps. Snapshots and conversions are point-in-time validated, content-addressed
+with a canonical checksum, staleness checked, and linked to their upstream lineage. The versioned
+`fx-weekday-sessions-utc-v1` policy counts Monday-Friday UTC dates after a fixing through the
+reference date and deliberately infers no holiday calendar; its session limit and reciprocal-rate
+tolerance are stored with dataset metadata. The selected fixing is checked again at conversion
+time, and simultaneous direct/inverse rates must reconcile within that governed tolerance.
+Historical
+conversion selects only a rate whose market timestamp is no later than the requested historical
+instant and whose availability timestamp is no later than the research cutoff; ambiguity or missing
+currency fails closed. Identity conversion is explicitly marked and carries no synthetic fixing
+timestamp or FX lineage. This layer creates no scores, rankings, weights, signals, portfolios,
+backtests, or execution behavior. `NO_TRADE` remains active and `live_execution_enabled=false`.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
