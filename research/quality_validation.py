@@ -167,14 +167,15 @@ def _coverage_by_group(
 def _distribution(rows: pd.DataFrame, *, metric: str) -> dict[str, Any]:
     valid = rows[rows["status"].eq("PASS")].copy()
     valid["numeric_value"] = pd.to_numeric(valid["value"], errors="coerce")
-    valid = valid[
-        valid["numeric_value"].map(
-            lambda value: math.isfinite(float(value)) if pd.notna(value) else False
-        )
-    ]
-    values = valid["numeric_value"]
-    if values.empty:
+    if valid.empty:
         return {"metric": metric, "count": 0, "percentiles": {}, "outliers": []}
+    finite_mask = valid["numeric_value"].map(
+        lambda value: math.isfinite(float(value)) if pd.notna(value) else False
+    )
+    valid = valid.loc[finite_mask].copy()
+    if valid.empty:
+        return {"metric": metric, "count": 0, "percentiles": {}, "outliers": []}
+    values = valid["numeric_value"]
     quantiles = values.quantile([0.10, 0.25, 0.50, 0.75, 0.90])
     q1 = float(quantiles.loc[0.25])
     q3 = float(quantiles.loc[0.75])
@@ -297,6 +298,9 @@ def build_quality_validation_report(
     quality = _normalize_symbol(quality_metrics)
     universe = _normalize_symbol(universe_membership)
     eligible = _eligible_universe(universe)
+    eligible_symbols = set(eligible["symbol"])
+    quality_eligible = quality[quality["symbol"].isin(eligible_symbols)].copy()
+    quality_symbols_outside_universe = sorted(set(quality["symbol"]) - eligible_symbols)
     invalid_quality_lineage = int((~quality["lineage"].map(_valid_json_lineage)).sum())
     invalid_universe_lineage = int((~universe["lineage"].map(_valid_json_lineage)).sum())
     pit_mask = (
@@ -315,7 +319,7 @@ def build_quality_validation_report(
         _metric_coverage(quality, eligible, metric=metric) for metric in CORE_QUALITY_METRICS
     ]
     distributions = [
-        _distribution(quality[quality["metric"] == metric], metric=metric)
+        _distribution(quality_eligible[quality_eligible["metric"] == metric], metric=metric)
         for metric in CORE_QUALITY_METRICS
     ]
     coverage_by_sector = [
@@ -330,7 +334,7 @@ def build_quality_validation_report(
     ]
     availability = _availability(quality, eligible)
     financial = financial_metrics if financial_metrics is not None else pd.DataFrame()
-    trends = _trend_rows(financial, set(eligible["symbol"]))
+    trends = _trend_rows(financial, eligible_symbols)
     warnings: list[str] = []
     for item in coverage:
         if item["pass_coverage"] < minimum_pass_coverage:
@@ -347,6 +351,10 @@ def build_quality_validation_report(
         warnings.append(f"{unavailable} eligible universe members lack passing Quality coverage")
     if outlier_count:
         warnings.append(f"{outlier_count} descriptive Quality outliers require review")
+    if quality_symbols_outside_universe:
+        warnings.append(
+            f"{len(quality_symbols_outside_universe)} Quality symbols are outside the eligible universe"
+        )
     failures: list[str] = []
     if eligible.empty:
         failures.append("eligible universe is empty")
@@ -364,7 +372,8 @@ def build_quality_validation_report(
         "dataset_snapshot_id": dataset_snapshot_id,
         "health": health,
         "eligible_universe_size": len(eligible),
-        "quality_symbols_observed": int(quality["symbol"].nunique()),
+        "quality_symbols_observed": int(quality_eligible["symbol"].nunique()),
+        "quality_symbols_outside_eligible_universe": quality_symbols_outside_universe,
         "minimum_pass_coverage": minimum_pass_coverage,
         "coverage": coverage,
         "coverage_by_sector": coverage_by_sector,
