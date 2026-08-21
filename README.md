@@ -220,6 +220,43 @@ This writes an auditable run under `validation_outputs/<run_id>/` and an immutab
 `factors/contracts.py`; they contain required observations and lineage only, with no factor
 calculation, score, rank, signal, or portfolio behavior.
 
+## Phase 4.0 research environment foundation
+
+Phase 4.0 turns a research idea into a governed, reproducible record before any QVM implementation.
+Each registry entry identifies the hypothesis and experiment version, creation and preregistration
+times, governed universe snapshot and ruleset, analysis period, metrics to evaluate, expected and
+observed results, `KEEP`/`DISCARD`/`REVIEW` decision, immutable dataset snapshots, checksums, and
+complete lineage. Existing legacy preregistrations remain readable, but Phase 4 execution requires
+the complete contract and a `REGISTERED` or `READY` state.
+
+Every dataset is identified by a logical dataset ID, snapshot ID, SHA-256 digest, path, and lineage.
+The runner verifies the bytes before use. A mismatch fails by default so revised data cannot silently
+change an experiment; an explicit `--dataset-mismatch warn` policy records the mismatch and degrades
+health to `WARNING`.
+
+Run a registered experiment reproducibly with:
+
+```bash
+research-run \
+  --registry research/registry.jsonl \
+  --experiment-id foundation-001 \
+  --experiment-version 1.0
+```
+
+The command writes an immutable `research_config.json` and `research_run.json` beneath
+`research_outputs/<experiment>_<version>_<fingerprint>/`. The run records base dataset metrics,
+warnings/errors, health, expected versus observed result, decision, and lineage. Its fingerprint is
+derived only from the registered experiment, exact dataset bytes, and runner version, so identical
+inputs produce identical content and the same output location.
+
+The factor research framework in `research/contracts.py` defines future input, output, metric, and
+evaluation boundaries only. To promote a hypothesis later, researchers must preregister it, freeze
+the governed universe and datasets, reproduce the foundation run, implement a factor in a separately
+authorized phase, evaluate the preregistered metrics out of sample, record the observed result, and
+make an explicit `KEEP`, `DISCARD`, or `REVIEW` decision. Phase 4.0 itself performs no Quality,
+Value, Momentum, score, rank, portfolio, backtest, broker, order, or execution calculation. Every
+research run remains `NO_TRADE` with `live_execution_enabled: false`.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
