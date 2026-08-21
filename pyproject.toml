@@ -25,6 +25,7 @@ dev = [
 phase0-validate = "core.phase0:main"
 universe-validate = "core.phase36:main"
 research-run = "research.runner:main"
+quality-research-run = "research.quality_runner:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
