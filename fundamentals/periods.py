@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 import pandas as pd
 
 
@@ -16,6 +19,21 @@ def classify_period(start: object, end: object, period_type: str) -> str:
     if 350 <= days <= 380:
         return "fy"
     return "ytd"
+
+
+def _fact_identity(row: pd.Series) -> dict[str, str]:
+    fields = {
+        "symbol": str(row["symbol"]),
+        "metric": str(row["metric"]),
+        "unit": str(row["unit"]),
+        "fiscal_period_start": str(row["fiscal_period_start"]),
+        "fiscal_period_end": str(row["fiscal_period_end"]),
+        "filed_at": pd.Timestamp(row["filed_at"]).isoformat(),
+        "available_at": pd.Timestamp(row["available_at"]).isoformat(),
+        "source": str(row["source"]),
+    }
+    payload = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    return {"fact_id": hashlib.sha256(payload.encode()).hexdigest(), **fields}
 
 
 def assemble_ttm(quarterly: pd.DataFrame, *, cutoff: pd.Timestamp) -> pd.DataFrame:
@@ -53,7 +71,7 @@ def assemble_ttm(quarterly: pd.DataFrame, *, cutoff: pd.Timestamp) -> pd.DataFra
             filed_at=group["filed_at"].max(),
             available_at=group["available_at"].max(),
             source="ttm_assembly",
-            component_lineage=group.index.astype(str).tolist(),
+            component_lineage=[_fact_identity(component) for _, component in group.iterrows()],
         )
         rows.append(row)
     return pd.DataFrame(rows)
