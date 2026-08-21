@@ -121,6 +121,8 @@ def test_golden_research_pipeline_is_auditable_and_non_trading(tmp_path: Path) -
         output_root=tmp_path / "research_validation",
         minimum_pass_coverage=0.0,
     )
+    coverage = {item["metric"]: item for item in validation.report["coverage"]}
+    assert coverage["accrual_quality"]["passing_symbols"] == 1
     assert validation.report["pit_violations"] == 0
     assert validation.report["trade_decision"] == "NO_TRADE"
     assert validation.report["live_execution_enabled"] is False
