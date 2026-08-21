@@ -2,69 +2,38 @@ from __future__ import annotations
 
 import pandas as pd
 
-from fundamentals.formulas import ratio
+from fundamentals.financial_engine import calculate_financial_metrics
 
 QUALITY_COLUMNS = ["symbol", "fiscal_period_end", "check", "value", "status", "warning"]
 
 
 def evaluate_accounting_quality(snapshot: pd.DataFrame) -> pd.DataFrame:
-    """Diagnostic accounting checks only; outputs are not investment signals."""
+    """Diagnostic accounting checks derived with the same period/unit rules as Phase 3."""
+    metrics = calculate_financial_metrics(snapshot)
     rows: list[dict[str, object]] = []
-    for (symbol, period_end), group in snapshot.groupby(["symbol", "fiscal_period_end"]):
-        values = group.set_index("metric")["value"].to_dict()
-        if not {"cash_from_operations", "net_income"} <= values.keys():
+    specifications = {
+        "cfo_to_net_income": ("cfo_to_net_income", lambda value: value < 0.5, "weak cash conversion (<0.5)"),
+        "accrual_ratio": ("accrual_ratio", lambda value: value > 0.1, "high positive accruals (>0.1)"),
+    }
+    for source_metric, (check, warning_rule, warning_text) in specifications.items():
+        selected = metrics.loc[metrics["metric"] == source_metric]
+        if selected.empty:
+            continue
+        for row in selected.itertuples(index=False):
+            status = str(row.status)
+            warning = row.reason
+            value = None if pd.isna(row.value) else float(row.value)
+            if status == "PASS" and value is not None and warning_rule(value):
+                status = "WARNING"
+                warning = warning_text
             rows.append(
                 {
-                    "symbol": symbol,
-                    "fiscal_period_end": period_end,
-                    "check": "cfo_to_net_income",
-                    "value": None,
-                    "status": "MISSING",
-                    "warning": "requires cash_from_operations and net_income",
-                }
-            )
-        else:
-            result = ratio(
-                values["cash_from_operations"], values["net_income"], denominator_name="net_income"
-            )
-            warning = result.value is not None and result.value < 0.5
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "fiscal_period_end": period_end,
-                    "check": "cfo_to_net_income",
-                    "value": result.value,
-                    "status": "WARNING" if warning else result.status,
-                    "warning": "weak cash conversion (<0.5)" if warning else result.reason,
-                }
-            )
-        required = {"net_income", "cash_from_operations", "total_assets"}
-        if not required <= values.keys():
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "fiscal_period_end": period_end,
-                    "check": "accrual_ratio",
-                    "value": None,
-                    "status": "MISSING",
-                    "warning": "requires net_income, cash_from_operations, and total_assets",
-                }
-            )
-        else:
-            result = ratio(
-                values["net_income"] - values["cash_from_operations"],
-                values["total_assets"],
-                denominator_name="total_assets",
-            )
-            warning = result.value is not None and result.value > 0.1
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "fiscal_period_end": period_end,
-                    "check": "accrual_ratio",
-                    "value": result.value,
-                    "status": "WARNING" if warning else result.status,
-                    "warning": "high positive accruals (>0.1)" if warning else result.reason,
+                    "symbol": row.symbol,
+                    "fiscal_period_end": row.fiscal_period_end,
+                    "check": check,
+                    "value": value,
+                    "status": status,
+                    "warning": warning,
                 }
             )
     return pd.DataFrame(rows, columns=QUALITY_COLUMNS)
@@ -75,10 +44,18 @@ def accounting_quality_health(checks: pd.DataFrame) -> dict[str, object]:
     invalid = (
         int(checks["status"].isin(["MISSING", "NOT_COMPUTED"]).sum()) if not checks.empty else 0
     )
+    failures = int(checks["status"].eq("FAIL").sum()) if not checks.empty else 0
+    if checks.empty or failures:
+        status = "FAIL"
+    elif warnings or invalid:
+        status = "WARNING"
+    else:
+        status = "PASS"
     return {
-        "status": "WARNING" if warnings or invalid else "PASS",
+        "status": status,
         "checks": len(checks),
         "warnings": warnings,
         "invalid": invalid,
+        "failures": failures,
         "is_investment_signal": False,
     }
