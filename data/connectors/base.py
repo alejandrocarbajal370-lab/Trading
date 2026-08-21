@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import datetime
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
 
+@runtime_checkable
 class PriceSource(Protocol):
     """Contract implemented by all end-of-day price sources."""
 
@@ -13,6 +14,19 @@ class PriceSource(Protocol):
     def name(self) -> str: ...
 
     def fetch(self, *, symbols: set[str], data_date: datetime.date) -> pd.DataFrame: ...
+
+
+@runtime_checkable
+class MomentumHistoricalPriceSource(Protocol):
+    """Independent contract for adjusted history used by Momentum research."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def metadata(self) -> dict[str, str]: ...
+
+    def fetch_history(self, *, symbols: set[str], as_of: datetime.date) -> pd.DataFrame: ...
 
 
 class PriceSourceError(RuntimeError):
