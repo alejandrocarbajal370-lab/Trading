@@ -162,6 +162,55 @@ def test_distribution_flags_descriptive_outlier() -> None:
     assert any(item["symbol"] == "X5" for item in roic["outliers"])
 
 
+def test_quality_symbol_outside_eligible_universe_does_not_contaminate_distribution() -> None:
+    quality = pd.concat(
+        [
+            _quality(),
+            pd.DataFrame(
+                [
+                    {
+                        "symbol": "OUT",
+                        "metric": "roic",
+                        "value": 99.0,
+                        "status": "PASS",
+                        "reason": None,
+                        "lineage": _lineage(),
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    report, _ = build_quality_validation_report(
+        quality,
+        _universe(),
+        experiment_id="quality-validation-001",
+        universe_snapshot_id="universe-2024",
+        dataset_snapshot_id="financial-2024",
+        minimum_pass_coverage=0.0,
+    )
+    roic = next(item for item in report["distributions"] if item["metric"] == "roic")
+    assert roic["max"] == pytest.approx(0.20)
+    assert report["quality_symbols_outside_eligible_universe"] == ["OUT"]
+    assert any("outside the eligible universe" in item for item in report["warnings"])
+
+
+def test_empty_eligible_universe_is_a_fail() -> None:
+    universe = _universe().copy()
+    universe["eligibility_status"] = "EXCLUDED"
+    universe["exclusion_reason"] = "test_exclusion"
+    report, _ = build_quality_validation_report(
+        _quality(),
+        universe,
+        experiment_id="quality-validation-001",
+        universe_snapshot_id="universe-2024",
+        dataset_snapshot_id="financial-2024",
+        minimum_pass_coverage=0.0,
+    )
+    assert report["health"] == "FAIL"
+    assert "eligible universe is empty" in report["failures"]
+
+
 def test_trends_are_descriptive_and_preserve_direction() -> None:
     report, trends = build_quality_validation_report(
         _quality(),
