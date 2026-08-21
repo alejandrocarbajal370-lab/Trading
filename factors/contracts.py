@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import datetime
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ContractModel(BaseModel):
@@ -20,13 +20,19 @@ class MetricObservation(ContractModel):
     value: float
     as_of: datetime.date
     available_at: datetime.datetime
-    source: str
-    unit: str
+    source: str = Field(min_length=1)
+    unit: str = Field(min_length=1)
     period_kind: Literal["quarterly", "fy", "ytd", "ttm", "instant", "ratio"]
     status: Literal["PASS", "WARNING", "LOW_CONFIDENCE"] = "PASS"
     reason: str | None = None
     confidence: float = Field(ge=0, le=1)
-    lineage: tuple[str, ...]
+    lineage: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def require_timezone(self) -> Self:
+        if self.available_at.tzinfo is None or self.available_at.utcoffset() is None:
+            raise ValueError("available_at must be timezone-aware")
+        return self
 
 
 class QualityFactorInputs(ContractModel):
@@ -50,7 +56,8 @@ class ValueFactorInputs(ContractModel):
     ebitda_ttm: MetricObservation
     earnings_ttm: MetricObservation
 
-    def validate_valuation_compatibility(self) -> None:
+    @model_validator(mode="after")
+    def validate_valuation_compatibility(self) -> Self:
         monetary = (
             self.market_cap,
             self.enterprise_value,
@@ -66,8 +73,10 @@ class ValueFactorInputs(ContractModel):
                 raise ValueError("Value flow inputs must be TTM")
         if self.market_cap.period_kind != "instant" or self.enterprise_value.period_kind != "instant":
             raise ValueError("Value market-cap and enterprise-value inputs must be instant")
-        if any(item.available_at > datetime.datetime.combine(self.as_of, datetime.time.max, tzinfo=datetime.UTC) for item in monetary):
+        cutoff = datetime.datetime.combine(self.as_of, datetime.time.max, tzinfo=datetime.UTC)
+        if any(item.available_at.astimezone(datetime.UTC) > cutoff for item in monetary):
             raise ValueError("Value inputs cannot be available after as_of")
+        return self
 
 
 class PriceObservation(ContractModel):
