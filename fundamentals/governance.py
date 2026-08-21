@@ -27,6 +27,7 @@ ACCOUNTING_REQUIRED_COLUMNS = (
     "supersedes_revision",
 )
 ECONOMIC_FACT_KEY = ("entity", "metric", "fiscal_period", "period_end")
+RESTATEMENT_INVARIANTS = (*ECONOMIC_FACT_KEY, "unit")
 
 
 class AccountingGovernanceError(ValueError):
@@ -136,9 +137,11 @@ class AccountingDataset:
         """Return only the last revision known at cutoff for each economic fact."""
         _require_aware("cutoff", cutoff)
         cutoff_utc = pd.Timestamp(cutoff).tz_convert("UTC")
+        # PIT selection is driven by when information became known, not by the
+        # provider's revision counter or the incoming row order.
         eligible = self.frame.loc[self.frame["available_at"] <= cutoff_utc].copy()
         eligible = eligible.sort_values(
-            [*ECONOMIC_FACT_KEY, "revision", "available_at"], kind="stable"
+            [*ECONOMIC_FACT_KEY, "available_at", "revision"], kind="stable"
         )
         snapshot = eligible.drop_duplicates(list(ECONOMIC_FACT_KEY), keep="last").reset_index(
             drop=True
@@ -228,10 +231,16 @@ def _validate_revisions(data: pd.DataFrame) -> None:
         for previous, current in zip(
             ordered.itertuples(index=False), ordered.iloc[1:].itertuples(index=False), strict=False
         ):
+            invariants_changed = any(
+                getattr(current, field) != getattr(previous, field)
+                for field in RESTATEMENT_INVARIANTS
+            )
             if (
                 current.revision_type != "RESTATEMENT"
                 or current.supersedes_revision != previous.revision
                 or current.available_at <= previous.available_at
+                or current.filing_date < previous.filing_date
+                or invariants_changed
             ):
                 raise AccountingGovernanceError(
                     f"revision mismatch: invalid restatement chain for {key}"

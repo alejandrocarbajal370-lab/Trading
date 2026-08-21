@@ -142,6 +142,46 @@ def test_restatement_does_not_rewrite_historical_snapshot() -> None:
     assert len(governed.frame.loc[governed.frame["metric"] == "revenue"]) == 2
 
 
+def test_snapshot_selection_is_temporal_even_when_input_rows_are_reverse_revision_order() -> None:
+    frame = _facts().iloc[[1, 0, 2]].reset_index(drop=True)
+    governed = _govern(frame)
+
+    before_restatement = governed.snapshot(
+        cutoff=datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
+    )
+    after_restatement = governed.snapshot(cutoff=AS_OF)
+
+    assert before_restatement.loc[
+        before_restatement["metric"] == "revenue", "revision"
+    ].tolist() == [0]
+    assert after_restatement.loc[
+        after_restatement["metric"] == "revenue", "revision"
+    ].tolist() == [1]
+
+
+def test_revision_order_diverging_from_availability_fails_closed() -> None:
+    frame = _facts()
+    frame.loc[1, "filing_date"] = "2025-02-14T14:00:00Z"
+    frame.loc[1, "available_at"] = "2025-02-14T14:05:00Z"
+    with pytest.raises(AccountingGovernanceError, match="revision mismatch"):
+        _govern(frame)
+
+
+def test_restatement_unit_change_fails_closed() -> None:
+    frame = _facts()
+    frame.loc[1, "unit"] = "EUR"
+    with pytest.raises(AccountingGovernanceError, match="revision mismatch"):
+        _govern(frame)
+
+
+def test_restatement_filing_date_must_be_monotonic() -> None:
+    frame = _facts()
+    frame.loc[1, "filing_date"] = "2025-02-14T14:00:00Z"
+    frame.loc[1, "available_at"] = "2025-08-15T14:05:00Z"
+    with pytest.raises(AccountingGovernanceError, match="revision mismatch"):
+        _govern(frame)
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
