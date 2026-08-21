@@ -176,6 +176,50 @@ Phase 2 adds `fundamental_history.csv` and `data_confidence.csv`; Phase 3 adds
 alpha scores, portfolio construction, backtesting, or execution. `NO_TRADE` and
 `live_execution_enabled: false` remain mandatory.
 
+## Phase 3.6 investment universe foundation
+
+Phase 3.6 defines which assets the research system may evaluate. The source contract requires
+symbol, exchange, asset type, country/region, optional sector/industry metadata, market cap,
+average share and dollar volume, listing date, source, source timestamp, and PIT availability.
+Validation emits `universe_membership.csv` without dropping any asset: each row is `ELIGIBLE` or
+`EXCLUDED`, with all applicable exclusion reasons, deterministic completeness confidence, and
+source lineage. `universe_validation.json` records counts, reasons, and the exact rules used.
+
+Market-cap, volume, dollar-liquidity, listing-age, asset-type, and exchange rules are configuration
+inputs rather than constants. Missing data needed by an enabled rule causes an explicit exclusion;
+duplicate symbols, unknown asset types, invalid timestamps, and malformed schemas fail the run and
+leave an audit trail. This foundation contains no QVM, alpha score, ranking, portfolio,
+backtesting, broker integration, or execution. It always remains `NO_TRADE` with live execution
+disabled.
+
+Universe validation also writes immutable, date-addressed snapshots so a historical eligible set
+can be reconstructed without substituting today's listings. Diagnostics report eligible/excluded
+counts, sector/industry/country/exchange and market-cap distributions, concentration, and entries or
+exits versus the previous snapshot. Threshold stress scenarios expose coverage loss. Health is an
+auditable `PASS`, `WARNING`, or `FAIL`; an empty or undersized universe fails, while destructive
+coverage, concentration, and threshold sensitivity produce warnings. No alpha or QVM logic is
+included.
+
+Each snapshot records the complete versioned ruleset, filter parameters, recording timestamp,
+configured rebalance frequency, snapshot date, next expected date, and checksums for both membership
+and validation artifacts. The initial schedule is monthly configuration, not hard-coded scheduling
+logic. Universe completeness is named `universe_confidence`; financial data confidence remains a
+separate contract and cannot determine universe eligibility.
+
+Run a reproducible universe validation for a specific point in time with:
+
+```bash
+universe-validate \
+  --source tests/fixtures/universe.csv \
+  --as-of 2026-08-20 \
+  --config config/settings.example.yaml
+```
+
+This writes an auditable run under `validation_outputs/<run_id>/` and an immutable snapshot under
+`universe_snapshots/<date>/`. Future Quality, Value, and Momentum input schemas are defined in
+`factors/contracts.py`; they contain required observations and lineage only, with no factor
+calculation, score, rank, signal, or portfolio behavior.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
