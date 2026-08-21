@@ -6,8 +6,13 @@ from typing import Self
 
 import pytest
 
-from data.connectors.alpha_vantage import AlphaVantagePriceSource
+from data.connectors.alpha_vantage import (
+    AlphaVantageMomentumHistoricalPriceSource,
+    AlphaVantagePriceSource,
+)
 from data.connectors.base import (
+    MomentumHistoricalPriceSource,
+    PriceSource,
     PriceSourceConfigurationError,
     PriceSourceRequestError,
     PriceSourceResponseError,
@@ -29,7 +34,7 @@ class FakeResponse:
 
 
 def test_fetch_maps_provider_payload_to_price_contract() -> None:
-    fixture = Path("tests/fixtures/alpha_vantage_daily.json")
+    fixture = Path("tests/fixtures/alpha_vantage_eod.json")
     payload = json.loads(fixture.read_text())
     seen: dict[str, object] = {}
 
@@ -53,11 +58,14 @@ def test_fetch_maps_provider_payload_to_price_contract() -> None:
         }
     ]
     assert "apikey=test-key" in str(seen["url"])
+    assert "function=TIME_SERIES_DAILY" in str(seen["url"])
+    assert "outputsize=compact" in str(seen["url"])
+    assert "DAILY_ADJUSTED" not in str(seen["url"])
     assert seen["timeout"] == 3
 
 
 def test_request_retries_transient_network_failures() -> None:
-    fixture = json.loads(Path("tests/fixtures/alpha_vantage_daily.json").read_text())
+    fixture = json.loads(Path("tests/fixtures/alpha_vantage_eod.json").read_text())
     attempts = 0
     delays: list[float] = []
 
@@ -100,3 +108,37 @@ def test_environment_api_key_is_required(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.delenv("ALPHA_VANTAGE_API_KEY", raising=False)
     with pytest.raises(PriceSourceConfigurationError, match="ALPHA_VANTAGE_API_KEY"):
         AlphaVantagePriceSource.from_env()
+
+
+def test_fetch_history_maps_adjusted_price_and_corporate_action_lineage() -> None:
+    payload = json.loads(Path("tests/fixtures/alpha_vantage_daily.json").read_text())
+    source = AlphaVantageMomentumHistoricalPriceSource(
+        api_key="test-key", opener=lambda *_args, **_kwargs: FakeResponse(payload)
+    )
+    row = source.fetch_history(symbols={"AAPL"}, as_of=datetime.date(2026, 8, 19)).iloc[0]
+    assert row["adjusted_close"] == 231.5
+    assert row["raw_close"] == 232.75
+    assert row["price_basis"] == "ADJUSTED"
+    assert row["corporate_action_status"] == "APPLIED"
+    assert row["corporate_action_type"] == "DIVIDEND"
+    assert json.loads(row["input_lineage"])[0]["provider_function"] == (
+        "TIME_SERIES_DAILY_ADJUSTED"
+    )
+    assert row["historical_access_tier"] == "premium_required"
+    assert source.metadata == {
+        "provider": "alpha_vantage",
+        "dataset": "TIME_SERIES_DAILY_ADJUSTED",
+        "provider_function": "TIME_SERIES_DAILY_ADJUSTED",
+        "dataset_version": "daily-adjusted-full-v1",
+        "outputsize": "full",
+        "access_tier": "premium_required",
+        "price_basis": "split_dividend_adjusted",
+    }
+
+
+def test_operational_and_momentum_sources_implement_separate_contracts() -> None:
+    assert isinstance(AlphaVantagePriceSource(api_key="x"), PriceSource)
+    assert isinstance(
+        AlphaVantageMomentumHistoricalPriceSource(api_key="x"), MomentumHistoricalPriceSource
+    )
+    assert not hasattr(AlphaVantagePriceSource(api_key="x"), "fetch_history")
