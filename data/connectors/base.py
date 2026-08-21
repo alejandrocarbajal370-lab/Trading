@@ -5,6 +5,8 @@ from typing import Protocol, runtime_checkable
 
 import pandas as pd
 
+from data.market_data import MarketDataProvider
+
 
 @runtime_checkable
 class PriceSource(Protocol):
@@ -27,6 +29,9 @@ class MomentumHistoricalPriceSource(Protocol):
     def metadata(self) -> dict[str, str]: ...
 
     def fetch_history(self, *, symbols: set[str], as_of: datetime.date) -> pd.DataFrame: ...
+
+
+__all__ = ["MarketDataProvider", "MomentumHistoricalPriceSource", "PriceSource"]
 
 
 class PriceSourceError(RuntimeError):
