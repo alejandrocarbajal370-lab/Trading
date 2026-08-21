@@ -12,7 +12,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 FACTOR_NAMES = ("Quality", "Value", "Momentum")
-QVM_RULESET_VERSION = "qvm-research-v1.0"
+QVM_RULESET_VERSION = "qvm-research-v1.1"
 NOT_AVAILABLE = "NOT_AVAILABLE"
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -20,83 +20,231 @@ SHA256_PATTERN = r"^[0-9a-f]{64}$"
 class MetricSemantics(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    factor: Literal["Quality", "Value", "Momentum"]
+    metric: str
+    expected_unit: str
     direction: Literal["higher_is_better", "lower_is_better", "contextual", "non_directional"]
     comparison_group: str | None
     economic_meaning: str
 
 
-METRIC_SEMANTICS_REGISTRY: Mapping[str, MetricSemantics] = {
-    "roic": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="profitability_ratio",
-        economic_meaning="return on invested capital",
-    ),
-    "fcf_margin": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="profitability_ratio",
-        economic_meaning="free-cash-flow margin",
-    ),
-    "cfo_conversion": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="cash_conversion_ratio",
-        economic_meaning="cash conversion",
-    ),
-    "accrual_quality": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="cash_conversion_ratio",
-        economic_meaning="accrual quality",
-    ),
-    "fcf_yield": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="valuation_yield",
-        economic_meaning="free-cash-flow yield",
-    ),
-    "earnings_yield": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="valuation_yield",
-        economic_meaning="earnings yield",
-    ),
-    "ebit_yield": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="valuation_yield",
-        economic_meaning="EBIT yield",
-    ),
-    "ev_to_ebit": MetricSemantics(
-        direction="lower_is_better",
-        comparison_group="valuation_multiple",
-        economic_meaning="EV/EBIT valuation multiple",
-    ),
-    "ev_to_ebitda": MetricSemantics(
-        direction="lower_is_better",
-        comparison_group="valuation_multiple",
-        economic_meaning="EV/EBITDA valuation multiple",
-    ),
-    "momentum_12_1": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="price_return",
-        economic_meaning="12-1 price momentum",
-    ),
-    "momentum_6m": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="price_return",
-        economic_meaning="six-month price momentum",
-    ),
-    "relative_strength_6m": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="price_return",
-        economic_meaning="six-month relative strength",
-    ),
-    "volatility_adjusted_momentum_12_1": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="risk_adjusted_return",
-        economic_meaning="volatility-adjusted momentum",
-    ),
-    "trend_stability_12m": MetricSemantics(
-        direction="higher_is_better",
-        comparison_group="trend_stability",
-        economic_meaning="trend stability",
-    ),
+def _semantics(
+    factor: Literal["Quality", "Value", "Momentum"],
+    metric: str,
+    expected_unit: str,
+    direction: Literal["higher_is_better", "lower_is_better", "contextual", "non_directional"],
+    comparison_group: str | None,
+    economic_meaning: str,
+) -> MetricSemantics:
+    return MetricSemantics(
+        factor=factor,
+        metric=metric,
+        expected_unit=expected_unit,
+        direction=direction,
+        comparison_group=comparison_group,
+        economic_meaning=economic_meaning,
+    )
+
+
+METRIC_SEMANTICS_REGISTRY: Mapping[tuple[str, str], MetricSemantics] = {
+    (item.factor, item.metric): item
+    for item in (
+        _semantics(
+            "Quality",
+            "roic",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="profitability_ratio",
+            economic_meaning="return on invested capital",
+        ),
+        _semantics(
+            "Quality",
+            "roic_stability",
+            "ratio",
+            direction="lower_is_better",
+            comparison_group="stability_ratio",
+            economic_meaning="ROIC dispersion",
+        ),
+        _semantics(
+            "Quality",
+            "fcf_margin",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="profitability_ratio",
+            economic_meaning="free-cash-flow margin",
+        ),
+        _semantics(
+            "Quality",
+            "cfo_conversion",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="cash_conversion_ratio",
+            economic_meaning="cash conversion",
+        ),
+        _semantics(
+            "Quality",
+            "net_debt_to_ebitda",
+            "multiple",
+            direction="lower_is_better",
+            comparison_group="leverage_multiple",
+            economic_meaning="net debt relative to EBITDA",
+        ),
+        _semantics(
+            "Quality",
+            "accrual_quality",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="cash_conversion_ratio",
+            economic_meaning="accrual quality",
+        ),
+        _semantics(
+            "Quality",
+            "margin_stability",
+            "ratio",
+            direction="lower_is_better",
+            comparison_group="stability_ratio",
+            economic_meaning="free-cash-flow margin dispersion",
+        ),
+        _semantics(
+            "Quality",
+            "roic_consistency",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="consistency_ratio",
+            economic_meaning="share of periods with positive ROIC",
+        ),
+        _semantics(
+            "Quality",
+            "roic_positive_years",
+            "count",
+            direction="higher_is_better",
+            comparison_group="positive_period_count",
+            economic_meaning="count of positive ROIC periods",
+        ),
+        _semantics(
+            "Quality",
+            "fcf_consistency",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="consistency_ratio",
+            economic_meaning="share of periods with positive free-cash-flow margin",
+        ),
+        _semantics(
+            "Quality",
+            "fcf_positive_years",
+            "count",
+            direction="higher_is_better",
+            comparison_group="positive_period_count",
+            economic_meaning="count of positive free-cash-flow periods",
+        ),
+        _semantics(
+            "Quality",
+            "margin_persistence",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="consistency_ratio",
+            economic_meaning="share of non-declining margin transitions",
+        ),
+        _semantics(
+            "Quality",
+            "share_count_change",
+            "ratio",
+            direction="contextual",
+            comparison_group=None,
+            economic_meaning="reported change in shares outstanding",
+        ),
+        _semantics(
+            "Quality",
+            "reinvestment_rate",
+            "ratio",
+            direction="contextual",
+            comparison_group=None,
+            economic_meaning="reported reinvestment rate",
+        ),
+        _semantics(
+            "Value",
+            "fcf_yield",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="valuation_yield",
+            economic_meaning="free-cash-flow yield",
+        ),
+        _semantics(
+            "Value",
+            "earnings_yield",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="valuation_yield",
+            economic_meaning="earnings yield",
+        ),
+        _semantics(
+            "Value",
+            "ebit_yield",
+            "ratio",
+            direction="higher_is_better",
+            comparison_group="valuation_yield",
+            economic_meaning="EBIT yield",
+        ),
+        _semantics(
+            "Value",
+            "ev_to_ebit",
+            "multiple",
+            direction="lower_is_better",
+            comparison_group="valuation_multiple",
+            economic_meaning="EV/EBIT valuation multiple",
+        ),
+        _semantics(
+            "Value",
+            "ev_to_ebitda",
+            "multiple",
+            direction="lower_is_better",
+            comparison_group="valuation_multiple",
+            economic_meaning="EV/EBITDA valuation multiple",
+        ),
+        _semantics(
+            "Momentum",
+            "momentum_12_1",
+            "return",
+            direction="higher_is_better",
+            comparison_group="price_return",
+            economic_meaning="12-1 price momentum",
+        ),
+        _semantics(
+            "Momentum",
+            "momentum_6m",
+            "return",
+            direction="higher_is_better",
+            comparison_group="price_return",
+            economic_meaning="six-month price momentum",
+        ),
+        _semantics(
+            "Momentum",
+            "relative_strength_6m",
+            "return",
+            direction="higher_is_better",
+            comparison_group="price_return",
+            economic_meaning="six-month relative strength",
+        ),
+        _semantics(
+            "Momentum",
+            "volatility_adjusted_momentum_12_1",
+            "return_per_volatility",
+            direction="higher_is_better",
+            comparison_group="risk_adjusted_return",
+            economic_meaning="volatility-adjusted momentum",
+        ),
+        _semantics(
+            "Momentum",
+            "trend_stability_12m",
+            "r_squared",
+            direction="higher_is_better",
+            comparison_group="trend_stability",
+            economic_meaning="trend stability",
+        ),
+    )
 }
+
+ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES = frozenset({"PASS"})
 
 
 def _canonical(value: Any) -> str:
@@ -170,7 +318,8 @@ class QVMEvaluation:
 
 
 def factor_dataset_hash(observations: Sequence[FactorObservation]) -> str:
-    return _sha256([item.model_dump(mode="json") for item in observations])
+    documents = [item.model_dump(mode="json") for item in observations]
+    return _sha256(sorted(documents, key=_canonical))
 
 
 def qvm_lineage_identity(
@@ -214,7 +363,10 @@ def observation_from_row(
         raise ValueError(f"{factor} observation has invalid lineage") from error
     unit = row.get("unit")
     if unit is None or pd.isna(unit):
-        unit = "ratio" if factor in {"Quality", "Value"} else "dimensionless"
+        semantics = METRIC_SEMANTICS_REGISTRY.get((factor, str(row["metric"])))
+        if semantics is None:
+            raise ValueError(f"metric semantics not registered: {factor}.{row['metric']}")
+        unit = semantics.expected_unit
     value = row.get("value")
     value = None if value is None or pd.isna(value) else float(value)
     return FactorObservation(
@@ -287,32 +439,36 @@ def _validate_alignment(batches: tuple[FactorBatch, ...]) -> None:
         raise ValueError("QVM lineage hash mismatch")
 
 
-def _metric_semantics(metric: str) -> MetricSemantics | None:
-    return METRIC_SEMANTICS_REGISTRY.get(metric)
+def _metric_semantics(factor: str, metric: str) -> MetricSemantics | None:
+    return METRIC_SEMANTICS_REGISTRY.get((factor, metric))
+
+
+def _validate_metric_semantics(frame: pd.DataFrame) -> None:
+    for row in frame.itertuples():
+        semantics = _metric_semantics(str(row.factor), str(row.metric))
+        if semantics is None:
+            raise ValueError(f"metric semantics not registered: {row.factor}.{row.metric}")
+        if str(row.unit) != semantics.expected_unit:
+            raise ValueError(
+                "metric unit does not match semantics registry: "
+                f"{row.factor}.{row.metric} expected {semantics.expected_unit}, got {row.unit}"
+            )
 
 
 def _correlations(frame: pd.DataFrame) -> list[dict[str, Any]]:
     diagnostics: list[dict[str, Any]] = []
-    metrics = sorted(frame["metric"].unique())
+    eligible = frame.loc[frame["status"].isin(ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES)]
+    metrics = sorted(set(zip(eligible["factor"], eligible["metric"], strict=False)))
     for left, right in combinations(metrics, 2):
-        left_semantics = _metric_semantics(left)
-        right_semantics = _metric_semantics(right)
-        base = {"left_metric": left, "right_metric": right}
-        if left_semantics is None or right_semantics is None:
-            missing = sorted(
-                metric
-                for metric, semantics in ((left, left_semantics), (right, right_semantics))
-                if semantics is None
-            )
-            diagnostics.append(
-                base
-                | {
-                    "status": NOT_AVAILABLE,
-                    "reason": f"metric semantics not registered: {', '.join(missing)}",
-                    "correlation": None,
-                }
-            )
-            continue
+        left_semantics = _metric_semantics(*left)
+        right_semantics = _metric_semantics(*right)
+        assert left_semantics is not None and right_semantics is not None
+        base = {
+            "left_factor": left[0],
+            "left_metric": left[1],
+            "right_factor": right[0],
+            "right_metric": right[1],
+        }
         if (
             left_semantics.comparison_group is None
             or left_semantics.comparison_group != right_semantics.comparison_group
@@ -326,8 +482,15 @@ def _correlations(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 }
             )
             continue
-        pair = frame.loc[frame["metric"].isin((left, right)), ["symbol", "metric", "value"]]
-        values = pair.pivot(index="symbol", columns="metric", values="value").dropna()
+        left_values = eligible.loc[
+            (eligible["factor"] == left[0]) & (eligible["metric"] == left[1]),
+            ["symbol", "value"],
+        ].set_index("symbol")["value"]
+        right_values = eligible.loc[
+            (eligible["factor"] == right[0]) & (eligible["metric"] == right[1]),
+            ["symbol", "value"],
+        ].set_index("symbol")["value"]
+        values = pd.concat([left_values, right_values], axis=1).dropna()
         if len(values) < 2:
             diagnostics.append(
                 base
@@ -338,7 +501,7 @@ def _correlations(frame: pd.DataFrame) -> list[dict[str, Any]]:
                 }
             )
             continue
-        correlation = values[left].corr(values[right])
+        correlation = values.iloc[:, 0].corr(values.iloc[:, 1])
         if pd.isna(correlation):
             diagnostics.append(
                 base
@@ -365,14 +528,23 @@ def _correlations(frame: pd.DataFrame) -> list[dict[str, Any]]:
 def _economic_conflicts(frame: pd.DataFrame) -> dict[str, Any]:
     signals: list[dict[str, Any]] = []
     exclusions: list[dict[str, str]] = []
-    for metric, group in frame.groupby("metric", sort=True):
-        semantics = _metric_semantics(str(metric))
-        if semantics is None:
-            exclusions.append({"metric": str(metric), "reason": "metric semantics not registered"})
-            continue
+    ineligible = frame.loc[~frame["status"].isin(ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES)]
+    for row in ineligible.itertuples():
+        exclusions.append(
+            {
+                "factor": str(row.factor),
+                "metric": str(row.metric),
+                "reason": f"status {row.status} is not eligible for economic diagnostics",
+            }
+        )
+    eligible = frame.loc[frame["status"].isin(ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES)]
+    for (factor, metric), group in eligible.groupby(["factor", "metric"], sort=True):
+        semantics = _metric_semantics(str(factor), str(metric))
+        assert semantics is not None
         if semantics.direction in {"contextual", "non_directional"}:
             exclusions.append(
                 {
+                    "factor": str(factor),
                     "metric": str(metric),
                     "reason": f"{semantics.direction} metrics have no economic direction",
                 }
@@ -434,6 +606,7 @@ def evaluate_qvm_research(batches: tuple[FactorBatch, ...]) -> QVMEvaluation:
         for observation in batch.observations
     ]
     long = pd.DataFrame(rows)
+    _validate_metric_semantics(long)
     universe_sets = {
         factor: set(long.loc[long["factor"] == factor, "symbol"].astype(str))
         for factor in FACTOR_NAMES
@@ -447,8 +620,13 @@ def evaluate_qvm_research(batches: tuple[FactorBatch, ...]) -> QVMEvaluation:
         "__status"
     )
     matrix = value_matrix.join(status_matrix).sort_index(axis=1).reset_index()
+    eligible = long.loc[
+        long["status"].isin(ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES) & long["value"].notna()
+    ]
     coverage = {
-        factor: len(symbols) / len(governed_symbols) for factor, symbols in universe_sets.items()
+        factor: eligible.loc[eligible["factor"] == factor, "symbol"].nunique()
+        / len(governed_symbols)
+        for factor in FACTOR_NAMES
     }
     missingness = {
         factor: float(group["value"].isna().mean())
@@ -470,12 +648,20 @@ def evaluate_qvm_research(batches: tuple[FactorBatch, ...]) -> QVMEvaluation:
             "ratio": len(overlap) / len(governed_symbols),
         },
         "metric_correlations": _correlations(long),
+        "economic_diagnostic_eligibility": {
+            "eligible_statuses": sorted(ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES),
+            "ineligible_observations": int(len(long) - len(eligible)),
+        },
         "sector_concentration": sector or {"status": "NOT_AVAILABLE"},
         "factor_conflicts": _economic_conflicts(long),
     }
     health_status = (
         "PASS"
-        if len(overlap) == len(governed_symbols) and not any(missingness.values())
+        if (
+            len(overlap) == len(governed_symbols)
+            and not any(missingness.values())
+            and len(eligible) == len(long)
+        )
         else "WARNING"
     )
     health = {
