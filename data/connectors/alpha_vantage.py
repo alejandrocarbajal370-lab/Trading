@@ -24,7 +24,7 @@ DEFAULT_BASE_URL = "https://www.alphavantage.co/query"
 
 @dataclass(frozen=True)
 class AlphaVantagePriceSource:
-    """Alpha Vantage adjusted daily adapter with corporate-action lineage."""
+    """Operational EOD adapter using the standard daily dataset."""
 
     api_key: str
     timeout_seconds: float = 10.0
@@ -52,25 +52,8 @@ class AlphaVantagePriceSource:
             ["date", "symbol"], ignore_index=True
         )
 
-    def fetch_history(self, *, symbols: set[str], as_of: datetime.date) -> pd.DataFrame:
-        rows: list[dict[str, object]] = []
-        for symbol in sorted(symbols):
-            payload = self._daily_adjusted_payload(symbol)
-            series = payload.get("Time Series (Daily)")
-            if not isinstance(series, dict):
-                raise PriceSourceResponseError(
-                    f"Alpha Vantage response for {symbol} has no adjusted daily time series"
-                )
-            for raw_date, values in series.items():
-                if not isinstance(values, dict):
-                    continue
-                date = datetime.date.fromisoformat(str(raw_date))
-                if date <= as_of:
-                    rows.append(self._momentum_row(symbol, date, values))
-        return pd.DataFrame(rows).sort_values(["symbol", "date"], ignore_index=True)
-
     def _fetch_symbol(self, symbol: str, data_date: datetime.date) -> dict[str, object]:
-        payload = self._daily_adjusted_payload(symbol)
+        payload = self._daily_payload(symbol)
         provider_error = (
             payload.get("Error Message") or payload.get("Note") or payload.get("Information")
         )
@@ -95,12 +78,96 @@ class AlphaVantagePriceSource:
                 "high": float(values["2. high"]),
                 "low": float(values["3. low"]),
                 "close": float(values["4. close"]),
-                "volume": float(values["6. volume"]),
+                "volume": float(values["5. volume"]),
             }
         except (KeyError, TypeError, ValueError) as exc:
             raise PriceSourceResponseError(
                 f"Alpha Vantage returned an invalid EOD row for {symbol}"
             ) from exc
+
+    def _daily_payload(self, symbol: str) -> dict[str, object]:
+        query = urllib.parse.urlencode(
+            {
+                "function": "TIME_SERIES_DAILY",
+                "symbol": symbol,
+                "outputsize": "compact",
+                "apikey": self.api_key,
+            }
+        )
+        payload = self._request_json(f"{self.base_url}?{query}")
+        provider_error = (
+            payload.get("Error Message") or payload.get("Note") or payload.get("Information")
+        )
+        if provider_error:
+            raise PriceSourceResponseError(f"Alpha Vantage rejected {symbol}: {provider_error}")
+        return payload
+
+    def _request_json(self, url: str) -> dict[str, object]:
+        return _request_json(
+            url,
+            opener=self.opener,
+            timeout_seconds=self.timeout_seconds,
+            max_retries=self.max_retries,
+            sleeper=self.sleeper,
+        )
+
+
+@dataclass(frozen=True)
+class AlphaVantageMomentumHistoricalPriceSource:
+    """Adjusted full-history source isolated from the operational EOD adapter.
+
+    Alpha Vantage currently gates this dataset/output-size combination behind
+    premium access. Callers can therefore discover the dependency before a request.
+    """
+
+    api_key: str
+    timeout_seconds: float = 10.0
+    max_retries: int = 2
+    base_url: str = DEFAULT_BASE_URL
+    opener: Callable[..., object] = urllib.request.urlopen
+    sleeper: Callable[[float], None] = time.sleep
+
+    @classmethod
+    def from_env(cls) -> AlphaVantageMomentumHistoricalPriceSource:
+        api_key = os.environ.get("ALPHA_VANTAGE_API_KEY", "").strip()
+        if not api_key:
+            raise PriceSourceConfigurationError(
+                "ALPHA_VANTAGE_API_KEY must be set for Alpha Vantage Momentum history"
+            )
+        return cls(api_key=api_key)
+
+    @property
+    def name(self) -> str:
+        return "alpha_vantage_momentum_adjusted_history"
+
+    @property
+    def metadata(self) -> dict[str, str]:
+        return {
+            "provider": "alpha_vantage",
+            "dataset": "TIME_SERIES_DAILY_ADJUSTED",
+            "provider_function": "TIME_SERIES_DAILY_ADJUSTED",
+            "dataset_version": "daily-adjusted-full-v1",
+            "outputsize": "full",
+            "access_tier": "premium_required",
+            "price_basis": "split_dividend_adjusted",
+        }
+
+    def fetch_history(self, *, symbols: set[str], as_of: datetime.date) -> pd.DataFrame:
+        rows: list[dict[str, object]] = []
+        for symbol in sorted(symbols):
+            payload = self._daily_adjusted_payload(symbol)
+            series = payload.get("Time Series (Daily)")
+            if not isinstance(series, dict):
+                raise PriceSourceResponseError(
+                    f"Alpha Vantage response for {symbol} has no adjusted daily time series"
+                )
+            for raw_date, values in series.items():
+                if not isinstance(values, dict):
+                    continue
+                date = datetime.date.fromisoformat(str(raw_date))
+                if date <= as_of:
+                    rows.append(self._momentum_row(symbol, date, values))
+        return pd.DataFrame(rows).sort_values(["symbol", "date"], ignore_index=True)
 
     def _daily_adjusted_payload(self, symbol: str) -> dict[str, object]:
         query = urllib.parse.urlencode(
@@ -119,9 +186,8 @@ class AlphaVantagePriceSource:
             raise PriceSourceResponseError(f"Alpha Vantage rejected {symbol}: {provider_error}")
         return payload
 
-    @staticmethod
     def _momentum_row(
-        symbol: str, date: datetime.date, values: dict[str, object]
+        self, symbol: str, date: datetime.date, values: dict[str, object]
     ) -> dict[str, object]:
         try:
             raw_close = float(values["4. close"])
@@ -139,14 +205,7 @@ class AlphaVantagePriceSource:
             action_type = "SPLIT"
         elif dividend != 0:
             action_type = "DIVIDEND"
-        lineage = [
-            {
-                "source": "alpha_vantage",
-                "provider_function": "TIME_SERIES_DAILY_ADJUSTED",
-                "outputsize": "full",
-                "symbol": symbol.strip().upper(),
-            }
-        ]
+        lineage = [{**self.metadata, "source": "alpha_vantage", "symbol": symbol.strip().upper()}]
         return {
             "symbol": symbol.strip().upper(),
             "date": date,
@@ -165,23 +224,44 @@ class AlphaVantagePriceSource:
             "trading_calendar": "XNYS",
             "session_status": "PRESENT",
             "timing_policy": "EOD_CLOSE_T_PLUS_0",
+            "historical_provider": self.metadata["provider"],
+            "historical_dataset": self.metadata["dataset"],
+            "historical_dataset_version": self.metadata["dataset_version"],
+            "historical_access_tier": self.metadata["access_tier"],
         }
 
     def _request_json(self, url: str) -> dict[str, object]:
-        for attempt in range(self.max_retries + 1):
-            try:
-                request = urllib.request.Request(url, headers={"User-Agent": "Trading/0.1"})
-                with self.opener(request, timeout=self.timeout_seconds) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
-                if not isinstance(payload, dict):
-                    raise PriceSourceResponseError("Alpha Vantage returned a non-object response")
-                return payload
-            except PriceSourceResponseError:
-                raise
-            except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-                if attempt == self.max_retries:
-                    raise PriceSourceRequestError(
-                        f"Alpha Vantage request failed after {attempt + 1} attempts"
-                    ) from exc
-                self.sleeper(0.25 * (2**attempt))
-        raise AssertionError("retry loop exited unexpectedly")
+        return _request_json(
+            url,
+            opener=self.opener,
+            timeout_seconds=self.timeout_seconds,
+            max_retries=self.max_retries,
+            sleeper=self.sleeper,
+        )
+
+
+def _request_json(
+    url: str,
+    *,
+    opener: Callable[..., object],
+    timeout_seconds: float,
+    max_retries: int,
+    sleeper: Callable[[float], None],
+) -> dict[str, object]:
+    for attempt in range(max_retries + 1):
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "Trading/0.1"})
+            with opener(request, timeout=timeout_seconds) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise PriceSourceResponseError("Alpha Vantage returned a non-object response")
+            return payload
+        except PriceSourceResponseError:
+            raise
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            if attempt == max_retries:
+                raise PriceSourceRequestError(
+                    f"Alpha Vantage request failed after {attempt + 1} attempts"
+                ) from exc
+            sleeper(0.25 * (2**attempt))
+    raise AssertionError("retry loop exited unexpectedly")
