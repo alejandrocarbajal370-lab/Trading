@@ -63,12 +63,17 @@ The command writes `ingested_prices.csv`, `data_health.json`, `run_summary.json`
 
 ## Phase 1 EOD provider
 
-Alpha Vantage is the V1 real-data adapter. The hardened history path uses
-`TIME_SERIES_DAILY_ADJUSTED` with `outputsize=full` and retains both raw and adjusted closes plus
-provider split/dividend fields and lineage.
-The adapter is isolated behind `PriceSource`, while CSV remains the deterministic source for
-tests, fixtures, and offline validation. Momentum accepts only provider-adjusted prices; raw prices
-remain auxiliary audit data and cannot drive Momentum metrics.
+Alpha Vantage has two deliberately separate V1 paths. The operational `PriceSource` uses
+`TIME_SERIES_DAILY` with compact output for EOD ingestion. The independent
+`MomentumHistoricalPriceSource` uses `TIME_SERIES_DAILY_ADJUSTED` with `outputsize=full`; that
+historical adjusted dataset requires premium Alpha Vantage access. The dependency is exposed in
+source metadata rather than hidden inside the general EOD adapter.
+
+The historical source retains raw and adjusted closes, provider split/dividend fields, access tier,
+dataset version, and lineage. Corporate-action coverage is described narrowly as **provider
+corporate actions captured + adjusted/raw relationship validated**; there is no independent
+corporate-action source. CSV remains deterministic for tests and offline validation. Momentum
+accepts only provider-adjusted prices; raw prices cannot drive Momentum metrics.
 
 Copy `.env.example` to your local environment configuration and set the value without committing
 it, or export the credential directly:
