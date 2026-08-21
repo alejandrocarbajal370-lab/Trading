@@ -47,7 +47,7 @@ def run_phase36(
 ) -> Phase36Result:
     context = build_run_context(
         mode="validation",
-        model_version="phase3.6-investment-universe-v0.1",
+        model_version="phase3.6-investment-universe-v0.2",
         git_commit=_git_commit(),
         data_date=as_of.isoformat(),
         now=now,
@@ -94,7 +94,7 @@ def run_phase36(
             ValidationManifest(
                 context=context,
                 overall_status=status,
-                critical_errors=0,
+                critical_errors=1 if status == "FAIL" else 0,
                 warnings=1 if status == "WARNING" else 0,
                 checks={
                     "universe_contract": "PASS",

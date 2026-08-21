@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
+import platform
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -10,7 +12,12 @@ from typing import Any
 import pandas as pd
 
 from factors.quality import QUALITY_CONTRACT, evaluate_quality_metrics
-from research.datasets import DatasetVersionError, VerifiedDataset, verify_dataset
+from research.datasets import (
+    DatasetVersionError,
+    VerifiedDataset,
+    verify_dataset,
+    verify_universe_snapshot,
+)
 from research.registry import ResearchExperiment, ResearchRegistry
 
 
@@ -28,6 +35,20 @@ def _write_immutable(path: Path, payload: str) -> None:
     if path.exists() and path.read_text(encoding="utf-8") != payload:
         raise RuntimeError(f"immutable research output differs: {path}")
     path.write_text(payload, encoding="utf-8")
+
+
+def _runtime_environment() -> dict[str, Any]:
+    packages = {}
+    for name in ("numpy", "pandas", "pydantic", "PyYAML"):
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = None
+    return {
+        "python": platform.python_version(),
+        "implementation": platform.python_implementation(),
+        "packages": packages,
+    }
 
 
 def _find_financial_dataset(
@@ -49,7 +70,11 @@ def _find_financial_dataset(
 
 
 def _fingerprint(
-    experiment: ResearchExperiment, datasets: list[VerifiedDataset], assumptions: tuple[str, ...]
+    experiment: ResearchExperiment,
+    datasets: list[VerifiedDataset],
+    assumptions: tuple[str, ...],
+    universe_governance: dict[str, Any],
+    runtime_environment: dict[str, Any],
 ) -> str:
     document = {
         "experiment": experiment.to_dict(),
@@ -63,7 +88,9 @@ def _fingerprint(
         ],
         "quality_ruleset": QUALITY_CONTRACT.model_dump(mode="json"),
         "assumptions": assumptions,
-        "runner_version": "phase4.1-quality-research-v1.1",
+        "universe_governance": universe_governance,
+        "runtime_environment": runtime_environment,
+        "runner_version": "phase4.1-quality-research-v1.2",
     }
     return hashlib.sha256(_canonical_json(document).encode()).hexdigest()
 
@@ -77,6 +104,7 @@ def run_quality_experiment(
     mismatch_policy: str = "fail",
     low_confidence_threshold: float = 0.7,
     assumptions: tuple[str, ...] = (),
+    universe_snapshot_dir: Path | None = None,
 ) -> QualityResearchRunResult:
     registry = ResearchRegistry(registry_path)
     experiment = registry.get(experiment_id, experiment_version)
@@ -91,6 +119,16 @@ def run_quality_experiment(
         verified.append(dataset)
         if warning:
             warnings.append(warning)
+    if universe_snapshot_dir is None:
+        universe_governance = {"verified": False}
+        warnings.append("governed universe snapshot was not independently verified")
+    else:
+        universe = verify_universe_snapshot(universe_snapshot_dir)
+        universe_governance = universe.to_dict()
+        if universe_governance["ruleset_version"] != experiment.ruleset_version:
+            raise DatasetVersionError(
+                "governed universe ruleset does not match registered experiment ruleset"
+            )
     financial_dataset, financial_metrics = _find_financial_dataset(verified)
     dataset_lineage = {
         "dataset_id": financial_dataset.registration.dataset_id,
@@ -104,7 +142,10 @@ def run_quality_experiment(
         dataset_lineage=dataset_lineage,
         low_confidence_threshold=low_confidence_threshold,
     )
-    fingerprint = _fingerprint(experiment, verified, assumptions)
+    runtime_environment = _runtime_environment()
+    fingerprint = _fingerprint(
+        experiment, verified, assumptions, universe_governance, runtime_environment
+    )
     run_id = (
         f"{experiment.experiment_id}_{experiment.experiment_version}_quality_{fingerprint[:12]}"
     )
@@ -114,7 +155,7 @@ def run_quality_experiment(
     if warnings and health == "PASS":
         health = "WARNING"
     run = {
-        "schema_version": "quality-research-run-v1.1",
+        "schema_version": "quality-research-run-v1.2",
         "run_id": run_id,
         "reproducibility_fingerprint": fingerprint,
         "experiment_id": experiment.experiment_id,
@@ -130,6 +171,8 @@ def run_quality_experiment(
         ],
         "universe_snapshot_id": experiment.universe_snapshot_id,
         "ruleset_version": experiment.ruleset_version,
+        "universe_governance": universe_governance,
+        "runtime_environment": runtime_environment,
         "quality_ruleset_version": QUALITY_CONTRACT.version,
         "analysis_period": {"start": experiment.sample_start, "end": experiment.sample_end},
         "assumptions": list(assumptions),
@@ -173,6 +216,7 @@ def main() -> None:
     parser.add_argument("--dataset-mismatch", choices=("fail", "warn"), default="fail")
     parser.add_argument("--low-confidence-threshold", type=float, default=0.7)
     parser.add_argument("--assumption", action="append", default=[])
+    parser.add_argument("--universe-snapshot-dir", type=Path)
     args = parser.parse_args()
     try:
         result = run_quality_experiment(
@@ -183,6 +227,7 @@ def main() -> None:
             mismatch_policy=args.dataset_mismatch,
             low_confidence_threshold=args.low_confidence_threshold,
             assumptions=tuple(args.assumption),
+            universe_snapshot_dir=args.universe_snapshot_dir,
         )
     except DatasetVersionError as error:
         parser.error(str(error))

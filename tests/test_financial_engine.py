@@ -33,6 +33,7 @@ def test_manual_reconciliation_has_exact_expected_outputs() -> None:
         "net_debt": 75.0,
         "net_debt_to_ebitda": 0.5,
         "cfo_to_net_income": 1.5,
+        "accrual_ratio": -0.04,
         "roic_v1": 0.25,
     }
     assert result["value"].to_dict() == expected
@@ -94,7 +95,7 @@ def test_duplicate_and_conflicting_inputs_are_rejected(second_value: float, reas
     assert reason in result["reason"]
 
 
-def test_phase3_writes_outputs_and_preserves_no_trade(tmp_path: Path) -> None:
+def test_phase3_writes_outputs_confidence_and_preserves_no_trade(tmp_path: Path) -> None:
     result = run_phase3(
         symbols={"TEST"},
         data_date=datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC),
@@ -102,15 +103,19 @@ def test_phase3_writes_outputs_and_preserves_no_trade(tmp_path: Path) -> None:
         output_root=tmp_path,
     )
     names = {path.name for path in result.phase2.output_dir.iterdir()}
-    assert {"financial_metrics.csv", "financial_health.json"} <= names
+    assert {"financial_metrics.csv", "financial_health.json", "accounting_quality.csv"} <= names
     health = json.loads((result.phase2.output_dir / "financial_health.json").read_text())
     summary = json.loads((result.phase2.output_dir / "run_summary.json").read_text())
     manifest = json.loads((result.phase2.output_dir / "validation_manifest.json").read_text())
+    output = pd.read_csv(result.phase2.output_dir / "financial_metrics.csv")
     assert health["status"] == "PASS"
-    assert summary["overall_status"] == "WARNING"
+    assert summary["overall_status"] == "PASS"
     assert summary["financial_health"] == "PASS"
-    assert summary["accounting_quality_health"] == "WARNING"
+    assert summary["accounting_quality_health"] == "PASS"
     assert manifest["checks"]["financial_metrics"] == "PASS"
+    assert output["confidence"].notna().all()
+    assert output["confidence"].between(0, 1).all()
+    assert "accrual_ratio" in set(output["metric"])
     assert summary["trade_decision"] == "NO_TRADE"
     assert summary["live_execution_enabled"] is False
 
@@ -131,7 +136,8 @@ def test_matching_flow_periods_pass_and_lineage_carries_contract() -> None:
     assert result["value"] == 100
     lineage = json.loads(result["input_lineage"])
     assert all(
-        {"unit", "fiscal_period_start", "fiscal_period_end", "period_type"} <= set(row)
+        {"unit", "fiscal_period_start", "fiscal_period_end", "period_type", "confidence"}
+        <= set(row)
         for row in lineage
     )
 
@@ -210,3 +216,22 @@ def test_financial_engine_exception_leaves_fail_audit_and_reraises(
     assert summary["error_type"] == "RuntimeError"
     assert manifest["critical_errors"] == 1
     assert not (run_dir / "financial_metrics.csv").exists()
+
+
+def test_accounting_quality_fail_propagates_to_overall(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "core.phase3.accounting_quality_health",
+        lambda _checks: {"status": "FAIL", "checks": 1},
+    )
+    result = run_phase3(
+        symbols={"TEST"},
+        data_date=datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC),
+        source_path=FIXTURE,
+        output_root=tmp_path,
+    )
+    summary = json.loads((result.phase2.output_dir / "run_summary.json").read_text())
+    manifest = json.loads((result.phase2.output_dir / "validation_manifest.json").read_text())
+    assert summary["overall_status"] == "FAIL"
+    assert manifest["critical_errors"] == 1

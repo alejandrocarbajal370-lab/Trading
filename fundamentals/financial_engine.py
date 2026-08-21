@@ -27,12 +27,17 @@ DEFINITIONS = {
         ("cash_from_operations", "capital_expenditures"), "input_currency", "cash_from_operations"
     ),
     "free_cash_flow_margin": MetricDefinition(
-        ("cash_from_operations", "capital_expenditures", "revenue"), "ratio", "cash_from_operations"
+        ("cash_from_operations", "capital_expenditures", "revenue"),
+        "ratio",
+        "cash_from_operations",
     ),
     "net_debt": MetricDefinition(("total_debt", "cash"), "input_currency", "total_debt"),
     "net_debt_to_ebitda": MetricDefinition(("total_debt", "cash", "ebitda"), "ratio", "ebitda"),
     "cfo_to_net_income": MetricDefinition(
         ("cash_from_operations", "net_income"), "ratio", "cash_from_operations"
+    ),
+    "accrual_ratio": MetricDefinition(
+        ("net_income", "cash_from_operations", "total_assets"), "ratio", "net_income"
     ),
     "roic_v1": MetricDefinition(
         ("operating_income", "tax_rate", "total_debt", "total_equity", "cash"),
@@ -53,6 +58,7 @@ OUTPUT_COLUMNS = [
     "result_unit",
     "status",
     "reason",
+    "confidence",
     "input_lineage",
 ]
 FLOW_INPUTS = {
@@ -63,7 +69,7 @@ FLOW_INPUTS = {
     "operating_income",
     "ebitda",
 }
-INSTANT_INPUTS = {"total_debt", "cash", "total_equity"}
+INSTANT_INPUTS = {"total_debt", "cash", "total_equity", "total_assets"}
 
 
 def _calculate(metric: str, values: dict[str, float]) -> FormulaResult:
@@ -88,6 +94,12 @@ def _calculate(metric: str, values: dict[str, float]) -> FormulaResult:
     if metric == "cfo_to_net_income":
         return ratio(
             values["cash_from_operations"], values["net_income"], denominator_name="net_income"
+        )
+    if metric == "accrual_ratio":
+        return ratio(
+            values["net_income"] - values["cash_from_operations"],
+            values["total_assets"],
+            denominator_name="total_assets",
         )
     return roic_v1(
         values["operating_income"],
@@ -125,6 +137,18 @@ def _validation_reason(rows: dict[str, pd.Series]) -> str | None:
     if "tax_rate" in units and units["tax_rate"] != "RATIO":
         return "tax_rate unit must be RATIO"
     return None
+
+
+def _input_confidence(rows: dict[str, pd.Series]) -> float | None:
+    values: list[float] = []
+    for row in rows.values():
+        if "confidence" not in row.index or pd.isna(row["confidence"]):
+            return None
+        value = float(row["confidence"])
+        if not 0 <= value <= 1:
+            return None
+        values.append(value)
+    return min(values) if values else None
 
 
 def calculate_financial_metrics(snapshot: pd.DataFrame) -> pd.DataFrame:
@@ -186,6 +210,9 @@ def calculate_financial_metrics(snapshot: pd.DataFrame) -> pd.DataFrame:
                     else str(row["fiscal_period_start"]),
                     "fiscal_period_end": str(row["fiscal_period_end"]),
                     "period_type": row["period_type"],
+                    "confidence": None
+                    if "confidence" not in row.index or pd.isna(row["confidence"])
+                    else float(row["confidence"]),
                 }
                 for name, row in rows.items()
             ]
@@ -210,6 +237,7 @@ def calculate_financial_metrics(snapshot: pd.DataFrame) -> pd.DataFrame:
                     "result_unit": result_unit,
                     "status": status,
                     "reason": reason,
+                    "confidence": _input_confidence(rows),
                     "input_lineage": json.dumps(lineage, sort_keys=True),
                 }
             )

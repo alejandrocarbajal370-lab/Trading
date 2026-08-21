@@ -18,6 +18,7 @@ CORE_QUALITY_METRICS = (
     "roic",
     "fcf_margin",
     "cfo_conversion",
+    "accrual_quality",
     "net_debt_to_ebitda",
     "roic_stability",
     "margin_stability",

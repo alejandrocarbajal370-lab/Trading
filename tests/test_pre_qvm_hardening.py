@@ -77,6 +77,14 @@ def test_period_classification_and_ttm_are_pit_and_require_contiguous_quarters()
     ttm = assemble_ttm(frame, cutoff=pd.Timestamp("2026-03-01T00:00:00Z"))
     assert ttm.iloc[0]["value"] == 100
     assert ttm.iloc[0]["period_kind"] == "ttm"
+    lineage = ttm.iloc[0]["component_lineage"]
+    assert len(lineage) == 4
+    assert all(len(item["fact_id"]) == 64 for item in lineage)
+    reordered = assemble_ttm(
+        frame.sample(frac=1, random_state=7).reset_index(drop=True),
+        cutoff=pd.Timestamp("2026-03-01T00:00:00Z"),
+    )
+    assert reordered.iloc[0]["component_lineage"] == lineage
     broken = frame.copy()
     broken.iloc[1, broken.columns.get_loc("fiscal_period_start")] = datetime.date(2025, 4, 2)
     with pytest.raises(PeriodAssemblyError, match="non-contiguous"):
@@ -85,12 +93,7 @@ def test_period_classification_and_ttm_are_pit_and_require_contiguous_quarters()
 
 def test_quality_and_confidence_are_diagnostics_not_investment_signals() -> None:
     snapshot = CsvFundamentalSource(FIXTURE).fetch(symbols={"TEST"})
-    assets = snapshot.iloc[[0]].copy()
-    assets["metric"] = "total_assets"
-    assets["period_type"] = "instant"
-    assets["fiscal_period_start"] = None
-    assets["value"] = 1000
-    checks = evaluate_accounting_quality(pd.concat([snapshot, assets]))
+    checks = evaluate_accounting_quality(snapshot)
     assert {"cfo_to_net_income", "accrual_ratio"} <= set(checks["check"])
     assert accounting_quality_health(checks)["is_investment_signal"] is False
     confidence = metric_confidence(snapshot)
