@@ -27,6 +27,8 @@ data/processed/
 # Validation/runtime outputs
 validation_outputs/*
 !validation_outputs/README.md
+research_outputs/*
+!research_outputs/README.md
 
 # Reports
 reports/generated/
