@@ -27,6 +27,7 @@ universe-validate = "core.phase36:main"
 research-run = "research.runner:main"
 quality-research-run = "research.quality_runner:main"
 quality-validation-run = "research.quality_validation:main"
+value-research-run = "research.value_runner:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
