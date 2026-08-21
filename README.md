@@ -257,7 +257,7 @@ make an explicit `KEEP`, `DISCARD`, or `REVIEW` decision. Phase 4.0 itself perfo
 Value, Momentum, score, rank, portfolio, backtest, broker, order, or execution calculation. Every
 research run remains `NO_TRADE` with `live_execution_enabled: false`.
 
-## Phase 4.1 Quality Factor Engine V1
+## Phase 4.1 Quality Factor Engine V1.1
 
 Phase 4.1 implements the first research-only QVM component: Quality. Its hypothesis is that durable
 returns on invested capital, cash-backed earnings, stable margins, and prudent leverage describe
@@ -268,7 +268,11 @@ The engine accepts only immutable, checksum-verified datasets registered by the 
 Environment. Its primary input is the auditable `financial_metrics.csv` contract produced by
 Financial Intelligence, including upstream status, reason, confidence, and input lineage. An
 upstream `MISSING`, `NOT_COMPUTED`, low-confidence result, conflict, or PIT violation remains visible
-and cannot become a passing Quality observation.
+and cannot become a passing Quality observation. Missing or null confidence is
+`MISSING_CONFIDENCE`; malformed or out-of-range confidence is `LOW_CONFIDENCE`. The output keeps
+data, calculation, and economic confidence separate and uses their conservative minimum as the
+row-level confidence. Corrupt, empty, or source-free lineage becomes `INVALID_LINEAGE` rather than
+being silently repaired.
 
 Quality V1 emits these individual measurements:
 
@@ -281,6 +285,17 @@ Quality V1 emits these individual measurements:
   quality output.
 - Margin stability: population standard deviation of at least two comparable historical FCF
   margins.
+- ROIC and FCF consistency, positive-period counts, and margin persistence as separate historical
+  measurements, never as a composite score.
+- Optional share-count change and reinvestment-rate observations as capital-allocation foundations.
+  M&A remains a documented placeholder with no inferred metric.
+
+Sector and industry labels plus optional precomputed relative percentiles are preserved for future
+normalization. V1.1 does not calculate cross-sectional percentiles, rankings, or scores. Each output
+also exposes the primary source, source availability time, source fiscal-period end, and PIT metadata.
+Extreme but mathematically valid ROIC remains available with a warning. Contradictions such as high
+ROIC alongside elevated leverage or deteriorating margin persistence emit explanatory warnings;
+they do not change a metric into a score or automatically block it.
 
 Standard deviation is an unweighted dispersion statistic, not a score: lower dispersion may
 describe stability, but V1 assigns neither a preferred direction nor a weight. Negative ROIC, FCF
@@ -301,11 +316,12 @@ quality-research-run \
 
 The immutable output directory contains `quality_metrics.csv` and
 `quality_research_run.json`. Every metric row includes `value`, `status`, `reason`, data
-`confidence`, and complete dataset/input `lineage`. The run records experiment, dataset and universe
+`confidence` components, sector/industry context, warnings, primary-source fields, PIT metadata, and
+complete dataset/input `lineage`. The run records experiment, dataset and universe
 snapshots, universe and Quality ruleset versions, assumptions, reproducibility fingerprint, and
 factor health.
 
-V1 limitations are intentional: it does not normalize sectors, annualize partial periods, impute
+V1.1 limitations are intentional: it does not calculate sector rankings, annualize partial periods, impute
 missing facts, select thresholds, assign weights, calculate a composite score or rank, evaluate
 forward returns, construct a portfolio, run a complete backtest, connect a broker, or execute.
 Value and Momentum remain unimplemented. Every output stays `NO_TRADE` and

@@ -63,7 +63,7 @@ def _fingerprint(
         ],
         "quality_ruleset": QUALITY_CONTRACT.model_dump(mode="json"),
         "assumptions": assumptions,
-        "runner_version": "phase4.1-quality-research-v1",
+        "runner_version": "phase4.1-quality-research-v1.1",
     }
     return hashlib.sha256(_canonical_json(document).encode()).hexdigest()
 
@@ -114,7 +114,7 @@ def run_quality_experiment(
     if warnings and health == "PASS":
         health = "WARNING"
     run = {
-        "schema_version": "quality-research-run-v1",
+        "schema_version": "quality-research-run-v1.1",
         "run_id": run_id,
         "reproducibility_fingerprint": fingerprint,
         "experiment_id": experiment.experiment_id,
@@ -135,6 +135,16 @@ def run_quality_experiment(
         "assumptions": list(assumptions),
         "health": health,
         "factor_health": evaluation.health,
+        "sector_normalization": {
+            "mode": "metadata_only",
+            "supported_fields": ["sector", "industry", "sector_percentile", "industry_percentile"],
+            "ranking_calculated": False,
+        },
+        "capital_allocation": {
+            "share_count_change": "optional metric when present upstream",
+            "reinvestment_rate": "optional metric when present upstream",
+            "m_and_a": "placeholder; no metric or score calculated",
+        },
         "warnings": warnings,
         "errors": [],
         "lineage": {

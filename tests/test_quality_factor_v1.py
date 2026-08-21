@@ -171,7 +171,7 @@ def test_quality_research_run_is_reproducible_and_auditable(tmp_path: Path) -> N
     assert first.research_run == second.research_run
     run = json.loads((first.output_dir / "quality_research_run.json").read_text())
     assert run["universe_snapshot_id"] == "universe-2024-12-31"
-    assert run["quality_ruleset_version"] == "quality-v1.0"
+    assert run["quality_ruleset_version"] == "quality-v1.1"
     assert run["trade_decision"] == "NO_TRADE"
     assert run["live_execution_enabled"] is False
     assert run["composite_score_calculated"] is False
@@ -210,3 +210,93 @@ def test_absent_metric_is_emitted_as_missing() -> None:
     ).metrics.set_index("metric")
     assert result.loc["net_debt_to_ebitda", "status"] == "MISSING"
     assert "absent" in result.loc["net_debt_to_ebitda", "reason"]
+
+
+@pytest.mark.parametrize(
+    ("confidence", "expected"),
+    [(None, "MISSING_CONFIDENCE"), (float("nan"), "MISSING_CONFIDENCE"), ("bad", "LOW_CONFIDENCE"), (1.2, "LOW_CONFIDENCE")],
+)
+def test_missing_null_and_invalid_confidence_never_assume_full_confidence(
+    confidence: object, expected: str
+) -> None:
+    metrics = _metrics()
+    metrics["confidence"] = metrics["confidence"].astype(object)
+    metrics.loc[metrics["metric"] == "roic_v1", "confidence"] = confidence
+    result = evaluate_quality_metrics(
+        metrics, experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
+    ).metrics.set_index("metric")
+    assert result.loc["roic", "status"] == expected
+    assert result.loc["roic", "confidence"] == 0
+
+
+def test_absent_confidence_column_is_missing_confidence() -> None:
+    result = evaluate_quality_metrics(
+        _metrics().drop(columns="confidence"),
+        experiment_id="quality-001",
+        dataset_lineage={"snapshot_id": "snapshot"},
+    ).metrics.set_index("metric")
+    assert result.loc["roic", "status"] == "MISSING_CONFIDENCE"
+
+
+@pytest.mark.parametrize("lineage", ["{broken", "", "[]", "null"])
+def test_corrupt_or_empty_lineage_degrades_status(lineage: str) -> None:
+    metrics = _metrics()
+    metrics.loc[
+        (metrics["metric"] == "roic_v1") & (metrics["fiscal_period_end"] == "2024-12-31"),
+        "input_lineage",
+    ] = lineage
+    result = evaluate_quality_metrics(
+        metrics, experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
+    ).metrics.set_index("metric")
+    assert result.loc["roic", "status"] == "INVALID_LINEAGE"
+
+
+def test_sector_foundation_and_primary_source_are_propagated() -> None:
+    metrics = _metrics()
+    metrics["sector"] = "Industrials"
+    metrics["industry"] = "Machinery"
+    metrics["sector_percentile"] = 82.0
+    metrics["industry_percentile"] = 74.0
+    metrics["pit_metadata"] = json.dumps({"knowledge_date": "2025-03-01"})
+    row = evaluate_quality_metrics(
+        metrics, experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
+    ).metrics.set_index("metric").loc["roic"]
+    assert row["sector"] == "Industrials"
+    assert row["industry_percentile"] == 74.0
+    assert row["primary_source"] == "sec_fixture"
+    assert row["source_available_at"] == "2025-03-01T00:00:00+00:00"
+    assert row["source_fiscal_period_end"] == "2024-12-31"
+    assert json.loads(row["pit_metadata"])["knowledge_date"] == "2025-03-01"
+
+
+def test_persistence_metrics_are_individual_and_reproducible() -> None:
+    result = evaluate_quality_metrics(
+        _metrics(), experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
+    ).metrics.set_index("metric")
+    assert result.loc["roic_consistency", "value"] == 1
+    assert result.loc["roic_positive_years", "value"] == 2
+    assert result.loc["fcf_consistency", "value"] == 1
+    assert result.loc["fcf_positive_years", "value"] == 2
+    assert result.loc["margin_persistence", "value"] == 1
+
+
+def test_extreme_roic_and_metric_disagreement_emit_explanatory_warnings() -> None:
+    metrics = _metrics()
+    metrics.loc[
+        (metrics["metric"] == "roic_v1") & (metrics["fiscal_period_end"] == "2024-12-31"),
+        "value",
+    ] = 1.5
+    metrics.loc[
+        (metrics["metric"] == "net_debt_to_ebitda")
+        & (metrics["fiscal_period_end"] == "2024-12-31"),
+        "value",
+    ] = 5.0
+    result = evaluate_quality_metrics(
+        metrics, experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
+    )
+    row = result.metrics.set_index("metric").loc["roic"]
+    warnings = json.loads(row["warnings"])
+    assert row["status"] == "PASS"
+    assert any("extreme ROIC" in warning for warning in warnings)
+    assert "high ROIC conflicts with elevated leverage" in warnings
+    assert result.health["status"] == "WARNING"
