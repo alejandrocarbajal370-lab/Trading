@@ -71,6 +71,10 @@ class MomentumFactorContract(MomentumContractModel):
         "trading_calendar",
         "session_status",
         "timing_policy",
+        "historical_provider",
+        "historical_dataset",
+        "historical_dataset_version",
+        "historical_access_tier",
     )
     definitions: tuple[MomentumMetricDefinition, ...]
     benchmark_configurable: Literal[True] = True
@@ -240,7 +244,10 @@ def _prepare(
     except ValueError as error:
         return data, str(error), None
     data = data.sort_values("date").reset_index(drop=True)
-    expected = set(calendar.sessions(data.iloc[0]["date"], data.iloc[-1]["date"]))
+    try:
+        expected = set(calendar.sessions(data.iloc[0]["date"], data.iloc[-1]["date"]))
+    except ValueError as error:
+        return data, str(error), calendar
     observed = set(data["date"])
     missing = sorted(expected - observed)
     if missing:
@@ -272,7 +279,7 @@ def _prepare(
                 or (raw <= 0).any()
                 or not np.allclose(observed, factors, rtol=1e-10, atol=1e-12)
             ):
-                return data, "corporate action adjustment_factor does not reconcile", calendar
+                return data, "adjusted/raw relationship does not validate", calendar
     return data, None, calendar
 
 
@@ -469,8 +476,19 @@ def evaluate_momentum_metrics(
         "adjusted_prices": "required_fail_closed",
         "raw_close": "auxiliary_only",
         "log_price_layer": "implemented",
-        "corporate_actions": "validated",
-        "trading_calendar": "configured_expected_sessions",
+        "corporate_actions": "provider_actions_captured_adjusted_raw_relationship_validated",
+        "independent_corporate_action_source": False,
+        "trading_calendar": "versioned_historical_sessions",
+        "trading_calendar_lineage": [
+            json.loads(item)
+            for item in sorted(
+                {
+                    json.dumps(calendar.lineage, sort_keys=True)
+                    for _, error, calendar in prepared.values()
+                    if error is None and calendar is not None
+                }
+            )
+        ],
         "missing_sessions": "compared_expected_vs_observed",
         "stale_prices": "market_session_based",
         "benchmark_compatibility": "basis_calendar_timing_enforced",
@@ -493,6 +511,10 @@ def evaluate_momentum_metrics(
         "dataset": dataset_lineage,
         "benchmark_symbol": benchmark_key,
         "price_foundation": {"primary": "adjusted_close", "raw_close": "auxiliary_audit_only"},
+        "corporate_action_policy": (
+            "provider corporate actions captured + adjusted/raw relationship validated"
+        ),
+        "independent_corporate_action_source": False,
         "transformation": LOG_TRANSFORM,
         "metrics": [
             {"symbol": r["symbol"], "metric": r["metric"], "lineage": json.loads(r["lineage"])}
@@ -509,7 +531,9 @@ def evaluate_momentum_metrics(
             "adjusted_price_foundation": "implemented",
             "log_transformation": "implemented",
             "non_positive_prices": "fail_closed",
-            "corporate_actions": "implemented",
+            "corporate_actions": (
+                "provider_captured_adjusted_raw_relationship_validated_not_independent"
+            ),
             "expected_market_sessions": "implemented",
             "stale_prices": "implemented",
             "session_windows": "implemented",
