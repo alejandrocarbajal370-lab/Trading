@@ -1,6 +1,7 @@
 import datetime
 import json
 from pathlib import Path
+from typing import Self
 
 import numpy as np
 import pandas as pd
@@ -8,6 +9,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.phase36 import run_phase36
+from data.connectors.alpha_vantage import AlphaVantageMomentumHistoricalPriceSource
 from data.market_calendar import get_trading_calendar
 from factors.momentum import MOMENTUM_CONTRACT, MomentumFactorContract, evaluate_momentum_metrics
 from research.datasets import file_sha256
@@ -40,6 +42,10 @@ def _prices() -> pd.DataFrame:
                     "trading_calendar": "XNYS",
                     "session_status": "PRESENT",
                     "timing_policy": "EOD_CLOSE_T_PLUS_0",
+                    "historical_provider": "fixture_provider",
+                    "historical_dataset": "adjusted_daily_history",
+                    "historical_dataset_version": "fixture-v1",
+                    "historical_access_tier": "offline_fixture",
                 }
             )
     return pd.DataFrame(rows)
@@ -206,7 +212,7 @@ def test_corporate_action_adjustment_must_reconcile_to_raw_close() -> None:
     frame.loc[affected, "adjustment_factor"] = 0.5
     result = _evaluate(frame).metrics
     assert set(result["status"]) == {"INVALID_DATA"}
-    assert "does not reconcile" in result.iloc[0]["reason"]
+    assert "does not validate" in result.iloc[0]["reason"]
 
 
 def test_golden_adjusted_market_data_to_momentum_is_fail_closed_and_interpretable() -> None:
@@ -217,6 +223,54 @@ def test_golden_adjusted_market_data_to_momentum_is_fail_closed_and_interpretabl
     assert set(evaluation.metrics["unit"]) == {"return", "return_per_volatility", "r_squared"}
     assert evaluation.health["trade_decision"] == "NO_TRADE"
     assert evaluation.health["live_execution_enabled"] is False
+
+
+def test_golden_provider_history_to_momentum_end_to_end() -> None:
+    sessions = get_trading_calendar("XNYS").sessions(datetime.date(2023, 12, 20), AS_OF)
+    payloads: dict[str, dict[str, object]] = {}
+    for symbol, growth in (("AAA", 0.001), ("SPY", 0.0004)):
+        series = {}
+        for index, date in enumerate(sessions):
+            price = 100 * (1 + growth) ** index
+            series[date.isoformat()] = {
+                "4. close": str(price),
+                "5. adjusted close": str(price),
+                "7. dividend amount": "0",
+                "8. split coefficient": "1",
+            }
+        payloads[symbol] = {"Time Series (Daily)": series}
+
+    class Response:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def __enter__(self) -> Self:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(self.payload).encode()
+
+    def opener(request: object, *, timeout: float) -> Response:
+        del timeout
+        symbol = "AAA" if "symbol=AAA" in request.full_url else "SPY"  # type: ignore[attr-defined]
+        return Response(payloads[symbol])
+
+    source = AlphaVantageMomentumHistoricalPriceSource(api_key="fixture", opener=opener)
+    prices = source.fetch_history(symbols={"AAA", "SPY"}, as_of=AS_OF)
+    evaluation = evaluate_momentum_metrics(
+        prices,
+        experiment_id="golden-market-data-momentum",
+        dataset_lineage={"source_metadata": source.metadata},
+        as_of=AS_OF,
+        benchmark_symbol="SPY",
+    )
+    assert evaluation.health["status"] == "PASS"
+    assert set(evaluation.metrics["status"]) == {"PASS"}
+    assert evaluation.lineage["independent_corporate_action_source"] is False
+    assert evaluation.health["trade_decision"] == "NO_TRADE"
 
 
 def test_contract_is_fail_closed_and_benchmark_configurable() -> None:
@@ -334,3 +388,9 @@ def test_runner_is_reproducible_and_writes_required_outputs(tmp_path: Path) -> N
     assert run["backtest_executed"] is False
     assert run["signals_generated"] is False
     assert run["market_data_audit_completed"] is True
+    assert run["historical_price_source"] == {
+        "provider": "fixture_provider",
+        "dataset": "adjusted_daily_history",
+        "dataset_version": "fixture-v1",
+        "access_tier": "offline_fixture",
+    }
