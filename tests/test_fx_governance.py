@@ -10,6 +10,7 @@ from data.fx import (
     FXGovernanceError,
     FXLineageEntry,
     FXProvider,
+    FXStalenessPolicy,
     canonical_fx_checksum,
     govern_fx,
 )
@@ -62,7 +63,7 @@ def _govern(frame: pd.DataFrame | None = None) -> FXDataset:
             ),
         ),
         as_of=AS_OF,
-        maximum_staleness=datetime.timedelta(days=2),
+        staleness_policy=FXStalenessPolicy(maximum_sessions=2),
     )
 
 
@@ -79,6 +80,7 @@ def test_valid_pit_fx_and_historical_conversion_preserve_lineage() -> None:
     assert converted.rate_market_timestamp.date() == datetime.date(2025, 1, 30)
     assert converted.fx_canonical_id == governed.metadata.canonical_id
     assert converted.fx_checksum == governed.metadata.checksum
+    assert converted.conversion_method == "direct"
 
 
 @pytest.mark.parametrize("column", ["market_timestamp", "available_at"])
@@ -133,8 +135,102 @@ def test_stale_fx_fails() -> None:
             available_at=AS_OF,
             lineage=(FXLineageEntry(source="fixture", dataset="fx", dataset_version="v1"),),
             as_of=AS_OF + datetime.timedelta(days=10),
-            maximum_staleness=datetime.timedelta(days=2),
+            staleness_policy=FXStalenessPolicy(maximum_sessions=2),
         )
+
+
+def test_historical_conversion_with_stale_selected_fixing_fails_closed() -> None:
+    frame = _rates()
+    frame.loc[0, "market_timestamp"] = "2025-01-01T21:00:00Z"
+    frame.loc[0, "available_at"] = "2025-01-01T21:01:00Z"
+    governed = _govern(frame)
+    with pytest.raises(FXGovernanceError, match="selected FX observation.*13 sessions old"):
+        governed.convert(
+            10,
+            source_currency="JPY",
+            target_currency="USD",
+            market_at=datetime.datetime(2025, 1, 20, 20, tzinfo=datetime.UTC),
+            cutoff=AS_OF,
+        )
+
+
+def test_weekend_uses_explicit_weekday_session_semantics() -> None:
+    frame = _rates().loc[lambda rows: rows["currency_pair"] == "EUR/USD"].copy()
+    friday = datetime.datetime(2025, 1, 31, 21, tzinfo=datetime.UTC)
+    governed = govern_fx(
+        frame,
+        source="fixture_provider",
+        dataset_version="v1",
+        available_at=datetime.datetime(2025, 2, 3, 20, tzinfo=datetime.UTC),
+        lineage=(FXLineageEntry(source="fixture", dataset="fx", dataset_version="v1"),),
+        as_of=datetime.datetime(2025, 2, 3, 20, tzinfo=datetime.UTC),
+        staleness_policy=FXStalenessPolicy(maximum_sessions=1),
+    )
+    converted = governed.convert(
+        10,
+        source_currency="EUR",
+        target_currency="USD",
+        market_at=datetime.datetime(2025, 2, 3, 20, tzinfo=datetime.UTC),
+        cutoff=datetime.datetime(2025, 2, 3, 20, tzinfo=datetime.UTC),
+    )
+    assert converted.rate_market_timestamp == friday
+    assert governed.metadata.staleness_policy.version == "fx-weekday-sessions-utc-v1"
+
+
+def test_inconsistent_direct_inverse_rates_fail_closed() -> None:
+    frame = _rates()
+    direct = frame.loc[frame["currency_pair"] == "EUR/USD"].iloc[0].to_dict()
+    inverse = {
+        **direct,
+        "currency_pair": "USD/EUR",
+        "base_currency": "USD",
+        "quote_currency": "EUR",
+        "rate": 0.95,
+    }
+    with pytest.raises(FXGovernanceError, match="inconsistent direct/inverse"):
+        _govern(pd.concat([frame, pd.DataFrame([inverse])], ignore_index=True))
+
+
+def test_direct_inverse_rates_within_configured_tolerance_are_accepted() -> None:
+    frame = _rates()
+    direct = frame.loc[frame["currency_pair"] == "EUR/USD"].iloc[0].to_dict()
+    inverse = {
+        **direct,
+        "currency_pair": "USD/EUR",
+        "base_currency": "USD",
+        "quote_currency": "EUR",
+        "rate": (1 / 1.04) + 1e-7,
+    }
+    governed = govern_fx(
+        pd.concat([frame, pd.DataFrame([inverse])], ignore_index=True),
+        source="fixture_provider",
+        dataset_version="v1",
+        available_at=AS_OF,
+        lineage=(FXLineageEntry(source="fixture", dataset="fx", dataset_version="v1"),),
+        as_of=AS_OF,
+        staleness_policy=FXStalenessPolicy(
+            maximum_sessions=2, reciprocal_tolerance=1e-6
+        ),
+    )
+    assert governed.metadata.staleness_policy.reciprocal_tolerance == 1e-6
+
+
+def test_identity_conversion_has_no_synthetic_fx_fixing_lineage() -> None:
+    converted = _govern().convert(
+        10,
+        source_currency="USD",
+        target_currency="USD",
+        market_at=AS_OF,
+        cutoff=AS_OF,
+    )
+    assert converted.conversion_method == "identity"
+    assert converted.rate == 1.0
+    assert converted.rate_market_timestamp is None
+    assert converted.rate_available_at is None
+    assert converted.fx_canonical_id is None
+    assert converted.fx_checksum is None
+    assert converted.fx_source is None
+    assert converted.fx_dataset_version is None
 
 
 def test_conversion_fails_when_only_future_or_unavailable_rate_exists() -> None:

@@ -368,10 +368,16 @@ is produced; `NO_TRADE` and `live_execution_enabled=false` remain mandatory.
 
 `data/fx.py` defines a provider-neutral, typed FX dataset boundary with distinct market and
 availability timestamps. Snapshots and conversions are point-in-time validated, content-addressed
-with a canonical checksum, staleness checked, and linked to their upstream lineage. Historical
+with a canonical checksum, staleness checked, and linked to their upstream lineage. The versioned
+`fx-weekday-sessions-utc-v1` policy counts Monday-Friday UTC dates after a fixing through the
+reference date and deliberately infers no holiday calendar; its session limit and reciprocal-rate
+tolerance are stored with dataset metadata. The selected fixing is checked again at conversion
+time, and simultaneous direct/inverse rates must reconcile within that governed tolerance.
+Historical
 conversion selects only a rate whose market timestamp is no later than the requested historical
 instant and whose availability timestamp is no later than the research cutoff; ambiguity or missing
-currency fails closed. This layer creates no scores, rankings, weights, signals, portfolios,
+currency fails closed. Identity conversion is explicitly marked and carries no synthetic fixing
+timestamp or FX lineage. This layer creates no scores, rankings, weights, signals, portfolios,
 backtests, or execution behavior. `NO_TRADE` remains active and `live_execution_enabled=false`.
 
 ## Safety

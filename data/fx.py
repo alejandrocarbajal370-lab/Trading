@@ -3,13 +3,18 @@ from __future__ import annotations
 import datetime
 import hashlib
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 FX_CONTRACT_VERSION = "fx-governance-v1"
+FX_STALENESS_POLICY_VERSION = "fx-weekday-sessions-utc-v1"
+FX_STALENESS_CONVENTION = (
+    "UTC calendar dates; Monday-Friday dates after the fixing through the reference date "
+    "count as sessions; holidays are not inferred"
+)
 FX_REQUIRED_COLUMNS = (
     "currency_pair",
     "base_currency",
@@ -35,6 +40,24 @@ class FXLineageEntry(_ContractModel):
     transformation: str | None = None
 
 
+class FXStalenessPolicy(_ContractModel):
+    """Reproducible FX freshness convention without an implicit holiday calendar."""
+
+    version: str = Field(
+        default=FX_STALENESS_POLICY_VERSION,
+        pattern=r"^fx-weekday-sessions-utc-v1$",
+    )
+    maximum_sessions: int = Field(ge=0)
+    reciprocal_tolerance: float = Field(default=1e-9, ge=0.0, allow_inf_nan=False)
+    convention: Literal[
+        "UTC calendar dates; Monday-Friday dates after the fixing through the reference date "
+        "count as sessions; holidays are not inferred"
+    ] = Field(
+        default=FX_STALENESS_CONVENTION,
+        frozen=True,
+    )
+
+
 class FXMetadata(_ContractModel):
     source: str = Field(min_length=1)
     dataset_version: str = Field(min_length=1)
@@ -42,6 +65,7 @@ class FXMetadata(_ContractModel):
     checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
     canonical_id: str = Field(pattern=r"^fx:[0-9a-f]{64}$")
     lineage: tuple[FXLineageEntry, ...] = Field(min_length=1)
+    staleness_policy: FXStalenessPolicy
     contract_version: str = Field(default=FX_CONTRACT_VERSION, pattern=r"^fx-governance-v1$")
 
     @field_validator("available_at")
@@ -74,12 +98,13 @@ class FXConversion:
     target_currency: str
     converted_amount: float
     rate: float
-    rate_market_timestamp: datetime.datetime
-    rate_available_at: datetime.datetime
-    fx_canonical_id: str
-    fx_checksum: str
-    fx_source: str
-    fx_dataset_version: str
+    conversion_method: Literal["identity", "direct", "inverse"]
+    rate_market_timestamp: datetime.datetime | None
+    rate_available_at: datetime.datetime | None
+    fx_canonical_id: str | None
+    fx_checksum: str | None
+    fx_source: str | None
+    fx_dataset_version: str | None
 
 
 @dataclass(frozen=True)
@@ -121,12 +146,13 @@ class FXDataset:
                 target_currency=target,
                 converted_amount=float(amount),
                 rate=1.0,
-                rate_market_timestamp=market_at,
-                rate_available_at=cutoff,
-                fx_canonical_id=self.metadata.canonical_id,
-                fx_checksum=self.metadata.checksum,
-                fx_source=self.metadata.source,
-                fx_dataset_version=self.metadata.dataset_version,
+                conversion_method="identity",
+                rate_market_timestamp=None,
+                rate_available_at=None,
+                fx_canonical_id=None,
+                fx_checksum=None,
+                fx_source=None,
+                fx_dataset_version=None,
             )
 
         market_utc = pd.Timestamp(market_at).tz_convert("UTC")
@@ -146,21 +172,30 @@ class FXDataset:
                 ["market_timestamp", "available_at"], kind="stable"
             ).iloc[-1]
             rate = float(observation["rate"])
+            conversion_method = "direct"
         elif not inverse.empty:
             observation = inverse.sort_values(
                 ["market_timestamp", "available_at"], kind="stable"
             ).iloc[-1]
             rate = 1.0 / float(observation["rate"])
+            conversion_method = "inverse"
         else:
             raise FXGovernanceError(
                 f"no PIT-safe FX rate for {source}/{target} at market_at and cutoff"
             )
+        _validate_freshness(
+            observation["market_timestamp"],
+            market_utc,
+            self.metadata.staleness_policy,
+            context=f"selected FX observation for {source}/{target}",
+        )
         return FXConversion(
             amount=float(amount),
             source_currency=source,
             target_currency=target,
             converted_amount=float(amount) * rate,
             rate=rate,
+            conversion_method=conversion_method,
             rate_market_timestamp=observation["market_timestamp"].to_pydatetime(),
             rate_available_at=observation["available_at"].to_pydatetime(),
             fx_canonical_id=self.metadata.canonical_id,
@@ -182,6 +217,50 @@ def _currency(value: object) -> str:
     if len(currency) != 3 or not currency.isalpha():
         raise FXGovernanceError(f"invalid currency: {value!r}")
     return currency
+
+
+def _weekday_sessions_elapsed(earlier: pd.Timestamp, later: pd.Timestamp) -> int:
+    """Count Monday-Friday UTC dates in (earlier.date(), later.date()]."""
+    if earlier > later:
+        raise FXGovernanceError("freshness reference precedes FX observation")
+    cursor = earlier.date() + datetime.timedelta(days=1)
+    end = later.date()
+    sessions = 0
+    while cursor <= end:
+        sessions += cursor.weekday() < 5
+        cursor += datetime.timedelta(days=1)
+    return sessions
+
+
+def _validate_freshness(
+    observation: pd.Timestamp,
+    reference: pd.Timestamp,
+    policy: FXStalenessPolicy,
+    *,
+    context: str,
+) -> None:
+    elapsed = _weekday_sessions_elapsed(observation, reference)
+    if elapsed > policy.maximum_sessions:
+        raise FXGovernanceError(
+            f"stale FX data: {context} is {elapsed} sessions old under {policy.version} "
+            f"(maximum {policy.maximum_sessions})"
+        )
+
+
+def _validate_reciprocal_pairs(data: pd.DataFrame, tolerance: float) -> None:
+    rates: dict[tuple[str, str, pd.Timestamp], list[float]] = {}
+    for row in data.itertuples(index=False):
+        key = (row.base_currency, row.quote_currency, row.market_timestamp)
+        rates.setdefault(key, []).append(float(row.rate))
+    for (base, quote, timestamp), direct_rates in rates.items():
+        inverse_rates = rates.get((quote, base, timestamp), [])
+        for rate in direct_rates:
+            for inverse in inverse_rates:
+                if not np.isclose(rate * inverse, 1.0, rtol=tolerance, atol=tolerance):
+                    raise FXGovernanceError(
+                        f"inconsistent direct/inverse FX rates for {base}/{quote} at "
+                        f"{timestamp.isoformat()}"
+                    )
 
 
 def canonical_fx_checksum(frame: pd.DataFrame) -> str:
@@ -220,16 +299,13 @@ def govern_fx(
     available_at: datetime.datetime,
     lineage: tuple[FXLineageEntry, ...],
     as_of: datetime.datetime,
-    maximum_staleness: datetime.timedelta,
+    staleness_policy: FXStalenessPolicy,
 ) -> FXDataset:
     """Validate and content-address an FX snapshot; ambiguity always fails closed."""
     _require_aware("as_of", as_of)
     _require_aware("available_at", available_at)
     if available_at > as_of:
         raise FXGovernanceError("PIT violation: dataset available_at exceeds as_of")
-    if maximum_staleness < datetime.timedelta(0):
-        raise FXGovernanceError("maximum_staleness must be non-negative")
-
     data = frame.copy(deep=True)
     missing = sorted(set(FX_REQUIRED_COLUMNS) - set(data.columns))
     if missing:
@@ -257,6 +333,7 @@ def govern_fx(
         raise FXGovernanceError("FX rates must be finite and positive")
     if data.duplicated(["currency_pair", "market_timestamp", "available_at"]).any():
         raise FXGovernanceError("duplicate FX observations")
+    _validate_reciprocal_pairs(data, staleness_policy.reciprocal_tolerance)
 
     cutoff = pd.Timestamp(as_of).tz_convert("UTC")
     dataset_available = pd.Timestamp(available_at).tz_convert("UTC")
@@ -269,9 +346,8 @@ def govern_fx(
     if (data["available_at"] < data["market_timestamp"]).any():
         raise FXGovernanceError("invalid FX chronology: available_at precedes market timestamp")
     latest_by_pair = data.groupby("currency_pair")["market_timestamp"].max()
-    stale = latest_by_pair.loc[cutoff - latest_by_pair > maximum_staleness]
-    if not stale.empty:
-        raise FXGovernanceError(f"stale FX data for: {', '.join(stale.index)}")
+    for pair, latest in latest_by_pair.items():
+        _validate_freshness(latest, cutoff, staleness_policy, context=str(pair))
 
     data = data.sort_values(
         ["currency_pair", "market_timestamp", "available_at"], kind="stable"
@@ -284,5 +360,6 @@ def govern_fx(
         checksum=checksum,
         canonical_id=f"fx:{checksum}",
         lineage=lineage,
+        staleness_policy=staleness_policy,
     )
     return FXDataset(frame=data, metadata=metadata)
