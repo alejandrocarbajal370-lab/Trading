@@ -12,7 +12,8 @@ from typing import Any
 
 import pandas as pd
 
-from factors.momentum import MOMENTUM_CONTRACT, evaluate_momentum_metrics
+from data.market_calendar import get_trading_calendar
+from factors.momentum import LOG_TRANSFORM, MOMENTUM_CONTRACT, evaluate_momentum_metrics
 from research.datasets import (
     DatasetVersionError,
     VerifiedDataset,
@@ -105,6 +106,22 @@ def _find_dataset(datasets: list[VerifiedDataset]) -> tuple[VerifiedDataset, pd.
     return matches[0]
 
 
+def _historical_source_metadata(frame: pd.DataFrame) -> dict[str, str]:
+    mapping = {
+        "provider": "historical_provider",
+        "dataset": "historical_dataset",
+        "dataset_version": "historical_dataset_version",
+        "access_tier": "historical_access_tier",
+    }
+    metadata: dict[str, str] = {}
+    for output_name, column in mapping.items():
+        values = set(frame[column].dropna().astype(str))
+        if len(values) != 1 or "" in values:
+            raise ValueError(f"Momentum historical source requires one explicit {column}")
+        metadata[output_name] = next(iter(values))
+    return metadata
+
+
 def run_momentum_experiment(
     *,
     registry_path: Path,
@@ -148,11 +165,18 @@ def run_momentum_experiment(
         _failure_audit(output_root, experiment, universe_snapshot_dir, error)
         raise
     price_dataset, frame = _find_dataset(verified)
+    historical_source = _historical_source_metadata(frame)
+    calendar_names = set(frame["trading_calendar"].dropna().astype(str))
+    if len(calendar_names) != 1:
+        raise ValueError("Momentum dataset requires one explicit trading calendar")
+    calendar_lineage = get_trading_calendar(next(iter(calendar_names))).lineage
     dataset_lineage = {
         "dataset_id": price_dataset.registration.dataset_id,
         "snapshot_id": price_dataset.registration.snapshot_id,
         "sha256": price_dataset.observed_sha256,
         "registered_lineage": list(price_dataset.registration.lineage),
+        "historical_source": historical_source,
+        "trading_calendar": calendar_lineage,
     }
     evaluation = evaluate_momentum_metrics(
         frame,
@@ -166,7 +190,10 @@ def run_momentum_experiment(
     fingerprint_document = {
         "experiment": experiment.to_dict(),
         "datasets": dataset_lineage,
+        "historical_source": historical_source,
         "contract": MOMENTUM_CONTRACT.model_dump(mode="json"),
+        "log_price_transformation": LOG_TRANSFORM,
+        "trading_calendar": calendar_lineage,
         "benchmark_symbol": benchmark_symbol,
         "as_of": as_of.isoformat(),
         "assumptions": assumptions,
@@ -192,6 +219,9 @@ def run_momentum_experiment(
         "hypothesis": MOMENTUM_CONTRACT.hypothesis,
         "momentum_ruleset_version": MOMENTUM_CONTRACT.version,
         "dataset_snapshot": dataset_lineage,
+        "historical_price_source": historical_source,
+        "trading_calendar": calendar_lineage,
+        "log_price_transformation": LOG_TRANSFORM,
         "universe_snapshot_id": experiment.universe_snapshot_id,
         "ruleset_version": experiment.ruleset_version,
         "universe_governance": universe_governance,
