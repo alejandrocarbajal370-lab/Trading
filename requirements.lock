@@ -1,0 +1,20 @@
+# Reproducible research/test environment observed in GitHub Actions run #43 on 2026-08-21.
+# Python is pinned by CI to 3.11; the runner resolved CPython 3.11.16.
+annotated-types==0.8.0
+coverage==7.15.4
+iniconfig==2.3.0
+numpy==2.4.6
+packaging==26.3
+pandas==3.0.5
+pluggy==1.6.0
+pydantic==2.13.4
+pydantic-core==2.46.4
+Pygments==2.21.0
+pytest==9.1.1
+pytest-cov==7.1.0
+python-dateutil==2.9.0.post0
+PyYAML==6.0.3
+ruff==0.16.4
+six==1.17.0
+typing-extensions==4.16.0
+typing-inspection==0.4.4
