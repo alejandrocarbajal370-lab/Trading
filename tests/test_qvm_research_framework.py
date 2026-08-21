@@ -32,7 +32,7 @@ def _observation(
     status: str = "PASS",
 ) -> FactorObservation:
     defaults = {
-        "Quality": ("roic", "ratio"),
+        "Quality": ("roic", "percentage"),
         "Value": ("fcf_yield", "ratio"),
         "Momentum": ("momentum_12_1", "return"),
     }
@@ -139,7 +139,12 @@ def _custom_batches(metrics: dict[str, tuple[str, tuple[float, float]]]) -> tupl
     batches = []
     for batch in base:
         metric, values = metrics[batch.factor]
-        units = {"ev_to_ebit": "multiple", "momentum_12_1": "return"}
+        units = {
+            "roic": "percentage",
+            "fcf_margin": "percentage",
+            "ev_to_ebit": "multiple",
+            "momentum_12_1": "return",
+        }
         observations = tuple(
             _observation(
                 batch.factor, symbol, value, metric=metric, unit=units.get(metric, "ratio")
@@ -323,7 +328,7 @@ def test_metric_in_wrong_factor_fails_closed() -> None:
 
 def test_metric_with_wrong_unit_fails_closed() -> None:
     batches = list(_batches())
-    bad = tuple(item.model_copy(update={"unit": "multiple"}) for item in batches[0].observations)
+    bad = tuple(item.model_copy(update={"unit": "ratio"}) for item in batches[0].observations)
     batches[0] = batches[0].model_copy(
         update={"observations": bad, "factor_dataset_hash": factor_dataset_hash(bad)}
     )
@@ -337,7 +342,7 @@ def test_metric_with_wrong_unit_fails_closed() -> None:
         entity_policy="symbol",
     )
     batches = [batch.model_copy(update={"lineage_hash": lineage_hash}) for batch in batches]
-    with pytest.raises(ValueError, match="expected ratio, got multiple"):
+    with pytest.raises(ValueError, match="expected percentage, got ratio"):
         evaluate_qvm_research(tuple(batches))
 
 

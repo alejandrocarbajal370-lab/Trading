@@ -52,7 +52,7 @@ METRIC_SEMANTICS_REGISTRY: Mapping[tuple[str, str], MetricSemantics] = {
         _semantics(
             "Quality",
             "roic",
-            "ratio",
+            "percentage",
             direction="higher_is_better",
             comparison_group="profitability_ratio",
             economic_meaning="return on invested capital",
@@ -68,7 +68,7 @@ METRIC_SEMANTICS_REGISTRY: Mapping[tuple[str, str], MetricSemantics] = {
         _semantics(
             "Quality",
             "fcf_margin",
-            "ratio",
+            "percentage",
             direction="higher_is_better",
             comparison_group="profitability_ratio",
             economic_meaning="free-cash-flow margin",

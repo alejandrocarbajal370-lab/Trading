@@ -43,6 +43,15 @@ Economic diagnostics have an explicit eligibility policy: only `PASS` observatio
 matrix and exclusions, but cannot contribute correlation or directional-conflict evidence.
 Coverage reports usable `PASS` values rather than repeating the already-enforced universe gate.
 
+## Golden end-to-end integration gate
+
+`tests/test_qvm_golden_e2e.py` constructs a governed Universe Snapshot Store, executes the real
+Quality, Value, and Momentum engines, adapts their individual output rows without recomputation,
+and materializes the QVM runner outputs. The gate verifies shared universe membership SHA-256,
+PIT cutoff, availability/entity policies, reproducible lineage, `(factor, metric, unit)` semantics,
+output preservation, and research-only safety invariants. Mutations to dataset identity, universe
+identity, lineage, PIT, metric ownership, metric name, or unit must fail closed.
+
 ## Outputs
 
 - `qvm_factor_matrix.csv` contains individual factor metrics and statuses by symbol.
