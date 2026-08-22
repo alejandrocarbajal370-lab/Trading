@@ -380,6 +380,22 @@ currency fails closed. Identity conversion is explicitly marked and carries no s
 timestamp or FX lineage. This layer creates no scores, rankings, weights, signals, portfolios,
 backtests, or execution behavior. `NO_TRADE` remains active and `live_execution_enabled=false`.
 
+### Phase 5.5.3 — Accounting PIT and restatement governance
+
+`fundamentals/governance.py` defines the typed, provider-neutral boundary for financial facts and
+keeps fiscal period, filing time, and public availability time separate. Complete revision chains
+are retained: an original fact starts at revision zero, every restatement explicitly supersedes the
+prior revision, and snapshots select only the latest revision known at their requested cutoff.
+Future filings or availability, invalid chronology, duplicate facts, revision gaps, provider
+metadata mismatches, missing required fundamentals, and checksum mutations fail closed.
+
+Accounting history is content-addressed with a canonical checksum that is independent of row order.
+Dataset identity, contract version, missing-data policy, source version, and upstream lineage are
+immutable metadata, so historical snapshots remain reproducible and later restatements cannot
+silently rewrite them. This governance layer creates no scores, rankings, weights, signals,
+portfolios, backtests, or execution behavior. `NO_TRADE` remains active and
+`live_execution_enabled=false`.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
