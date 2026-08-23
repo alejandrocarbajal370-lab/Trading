@@ -396,6 +396,21 @@ silently rewrite them. This governance layer creates no scores, rankings, weight
 portfolios, backtests, or execution behavior. `NO_TRADE` remains active and
 `live_execution_enabled=false`.
 
+### Phase 5.6 — Cross-layer governance integration
+
+`governance/integration.py` admits market data, FX, and accounting history through one fail-closed
+point-in-time boundary. It re-verifies each content-addressed dataset, requires one shared cutoff and
+an exact eligible-entity set, selects the accounting revision known at that cutoff, and translates
+monetary facts to the configured research currency using only the governed fiscal-period-end FX
+observation. Non-monetary units are preserved without inference.
+
+The immutable output bundle binds all upstream canonical IDs and checksums to the exact market,
+accounting, and conversion snapshots with a deterministic cross-layer fingerprint. Missing required
+fundamentals, entity or currency disagreement, future availability, stale FX, unsupported contracts,
+or post-governance mutation fails closed. This phase creates no score, weights, rank, signal,
+portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
+`live_execution_enabled=false`.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.

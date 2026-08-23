@@ -51,6 +51,7 @@ include = [
   "research*",
   "universe*",
   "factors*",
+  "governance*",
 ]
 exclude = ["tests*", "research.notebooks*", "validation_outputs*", "research_outputs*"]
 
