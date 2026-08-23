@@ -346,3 +346,21 @@ def test_universe_validation_entry_point_generates_outputs(tmp_path: Path) -> No
     output_dir, snapshot_dir = (Path(line) for line in result.stdout.strip().splitlines())
     assert (output_dir / "universe_validation.json").exists()
     assert (snapshot_dir / "snapshot_metadata.json").exists()
+
+
+def test_universe_chronology_fails_when_source_is_after_availability() -> None:
+    records = _records()
+    records.loc[0, "source_timestamp"] = "2026-08-20T22:00:00Z"
+    records.loc[0, "available_at"] = "2026-08-20T21:00:00Z"
+    with pytest.raises(UniverseValidationError, match="source_timestamp"):
+        validate_universe(records, rules=_rules(), as_of=AS_OF)
+
+
+def test_universe_timestamps_and_cutoff_must_be_timezone_aware() -> None:
+    records = _records()
+    records.loc[0, "available_at"] = "2026-08-20T21:00:00"
+    with pytest.raises(UniverseValidationError, match="timezone-aware"):
+        validate_universe(records, rules=_rules(), as_of=AS_OF)
+    aware = records.assign(available_at="2026-08-20T21:00:00Z")
+    with pytest.raises(UniverseValidationError, match="as_of must be timezone-aware"):
+        validate_universe(aware, rules=_rules(), as_of=pd.Timestamp("2026-08-20"))

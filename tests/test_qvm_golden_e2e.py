@@ -6,7 +6,9 @@ import pandas as pd
 import pytest
 
 from core.phase36 import run_phase36
+from data.fx import FXLineageEntry, FXStalenessPolicy, govern_fx
 from data.market_calendar import get_trading_calendar
+from data.market_data import LineageEntry, govern_market_data
 from factors.momentum import evaluate_momentum_metrics
 from factors.quality import evaluate_quality_metrics
 from factors.qvm import (
@@ -16,6 +18,15 @@ from factors.qvm import (
     qvm_lineage_hash,
 )
 from factors.value import evaluate_value_metrics
+from fundamentals.governance import AccountingLineageEntry, govern_accounting
+from governance.integration import CrossLayerGovernanceError, integrate_governed_inputs
+from governance.research_chain import (
+    evaluate_governed_momentum,
+    evaluate_governed_quality,
+    evaluate_governed_qvm,
+    evaluate_governed_value,
+    seal_factor_output,
+)
 from research.datasets import file_sha256
 from research.qvm_runner import run_qvm_research
 from universe.validation import UniverseRules
@@ -397,3 +408,118 @@ def test_qvm_golden_e2e_fails_closed_for_invalid_metric_semantics(
             output_root=tmp_path / "qvm_outputs",
             universe_snapshot_dir=universe_dir,
         )
+
+
+def _phase56_chain(tmp_path: Path):
+    cutoff = datetime.datetime.combine(AS_OF, datetime.time(23, 59), tzinfo=datetime.UTC)
+    universe_dir = _universe_snapshot(tmp_path)
+    metadata_path = universe_dir / "snapshot_metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["as_of"] = cutoff.isoformat()
+    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
+
+    sessions = get_trading_calendar("XNYS").sessions(datetime.date(2024, 1, 2), AS_OF)
+    price_rows = []
+    for symbol, growth in (("AAA", 0.001), ("SPY", 0.0004)):
+        for index, day in enumerate(sessions):
+            price = 100.0 * (1 + growth) ** index
+            price_rows.append({"symbol": symbol, "date": day, "raw_close": price,
+                "adjusted_close": price, "currency": "USD",
+                "available_at": f"{day.isoformat()}T22:00:00Z",
+                "corporate_action_status": "NONE", "corporate_action_type": None,
+                "adjustment_factor": 1.0})
+    market = govern_market_data(pd.DataFrame(price_rows), source="phase56-market",
+        dataset_version="market-v1", available_at=cutoff,
+        lineage=(LineageEntry(source="phase56-market", dataset="prices", dataset_version="v1"),),
+        trading_calendar="XNYS", as_of=cutoff, maximum_staleness_sessions=0)
+    fx = govern_fx(pd.DataFrame([{"currency_pair": "EUR/USD", "base_currency": "EUR",
+        "quote_currency": "USD", "market_timestamp": "2024-12-31T16:00:00Z",
+        "available_at": "2024-12-31T16:01:00Z", "rate": 1.1}]), source="phase56-fx",
+        dataset_version="fx-v1", available_at=cutoff,
+        lineage=(FXLineageEntry(source="phase56-fx", dataset="rates", dataset_version="v1"),),
+        as_of=cutoff, staleness_policy=FXStalenessPolicy(maximum_sessions=60))
+    accounting_values = {"cash_from_operations": 25.0, "capital_expenditures": 5.0,
+        "revenue": 100.0, "net_income": 12.0, "operating_income": 18.0, "ebitda": 22.0,
+        "total_debt": 30.0, "cash": 10.0, "total_equity": 70.0, "total_assets": 120.0,
+        "tax_rate": 0.25}
+    accounting_rows = [{"fact_id": f"aaa-{metric}", "entity": "AAA", "metric": metric,
+        "fiscal_period": "FY2024", "period_end": "2024-12-31",
+        "filing_date": "2025-03-01T00:00:00Z", "available_at": "2025-03-01T00:01:00Z",
+        "value": value, "unit": "RATIO" if metric == "tax_rate" else "EUR",
+        "source": "phase56-accounting", "dataset_version": "accounting-v1", "revision": 0,
+        "revision_type": "ORIGINAL", "supersedes_revision": None}
+        for metric, value in accounting_values.items()]
+    accounting = govern_accounting(pd.DataFrame(accounting_rows), source="phase56-accounting",
+        dataset_version="accounting-v1", available_at=cutoff,
+        lineage=(AccountingLineageEntry(source="phase56-accounting", dataset="filings",
+            dataset_version="v1"),), as_of=cutoff)
+    return integrate_governed_inputs(universe_snapshot_dir=universe_dir, market_data=market, fx=fx,
+        accounting=accounting, as_of=cutoff, base_currency="USD",
+        required_fundamentals=set(accounting_values), reference_symbols={"SPY"})
+
+
+def test_phase56_golden_universe_to_qvm_is_one_governed_chain(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    batches = (
+        seal_factor_output(factor="Quality", metrics=_quality_output().query(
+            "metric in ['roic', 'fcf_margin']"), cross_layer=chain),
+        seal_factor_output(factor="Value", metrics=_value_output().query(
+            "metric in ['ev_to_ebit', 'fcf_yield']"), cross_layer=chain),
+        seal_factor_output(factor="Momentum", metrics=_momentum_output().query(
+            "metric in ['momentum_12_1', 'volatility_adjusted_momentum_12_1']"),
+            cross_layer=chain),
+    )
+    evaluation = evaluate_governed_qvm(batches=batches, expected=chain)
+    assert evaluation.health["status"] == "PASS"
+    assert {batch.cross_layer_fingerprint for batch in batches} == {
+        chain.manifest.cross_layer_fingerprint
+    }
+    assert {batch.eligible_symbols_hash for batch in batches} == {
+        chain.manifest.eligible_symbols_hash
+    }
+    assert evaluation.health["composite_score_calculated"] is False
+    assert evaluation.health["ranking_calculated"] is False
+    assert evaluation.health["trade_decision"] == "NO_TRADE"
+    assert evaluation.health["live_execution_enabled"] is False
+
+
+def test_phase56_governed_adapters_execute_real_factor_engines(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    quality, quality_batch = evaluate_governed_quality(cross_layer=chain,
+        experiment_id="phase56-quality")
+    value, value_batch = evaluate_governed_value(cross_layer=chain,
+        experiment_id="phase56-value")
+    momentum, momentum_batch = evaluate_governed_momentum(cross_layer=chain,
+        experiment_id="phase56-momentum", benchmark_symbol="SPY")
+    assert quality_batch.cross_layer_fingerprint == chain.manifest.cross_layer_fingerprint
+    assert value_batch.accounting_snapshot_sha256 == chain.manifest.accounting_snapshot_sha256
+    assert value_batch.fx_checksum == chain.manifest.fx_checksum
+    assert momentum_batch.market_data_checksum == chain.manifest.market_data_checksum
+    assert quality.health["phase6_eligible"] is False
+    assert value.health["phase6_eligible"] is False
+    assert momentum.health["phase6_eligible"] is False
+    evaluation = evaluate_governed_qvm(
+        batches=(quality_batch, value_batch, momentum_batch), expected=chain
+    )
+    assert evaluation.health["phase6_eligible"] is True
+    assert evaluation.health["governance_mode"] == "phase5.6_cross_layer_verified"
+
+
+@pytest.mark.parametrize("field", [
+    "cross_layer_fingerprint", "universe_snapshot_hash", "membership_hash",
+    "eligible_symbols_hash", "accounting_checksum", "accounting_snapshot_sha256",
+    "fx_checksum", "market_data_checksum",
+])
+def test_phase56_qvm_rejects_any_upstream_identity_mismatch(tmp_path: Path, field: str) -> None:
+    chain = _phase56_chain(tmp_path)
+    batches = [
+        seal_factor_output(factor="Quality", metrics=_quality_output().query("metric == 'roic'"),
+            cross_layer=chain),
+        seal_factor_output(factor="Value", metrics=_value_output().query("metric == 'fcf_yield'"),
+            cross_layer=chain),
+        seal_factor_output(factor="Momentum", metrics=_momentum_output().query(
+            "metric == 'momentum_12_1'"), cross_layer=chain),
+    ]
+    batches[0] = batches[0].model_copy(update={field: "b" * 64})
+    with pytest.raises(CrossLayerGovernanceError, match="mismatch"):
+        evaluate_governed_qvm(batches=tuple(batches), expected=chain)

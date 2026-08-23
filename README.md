@@ -398,16 +398,26 @@ portfolios, backtests, or execution behavior. `NO_TRADE` remains active and
 
 ### Phase 5.6 — Cross-layer governance integration
 
-`governance/integration.py` admits market data, FX, and accounting history through one fail-closed
-point-in-time boundary. It re-verifies each content-addressed dataset, requires one shared cutoff and
-an exact eligible-entity set, selects the accounting revision known at that cutoff, and translates
+`governance/integration.py` admits a verified Universe Snapshot plus market data, FX, and accounting
+history through one fail-closed point-in-time boundary. Eligible symbols are materialized only from
+the checksum-verified snapshot under `exact-eligible-set-v1`; callers cannot supply a replacement
+set. The gate requires one shared timezone-aware cutoff, selects the accounting revision known at
+that cutoff, and translates
 monetary facts to the configured research currency using only the governed fiscal-period-end FX
 observation. Non-monetary units are preserved without inference.
 
 The immutable output bundle binds all upstream canonical IDs and checksums to the exact market,
 accounting, and conversion snapshots with a deterministic cross-layer fingerprint. Missing required
 fundamentals, entity or currency disagreement, future availability, stale FX, unsupported contracts,
-or post-governance mutation fails closed. This phase creates no score, weights, rank, signal,
+or post-governance mutation fails closed. `unit-ontology-v1` classifies monetary and non-monetary
+units explicitly, while `cross-layer-temporal-alignment-v1` preserves the distinct Universe,
+market-session, FX-weekday, and accounting-availability policies without inventing an FX holiday
+calendar. `governance/research_chain.py` is the only Phase-6-eligible path: it seals Quality, Value,
+and Momentum batches to the same cross-layer fingerprint and QVM verifies every upstream identity
+against the expected manifest. Direct factor/QVM APIs remain `research_legacy` and explicitly
+`phase6_eligible=false`.
+
+This phase creates no score, weights, rank, signal,
 portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 `live_execution_enabled=false`.
 

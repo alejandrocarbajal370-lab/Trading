@@ -476,6 +476,8 @@ def evaluate_quality_metrics(
             "composite_score_calculated": False,
             "weights_assigned": False,
             "is_investment_signal": False,
+            "governance_mode": "research_legacy",
+            "phase6_eligible": False,
             "sector_normalization": "metadata-only; no ranking or score",
             "capital_allocation_foundation": {
                 "share_count_change": "optional input",

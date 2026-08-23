@@ -5,6 +5,7 @@ import datetime
 import pandas as pd
 import pytest
 
+from core.phase36 import run_phase36
 from data.fx import FXLineageEntry, FXStalenessPolicy, govern_fx
 from data.market_data import LineageEntry, govern_market_data
 from fundamentals.governance import AccountingLineageEntry, govern_accounting
@@ -13,6 +14,8 @@ from governance.integration import (
     integrate_governed_inputs,
     write_governed_inputs,
 )
+from governance.units import UnitOntologyError, normalize_unit, unit_kind
+from universe.validation import UniverseRules
 
 AS_OF = datetime.datetime(2025, 1, 31, 23, 59, tzinfo=datetime.UTC)
 
@@ -61,16 +64,32 @@ def _accounting():
     )
 
 
-def _integrate(**overrides):
+def _universe(tmp_path):
+    existing = tmp_path / "snapshots" / AS_OF.date().isoformat()
+    if existing.exists():
+        return existing
+    source = tmp_path / "universe.csv"
+    pd.DataFrame([{"symbol": "AAA", "exchange": "NYSE", "asset_type": "COMMON_STOCK",
+        "country": "US", "region": "North America", "sector": "Industrials",
+        "industry": "Machinery", "market_cap": 100.0, "average_volume": 1000,
+        "average_dollar_volume": 100000, "listing_date": "2020-01-01T00:00:00Z",
+        "source": "universe-fixture", "source_timestamp": "2025-01-31T20:00:00Z",
+        "available_at": "2025-01-31T21:00:00Z"}]).to_csv(source, index=False)
+    return run_phase36(source_path=source, rules=UniverseRules(allowed_exchanges=("NYSE",)),
+        as_of=AS_OF, output_root=tmp_path / "validation", snapshot_root=tmp_path / "snapshots",
+        now=AS_OF).snapshot_dir
+
+
+def _integrate(tmp_path, **overrides):
     inputs = {"market_data": _market(), "fx": _fx(), "accounting": _accounting(),
-        "eligible_entities": {"AAA"}, "as_of": AS_OF, "base_currency": "USD",
+        "universe_snapshot_dir": _universe(tmp_path), "as_of": AS_OF, "base_currency": "USD",
         "required_fundamentals": {"revenue", "margin"}}
     inputs.update(overrides)
     return integrate_governed_inputs(**inputs)
 
 
-def test_cross_layer_integration_translates_and_preserves_identity() -> None:
-    result = _integrate()
+def test_cross_layer_integration_translates_and_preserves_identity(tmp_path) -> None:
+    result = _integrate(tmp_path)
     facts = result.accounting_snapshot.set_index("metric")
     assert facts.loc["revenue", "value"] == pytest.approx(110.0)
     assert facts.loc["revenue", "unit"] == "USD"
@@ -86,14 +105,14 @@ def test_cross_layer_integration_translates_and_preserves_identity() -> None:
     assert result.manifest.portfolio_constructed is False
 
 
-def test_cross_layer_fingerprint_is_reproducible() -> None:
-    first, second = _integrate(), _integrate()
+def test_cross_layer_fingerprint_is_reproducible(tmp_path) -> None:
+    first, second = _integrate(tmp_path), _integrate(tmp_path)
     assert first.manifest.fingerprint == second.manifest.fingerprint
     assert first.manifest.model_dump(mode="json") == second.manifest.model_dump(mode="json")
 
 
 def test_cross_layer_bundle_is_content_addressed_and_immutable(tmp_path) -> None:
-    result = _integrate()
+    result = _integrate(tmp_path)
     output = write_governed_inputs(result, output_root=tmp_path)
     assert output.name == f"cross_layer_{result.manifest.fingerprint}"
     assert {path.name for path in output.iterdir()} == {
@@ -101,6 +120,7 @@ def test_cross_layer_bundle_is_content_addressed_and_immutable(tmp_path) -> None
         "accounting_snapshot.csv",
         "fx_conversions.csv",
         "cross_layer_manifest.json",
+        "universe_membership.csv",
     }
     assert write_governed_inputs(result, output_root=tmp_path) == output
     (output / "market_snapshot.csv").write_text("tampered\n", encoding="utf-8")
@@ -108,23 +128,44 @@ def test_cross_layer_bundle_is_content_addressed_and_immutable(tmp_path) -> None
         write_governed_inputs(result, output_root=tmp_path)
 
 
-def test_entity_mismatch_fails_closed() -> None:
-    with pytest.raises(CrossLayerGovernanceError, match="entity alignment"):
-        _integrate(eligible_entities={"AAA", "BBB"})
+def test_manual_entity_override_is_not_accepted(tmp_path) -> None:
+    with pytest.raises(TypeError, match="eligible_entities"):
+        _integrate(tmp_path, eligible_entities={"AAA", "BBB"})
 
 
-def test_missing_required_fundamental_fails_closed() -> None:
+def test_missing_required_fundamental_fails_closed(tmp_path) -> None:
     with pytest.raises(CrossLayerGovernanceError, match="missing fundamentals"):
-        _integrate(required_fundamentals={"revenue", "ebit"})
+        _integrate(tmp_path, required_fundamentals={"revenue", "ebit"})
 
 
-def test_mutation_after_governance_fails_closed() -> None:
+def test_mutation_after_governance_fails_closed(tmp_path) -> None:
     market = _market()
     market.frame.loc[0, "adjusted_close"] = 99.0
     with pytest.raises(CrossLayerGovernanceError, match="mutation detected"):
-        _integrate(market_data=market)
+        _integrate(tmp_path, market_data=market)
 
 
-def test_naive_cutoff_fails_closed() -> None:
+def test_naive_cutoff_fails_closed(tmp_path) -> None:
     with pytest.raises(CrossLayerGovernanceError, match="timezone-aware"):
-        _integrate(as_of=datetime.datetime(2025, 1, 31))  # noqa: DTZ001
+        _integrate(tmp_path, as_of=datetime.datetime(2025, 1, 31))  # noqa: DTZ001
+
+
+def test_unit_ontology_is_explicit_and_fail_closed() -> None:
+    assert normalize_unit("usd") == "USD"
+    assert unit_kind("USD") == "MONETARY"
+    assert unit_kind("BPS") == "NON_MONETARY"
+    with pytest.raises(UnitOntologyError, match="unknown unit"):
+        normalize_unit("ABC")
+
+
+def test_post_governance_snapshot_mutation_fails_before_factor_sealing(tmp_path) -> None:
+    from governance.research_chain import seal_factor_output
+
+    result = _integrate(tmp_path)
+    result.accounting_snapshot.loc[0, "value"] = 999.0
+    metrics = pd.DataFrame([{"symbol": "AAA", "as_of": AS_OF.date(), "metric": "roic",
+        "value": 0.1, "unit": "percentage", "available_at": "2025-01-30T00:00:00Z",
+        "confidence": 1.0, "status": "PASS", "reason": None,
+        "lineage": "{\"source\": \"governed\"}"}])
+    with pytest.raises(CrossLayerGovernanceError, match="accounting snapshot hash mismatch"):
+        seal_factor_output(factor="Quality", metrics=metrics, cross_layer=result)

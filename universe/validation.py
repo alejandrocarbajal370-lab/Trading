@@ -86,9 +86,19 @@ def _normalize(records: pd.DataFrame) -> pd.DataFrame:
         if (frame[column].dropna() < 0).any():
             raise UniverseValidationError(f"{column} must be non-negative")
     for column in ("listing_date", "source_timestamp", "available_at"):
-        frame[column] = pd.to_datetime(frame[column], utc=True, errors="coerce")
+        raw = frame[column]
+        if column in {"source_timestamp", "available_at"}:
+            parsed = pd.to_datetime(raw, errors="coerce", utc=False)
+            if any(
+                value is not pd.NaT and (value.tzinfo is None or value.utcoffset() is None)
+                for value in parsed
+            ):
+                raise UniverseValidationError(f"{column} must be timezone-aware")
+        frame[column] = pd.to_datetime(raw, utc=True, errors="coerce")
     if frame[["source_timestamp", "available_at"]].isna().any().any():
         raise UniverseValidationError("source_timestamp and available_at must be valid timestamps")
+    if (frame["source_timestamp"] > frame["available_at"]).any():
+        raise UniverseValidationError("source_timestamp must be at or before available_at")
     return frame
 
 
@@ -98,7 +108,9 @@ def validate_universe(
     """Return every source asset with an explicit inclusion or exclusion decision."""
     frame = _normalize(records)
     cutoff = pd.Timestamp(as_of)
-    cutoff = cutoff.tz_localize("UTC") if cutoff.tzinfo is None else cutoff.tz_convert("UTC")
+    if cutoff.tzinfo is None or cutoff.utcoffset() is None:
+        raise UniverseValidationError("as_of must be timezone-aware")
+    cutoff = cutoff.tz_convert("UTC")
     allowed_assets = set(rules.allowed_asset_types)
     allowed_exchanges = {exchange.upper() for exchange in rules.allowed_exchanges}
     rows: list[dict[str, Any]] = []
