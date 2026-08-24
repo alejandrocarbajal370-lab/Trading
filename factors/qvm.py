@@ -683,6 +683,8 @@ def evaluate_qvm_research(batches: tuple[FactorBatch, ...]) -> QVMEvaluation:
         "signals_generated": False,
         "trade_decision": "NO_TRADE",
         "live_execution_enabled": False,
+        "governance_mode": "research_legacy",
+        "phase6_eligible": False,
     }
     identity = qvm_lineage_identity(
         universe_snapshot_id=common.universe_snapshot_id,

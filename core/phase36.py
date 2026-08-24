@@ -58,7 +58,14 @@ def run_phase36(
         health_rules = health_rules or UniverseHealthRules()
         schedule = schedule or UniverseRebalanceSchedule()
         records = pd.read_csv(source_path)
-        cutoff = pd.Timestamp(as_of)
+        if isinstance(as_of, datetime.datetime):
+            if as_of.tzinfo is None or as_of.utcoffset() is None:
+                raise ValueError("universe as_of datetime must be timezone-aware")
+            cutoff = pd.Timestamp(as_of)
+        else:
+            cutoff = pd.Timestamp(
+                datetime.datetime.combine(as_of, datetime.time.max, tzinfo=datetime.UTC)
+            )
         membership = validate_universe(records, rules=rules, as_of=cutoff)
         store = UniverseSnapshotStore(snapshot_root)
         previous_date = store.previous_date(cutoff)

@@ -10,6 +10,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 ACCOUNTING_CONTRACT_VERSION = "accounting-pit-governance-v1"
+ACCOUNTING_PERIOD_ADAPTER_VERSION = "accounting-period-semantics-v1"
 ACCOUNTING_REQUIRED_COLUMNS = (
     "fact_id",
     "entity",
@@ -217,6 +218,9 @@ def canonical_accounting_checksum(frame: pd.DataFrame) -> str:
 
 
 def _validate_revisions(data: pd.DataFrame) -> None:
+    invariants = RESTATEMENT_INVARIANTS
+    if {"fiscal_period_start", "period_type"} <= set(data.columns):
+        invariants = (*invariants, "fiscal_period_start", "period_type")
     for key, revisions in data.groupby(list(ECONOMIC_FACT_KEY), dropna=False, sort=False):
         ordered = revisions.sort_values("revision", kind="stable")
         fact_ids = set(ordered["fact_id"])
@@ -233,7 +237,7 @@ def _validate_revisions(data: pd.DataFrame) -> None:
         ):
             invariants_changed = any(
                 getattr(current, field) != getattr(previous, field)
-                for field in RESTATEMENT_INVARIANTS
+                for field in invariants
             )
             if (
                 current.revision_type != "RESTATEMENT"
@@ -270,6 +274,12 @@ def govern_accounting(
         )
     if data.empty:
         raise AccountingGovernanceError("missing fundamentals: accounting dataset is empty")
+    period_columns = {"fiscal_period_start", "period_type"}
+    supplied_period_columns = period_columns & set(data.columns)
+    if supplied_period_columns and supplied_period_columns != period_columns:
+        raise AccountingGovernanceError(
+            "accounting period contract requires fiscal_period_start and period_type together"
+        )
     try:
         for column in (
             "fact_id",
@@ -293,6 +303,20 @@ def govern_accounting(
         data["supersedes_revision"] = pd.to_numeric(
             data["supersedes_revision"], errors="coerce"
         ).astype("Int64")
+        if supplied_period_columns:
+            data["period_type"] = data["period_type"].astype("string").str.strip().str.lower()
+            starts = pd.to_datetime(data["fiscal_period_start"], errors="coerce").dt.date
+            duration = data["period_type"] == "duration"
+            instant = data["period_type"] == "instant"
+            if (~(duration | instant)).any():
+                raise AccountingGovernanceError("invalid accounting period_type")
+            if starts.loc[duration].isna().any() or starts.loc[instant].notna().any():
+                raise AccountingGovernanceError(
+                    "duration facts require fiscal_period_start and instant facts forbid it"
+                )
+            if (starts.loc[duration] > data.loc[duration, "period_end"]).any():
+                raise AccountingGovernanceError("fiscal_period_start must not exceed period_end")
+            data["fiscal_period_start"] = starts
     except (TypeError, ValueError, OverflowError) as error:
         raise AccountingGovernanceError(f"invalid accounting value: {error}") from error
     text_columns = [

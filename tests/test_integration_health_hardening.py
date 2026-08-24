@@ -43,6 +43,7 @@ def test_universe_fail_sets_critical_error_in_manifest(tmp_path: Path) -> None:
                 "sector": "Industrials",
                 "industry": "Machinery",
                 "market_cap": 100,
+                "market_cap_currency": "USD",
                 "average_volume": 100,
                 "average_dollar_volume": 100,
                 "listing_date": "2020-01-01T00:00:00Z",

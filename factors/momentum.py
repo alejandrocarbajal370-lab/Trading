@@ -505,6 +505,8 @@ def evaluate_momentum_metrics(
         "ranking_calculated": False,
         "trade_decision": "NO_TRADE",
         "live_execution_enabled": False,
+        "governance_mode": "research_legacy",
+        "phase6_eligible": False,
     }
     lineage_doc = {
         "schema_version": "momentum-lineage-v1.1",

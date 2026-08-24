@@ -396,6 +396,44 @@ silently rewrite them. This governance layer creates no scores, rankings, weight
 portfolios, backtests, or execution behavior. `NO_TRADE` remains active and
 `live_execution_enabled=false`.
 
+### Phase 5.6 — Cross-layer governance integration
+
+`governance/integration.py` admits a verified Universe Snapshot plus market data, FX, and accounting
+history through one fail-closed point-in-time boundary. Eligible symbols are materialized only from
+the checksum-verified snapshot under `exact-eligible-set-v1`; callers cannot supply a replacement
+set. The gate requires one shared timezone-aware cutoff, selects the accounting revision known at
+that cutoff, and translates
+monetary facts to the configured research currency using only the governed fiscal-period-end FX
+observation. Non-monetary units are preserved without inference.
+
+`explicit-market-cap-currency-v1` requires every Universe market cap to carry its own governed
+ISO currency; price currency is never used as a proxy. Non-base market caps require a governed FX
+fixing with complete conversion lineage. Base-currency market caps record an explicit identity
+conversion with no synthetic fixing. Enterprise value is formed only after market cap, debt, and
+cash are comparable in the configured base currency.
+
+Accounting duration facts carry their explicit fiscal start and end through
+`accounting-period-semantics-v1`; no calendar-year start is manufactured. The fingerprinted
+`value-fy-flow-and-period-end-instant-v1` policy chooses the latest complete eligible FY at the
+valuation cutoff, requires all flow inputs from that exact duration period, and requires cash and
+debt instants at its period end. Quarters, incompatible periods, and duplicate temporal identities
+are never mixed and fail closed when they make selection ambiguous.
+
+The immutable output bundle binds all upstream canonical IDs and checksums to the exact market,
+accounting, and conversion snapshots with a deterministic cross-layer fingerprint. Missing required
+fundamentals, entity or currency disagreement, future availability, stale FX, unsupported contracts,
+or post-governance mutation fails closed. `unit-ontology-v1` classifies monetary and non-monetary
+units explicitly, while `cross-layer-temporal-alignment-v1` preserves the distinct Universe,
+market-session, FX-weekday, and accounting-availability policies without inventing an FX holiday
+calendar. `governance/research_chain.py` is the only Phase-6-eligible path: it seals Quality, Value,
+and Momentum batches to the same cross-layer fingerprint and QVM verifies every upstream identity
+against the expected manifest. Direct factor/QVM APIs remain `research_legacy` and explicitly
+`phase6_eligible=false`.
+
+This phase creates no score, weights, rank, signal,
+portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
+`live_execution_enabled=false`.
+
 ## Safety
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.

@@ -29,6 +29,7 @@ def _universe_source(path: Path) -> None:
                 "sector": "Industrials",
                 "industry": "Machinery",
                 "market_cap": 1_000_000_000,
+                "market_cap_currency": "USD",
                 "average_volume": 1_000_000,
                 "average_dollar_volume": 20_000_000,
                 "listing_date": "2020-01-01T00:00:00Z",

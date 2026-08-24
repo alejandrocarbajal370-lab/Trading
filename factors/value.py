@@ -347,6 +347,8 @@ def evaluate_value_metrics(
         "ranking_calculated": False,
         "trade_decision": "NO_TRADE",
         "live_execution_enabled": False,
+        "governance_mode": "research_legacy",
+        "phase6_eligible": False,
     }
     lineage = {
         "schema_version": "value-lineage-v1",
