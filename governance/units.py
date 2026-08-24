@@ -3,8 +3,12 @@ from __future__ import annotations
 from typing import Literal
 
 UNIT_ONTOLOGY_VERSION = "unit-ontology-v1"
-MONETARY_UNITS = frozenset({"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "MXN", "BRL", "CNY", "HKD"})
-NON_MONETARY_UNITS = frozenset({"RATIO", "PERCENTAGE", "RETURN", "SHARES", "DAYS", "MULTIPLE", "COUNT", "BPS"})
+MONETARY_UNITS = frozenset(
+    {"USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD", "MXN", "BRL", "CNY", "HKD"}
+)
+NON_MONETARY_UNITS = frozenset(
+    {"RATIO", "PERCENTAGE", "RETURN", "SHARES", "DAYS", "MULTIPLE", "COUNT", "BPS"}
+)
 
 
 class UnitOntologyError(ValueError):

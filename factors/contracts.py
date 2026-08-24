@@ -71,7 +71,10 @@ class ValueFactorInputs(ContractModel):
         for item in (self.fcf_ttm, self.ebitda_ttm, self.earnings_ttm):
             if item.period_kind != "ttm":
                 raise ValueError("Value flow inputs must be TTM")
-        if self.market_cap.period_kind != "instant" or self.enterprise_value.period_kind != "instant":
+        if (
+            self.market_cap.period_kind != "instant"
+            or self.enterprise_value.period_kind != "instant"
+        ):
             raise ValueError("Value market-cap and enterprise-value inputs must be instant")
         cutoff = datetime.datetime.combine(self.as_of, datetime.time.max, tzinfo=datetime.UTC)
         if any(item.available_at.astimezone(datetime.UTC) > cutoff for item in monetary):

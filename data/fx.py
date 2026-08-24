@@ -86,9 +86,7 @@ class FXProvider(Protocol):
     @property
     def dataset_version(self) -> str: ...
 
-    def fetch_fx(
-        self, *, currency_pairs: set[str], as_of: datetime.datetime
-    ) -> FXDataset: ...
+    def fetch_fx(self, *, currency_pairs: set[str], as_of: datetime.datetime) -> FXDataset: ...
 
 
 @dataclass(frozen=True)
@@ -161,12 +159,8 @@ class FXDataset:
             (self.frame["market_timestamp"] <= market_utc)
             & (self.frame["available_at"] <= cutoff_utc)
         ]
-        direct = rows.loc[
-            (rows["base_currency"] == source) & (rows["quote_currency"] == target)
-        ]
-        inverse = rows.loc[
-            (rows["base_currency"] == target) & (rows["quote_currency"] == source)
-        ]
+        direct = rows.loc[(rows["base_currency"] == source) & (rows["quote_currency"] == target)]
+        inverse = rows.loc[(rows["base_currency"] == target) & (rows["quote_currency"] == source)]
         if not direct.empty:
             observation = direct.sort_values(
                 ["market_timestamp", "available_at"], kind="stable"
@@ -325,9 +319,9 @@ def govern_fx(
         raise FXGovernanceError(f"invalid FX value: {error}") from error
 
     expected_pairs = data["base_currency"] + "/" + data["quote_currency"]
-    if (data["base_currency"] == data["quote_currency"]).any() or not data[
-        "currency_pair"
-    ].equals(expected_pairs):
+    if (data["base_currency"] == data["quote_currency"]).any() or not data["currency_pair"].equals(
+        expected_pairs
+    ):
         raise FXGovernanceError("invalid currency pair")
     if (~np.isfinite(data["rate"])).any() or (data["rate"] <= 0).any():
         raise FXGovernanceError("FX rates must be finite and positive")

@@ -60,7 +60,9 @@ class UniverseRules:
             raise UniverseValidationError("universe thresholds must be non-negative")
         unknown = set(self.allowed_asset_types) - VALID_ASSET_TYPES
         if unknown:
-            raise UniverseValidationError(f"invalid configured asset types: {', '.join(sorted(unknown))}")
+            raise UniverseValidationError(
+                f"invalid configured asset types: {', '.join(sorted(unknown))}"
+            )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -147,7 +149,9 @@ def validate_universe(
         if rules.minimum_listing_age_days is not None:
             if pd.isna(listing_date):
                 reasons.append("missing_listing_date")
-            elif (cutoff.normalize() - listing_date.normalize()).days < rules.minimum_listing_age_days:
+            elif (
+                cutoff.normalize() - listing_date.normalize()
+            ).days < rules.minimum_listing_age_days:
                 reasons.append("listing_age_below_minimum")
         completeness_fields = [
             "exchange",

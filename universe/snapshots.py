@@ -13,7 +13,9 @@ from universe.validation import OUTPUT_COLUMNS, UniverseRules, UniverseValidatio
 
 def _canonical_csv(membership: pd.DataFrame) -> bytes:
     frame = membership.loc[:, OUTPUT_COLUMNS].sort_values("symbol").reset_index(drop=True)
-    return frame.to_csv(index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z").encode()
+    return frame.to_csv(
+        index=False, lineterminator="\n", date_format="%Y-%m-%dT%H:%M:%S%z"
+    ).encode()
 
 
 class UniverseSnapshotStore:
@@ -68,7 +70,9 @@ class UniverseSnapshotStore:
         payload = _canonical_csv(membership)
         digest = hashlib.sha256(payload).hexdigest()
         if directory.exists():
-            metadata = json.loads((directory / "snapshot_metadata.json").read_text(encoding="utf-8"))
+            metadata = json.loads(
+                (directory / "snapshot_metadata.json").read_text(encoding="utf-8")
+            )
             if metadata["membership_sha256"] != digest:
                 raise UniverseValidationError(f"immutable universe snapshot already exists: {key}")
             serialized_rules = json.loads(json.dumps(rules.to_dict(), sort_keys=True))
@@ -87,7 +91,9 @@ class UniverseSnapshotStore:
         validation_payload = json.dumps(validation, indent=2, sort_keys=True).encode()
         (directory / "universe_validation.json").write_bytes(validation_payload)
         recorded = pd.Timestamp(recorded_at)
-        recorded = recorded.tz_localize("UTC") if recorded.tzinfo is None else recorded.tz_convert("UTC")
+        recorded = (
+            recorded.tz_localize("UTC") if recorded.tzinfo is None else recorded.tz_convert("UTC")
+        )
         metadata = {
             "as_of": pd.Timestamp(as_of).isoformat(),
             "next_expected_date": schedule.next_expected_date(as_of).isoformat(),

@@ -88,7 +88,9 @@ def test_dataset_detects_mutation_after_governance() -> None:
         (lambda frame: frame.assign(available_at="2025-02-01T00:00:00+00:00"), "PIT"),
         (lambda frame: frame.assign(adjustment_factor=2.0), "do not reconcile"),
         (
-            lambda frame: frame.drop(frame[(frame.symbol == "AAA") & (frame.date == datetime.date(2025, 1, 15))].index),
+            lambda frame: frame.drop(
+                frame[(frame.symbol == "AAA") & (frame.date == datetime.date(2025, 1, 15))].index
+            ),
             "missing market sessions",
         ),
     ],

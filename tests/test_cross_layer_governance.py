@@ -22,46 +22,97 @@ AS_OF = datetime.datetime(2025, 1, 31, 23, 59, tzinfo=datetime.UTC)
 
 def _market():
     return govern_market_data(
-        pd.DataFrame([{"symbol": "AAA", "date": "2025-01-31", "raw_close": 100.0,
-            "adjusted_close": 100.0, "currency": "USD", "available_at": "2025-01-31T22:00:00Z",
-            "corporate_action_status": "NONE", "corporate_action_type": None,
-            "adjustment_factor": 1.0}]),
-        source="market-fixture", dataset_version="market-v1",
+        pd.DataFrame(
+            [
+                {
+                    "symbol": "AAA",
+                    "date": "2025-01-31",
+                    "raw_close": 100.0,
+                    "adjusted_close": 100.0,
+                    "currency": "USD",
+                    "available_at": "2025-01-31T22:00:00Z",
+                    "corporate_action_status": "NONE",
+                    "corporate_action_type": None,
+                    "adjustment_factor": 1.0,
+                }
+            ]
+        ),
+        source="market-fixture",
+        dataset_version="market-v1",
         available_at=datetime.datetime(2025, 1, 31, 22, tzinfo=datetime.UTC),
         lineage=(LineageEntry(source="market-fixture", dataset="prices", dataset_version="v1"),),
-        trading_calendar="XNYS", as_of=AS_OF, maximum_staleness_sessions=0,
+        trading_calendar="XNYS",
+        as_of=AS_OF,
+        maximum_staleness_sessions=0,
     )
 
 
 def _fx():
     return govern_fx(
-        pd.DataFrame([{"currency_pair": "EUR/USD", "base_currency": "EUR",
-            "quote_currency": "USD", "market_timestamp": "2024-12-31T16:00:00Z",
-            "available_at": "2024-12-31T16:01:00Z", "rate": 1.1}]),
-        source="fx-fixture", dataset_version="fx-v1",
+        pd.DataFrame(
+            [
+                {
+                    "currency_pair": "EUR/USD",
+                    "base_currency": "EUR",
+                    "quote_currency": "USD",
+                    "market_timestamp": "2024-12-31T16:00:00Z",
+                    "available_at": "2024-12-31T16:01:00Z",
+                    "rate": 1.1,
+                }
+            ]
+        ),
+        source="fx-fixture",
+        dataset_version="fx-v1",
         available_at=datetime.datetime(2025, 1, 31, 22, tzinfo=datetime.UTC),
         lineage=(FXLineageEntry(source="fx-fixture", dataset="rates", dataset_version="v1"),),
-        as_of=AS_OF, staleness_policy=FXStalenessPolicy(maximum_sessions=30),
+        as_of=AS_OF,
+        staleness_policy=FXStalenessPolicy(maximum_sessions=30),
     )
 
 
 def _accounting():
-    common = {"entity": "AAA", "fiscal_period": "FY2024", "period_end": "2024-12-31",
-        "fiscal_period_start": "2024-01-01", "period_type": "duration",
-        "filing_date": "2025-01-20T12:00:00Z", "available_at": "2025-01-20T12:01:00Z",
-        "source": "accounting-fixture", "dataset_version": "accounting-v1", "revision": 0,
-        "revision_type": "ORIGINAL", "supersedes_revision": None}
+    common = {
+        "entity": "AAA",
+        "fiscal_period": "FY2024",
+        "period_end": "2024-12-31",
+        "fiscal_period_start": "2024-01-01",
+        "period_type": "duration",
+        "filing_date": "2025-01-20T12:00:00Z",
+        "available_at": "2025-01-20T12:01:00Z",
+        "source": "accounting-fixture",
+        "dataset_version": "accounting-v1",
+        "revision": 0,
+        "revision_type": "ORIGINAL",
+        "supersedes_revision": None,
+    }
     return govern_accounting(
-        pd.DataFrame([
-            {**common, "fact_id": "aaa-revenue-2024", "metric": "revenue", "value": 100.0,
-             "unit": "EUR"},
-            {**common, "fact_id": "aaa-margin-2024", "metric": "margin", "value": 0.2,
-             "unit": "RATIO"},
-        ]),
-        source="accounting-fixture", dataset_version="accounting-v1",
+        pd.DataFrame(
+            [
+                {
+                    **common,
+                    "fact_id": "aaa-revenue-2024",
+                    "metric": "revenue",
+                    "value": 100.0,
+                    "unit": "EUR",
+                },
+                {
+                    **common,
+                    "fact_id": "aaa-margin-2024",
+                    "metric": "margin",
+                    "value": 0.2,
+                    "unit": "RATIO",
+                },
+            ]
+        ),
+        source="accounting-fixture",
+        dataset_version="accounting-v1",
         available_at=datetime.datetime(2025, 1, 31, 22, tzinfo=datetime.UTC),
-        lineage=(AccountingLineageEntry(source="accounting-fixture", dataset="facts",
-            dataset_version="v1"),), as_of=AS_OF,
+        lineage=(
+            AccountingLineageEntry(
+                source="accounting-fixture", dataset="facts", dataset_version="v1"
+            ),
+        ),
+        as_of=AS_OF,
     )
 
 
@@ -70,25 +121,45 @@ def _universe(tmp_path, *, market_cap_currency: str | None = "EUR"):
     if existing.exists():
         return existing
     source = tmp_path / "universe.csv"
-    row = {"symbol": "AAA", "exchange": "NYSE", "asset_type": "COMMON_STOCK",
-        "country": "US", "region": "North America", "sector": "Industrials",
-        "industry": "Machinery", "market_cap": 100.0,
+    row = {
+        "symbol": "AAA",
+        "exchange": "NYSE",
+        "asset_type": "COMMON_STOCK",
+        "country": "US",
+        "region": "North America",
+        "sector": "Industrials",
+        "industry": "Machinery",
+        "market_cap": 100.0,
         "average_volume": 1000,
-        "average_dollar_volume": 100000, "listing_date": "2020-01-01T00:00:00Z",
-        "source": "universe-fixture", "source_timestamp": "2025-01-31T20:00:00Z",
-        "available_at": "2025-01-31T21:00:00Z"}
+        "average_dollar_volume": 100000,
+        "listing_date": "2020-01-01T00:00:00Z",
+        "source": "universe-fixture",
+        "source_timestamp": "2025-01-31T20:00:00Z",
+        "available_at": "2025-01-31T21:00:00Z",
+    }
     if market_cap_currency is not None:
         row["market_cap_currency"] = market_cap_currency
     pd.DataFrame([row]).to_csv(source, index=False)
-    return run_phase36(source_path=source, rules=UniverseRules(allowed_exchanges=("NYSE",)),
-        as_of=AS_OF, output_root=tmp_path / "validation", snapshot_root=tmp_path / "snapshots",
-        now=AS_OF).snapshot_dir
+    return run_phase36(
+        source_path=source,
+        rules=UniverseRules(allowed_exchanges=("NYSE",)),
+        as_of=AS_OF,
+        output_root=tmp_path / "validation",
+        snapshot_root=tmp_path / "snapshots",
+        now=AS_OF,
+    ).snapshot_dir
 
 
 def _integrate(tmp_path, **overrides):
-    inputs = {"market_data": _market(), "fx": _fx(), "accounting": _accounting(),
-        "universe_snapshot_dir": _universe(tmp_path), "as_of": AS_OF, "base_currency": "USD",
-        "required_fundamentals": {"revenue", "margin"}}
+    inputs = {
+        "market_data": _market(),
+        "fx": _fx(),
+        "accounting": _accounting(),
+        "universe_snapshot_dir": _universe(tmp_path),
+        "as_of": AS_OF,
+        "base_currency": "USD",
+        "required_fundamentals": {"revenue", "margin"},
+    }
     inputs.update(overrides)
     return integrate_governed_inputs(**inputs)
 
@@ -115,7 +186,8 @@ def test_market_cap_currency_is_explicitly_converted_with_complete_fx_lineage(tm
     membership = result.universe_membership.set_index("symbol").loc["AAA"]
     conversion = result.fx_conversions.query("metric == 'market_cap'").iloc[0]
     assert membership["original_market_cap"] == pytest.approx(100.0)
-    assert membership["market_cap_currency"] == "EUR"
+    assert membership["original_market_cap_currency"] == "EUR"
+    assert membership["market_cap_currency"] == "USD"
     assert membership["market_cap"] == pytest.approx(110.0)
     assert conversion["source_currency"] == "EUR"
     assert conversion["target_currency"] == "USD"
@@ -207,9 +279,21 @@ def test_post_governance_snapshot_mutation_fails_before_factor_sealing(tmp_path)
 
     result = _integrate(tmp_path)
     result.accounting_snapshot.loc[0, "value"] = 999.0
-    metrics = pd.DataFrame([{"symbol": "AAA", "as_of": AS_OF.date(), "metric": "roic",
-        "value": 0.1, "unit": "percentage", "available_at": "2025-01-30T00:00:00Z",
-        "confidence": 1.0, "status": "PASS", "reason": None,
-        "lineage": "{\"source\": \"governed\"}"}])
+    metrics = pd.DataFrame(
+        [
+            {
+                "symbol": "AAA",
+                "as_of": AS_OF.date(),
+                "metric": "roic",
+                "value": 0.1,
+                "unit": "percentage",
+                "available_at": "2025-01-30T00:00:00Z",
+                "confidence": 1.0,
+                "status": "PASS",
+                "reason": None,
+                "lineage": '{"source": "governed"}',
+            }
+        ]
+    )
     with pytest.raises(CrossLayerGovernanceError, match="accounting snapshot hash mismatch"):
         seal_factor_output(factor="Quality", metrics=metrics, cross_layer=result)

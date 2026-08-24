@@ -43,7 +43,9 @@ class DatasetRegistration:
             raise RegistryValidationError(
                 f"missing dataset registry fields: {', '.join(sorted(missing))}"
             )
-        if len(self.sha256) != 64 or any(character not in "0123456789abcdef" for character in self.sha256):
+        if len(self.sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self.sha256
+        ):
             raise RegistryValidationError(f"invalid sha256 for dataset {self.dataset_id}")
         if not self.lineage or any(not item.strip() for item in self.lineage):
             raise RegistryValidationError(f"incomplete lineage for dataset {self.dataset_id}")
@@ -73,12 +75,20 @@ class ResearchExperiment:
 
     def validate(self, *, phase4: bool = True) -> None:
         common = (
-            "experiment_id", "hypothesis", "outcome_metric", "universe",
-            "sample_start", "sample_end", "preregistered_at",
+            "experiment_id",
+            "hypothesis",
+            "outcome_metric",
+            "universe",
+            "sample_start",
+            "sample_end",
+            "preregistered_at",
         )
         phase4_fields = (
-            "experiment_version", "created_at", "universe_snapshot_id",
-            "ruleset_version", "expected_result",
+            "experiment_version",
+            "created_at",
+            "universe_snapshot_id",
+            "ruleset_version",
+            "expected_result",
         )
         required = common + phase4_fields if phase4 else common
         missing = [name for name in required if not str(getattr(self, name)).strip()]
@@ -157,7 +167,8 @@ class ResearchRegistry:
 
     def get(self, experiment_id: str, experiment_version: str) -> ResearchExperiment:
         matches = [
-            item for item in self.read_all()
+            item
+            for item in self.read_all()
             if item.get("experiment_id") == experiment_id
             and item.get("experiment_version") == experiment_version
         ]

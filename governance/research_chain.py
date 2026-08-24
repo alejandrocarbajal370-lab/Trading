@@ -28,6 +28,14 @@ from governance.integration import (
     _frame_hash,
     eligible_symbols_hash,
 )
+from governance.pre_phase6 import (
+    CLASSIFICATION_CONTRACT_VERSION,
+    CONFIDENCE_POLICY_VERSION,
+    ClassificationRecord,
+    ConfidenceVector,
+    conservative_confidence,
+    peer_assignment_hash,
+)
 
 
 class ResearchChainModel(BaseModel):
@@ -55,6 +63,13 @@ class GovernedFactorBatch(ResearchChainModel):
     fx_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
     market_data_canonical_id: str
     market_data_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
+    classification_contract_version: Literal["pit-classification-v1"] = (
+        CLASSIFICATION_CONTRACT_VERSION
+    )
+    classification_taxonomy: str
+    classification_taxonomy_version: str
+    peer_assignment_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    classification_records: tuple[ClassificationRecord, ...]
     factor_dataset_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     observations: tuple[FactorObservation, ...]
     phase6_eligible: Literal[True] = True
@@ -69,6 +84,17 @@ class GovernedFactorBatch(ResearchChainModel):
             raise ValueError("factor observation as_of mismatch")
         if factor_dataset_hash(self.observations) != self.factor_dataset_hash:
             raise ValueError("factor dataset hash mismatch")
+        expected_peer_hash = peer_assignment_hash(
+            list(self.classification_records),
+            as_of=self.as_of,
+            universe_snapshot_hash=self.universe_snapshot_hash,
+        )
+        if expected_peer_hash != self.peer_assignment_hash:
+            raise ValueError("peer assignment hash mismatch")
+        if {item.symbol for item in self.classification_records} != {
+            item.symbol for item in self.observations
+        }:
+            raise ValueError("classification symbols do not match observations")
         return self
 
 
@@ -76,7 +102,10 @@ def _eligible_symbols(result: CrossLayerGovernanceResult) -> set[str]:
     return set(
         result.universe_membership.loc[
             result.universe_membership["eligibility_status"] == "ELIGIBLE", "symbol"
-        ].astype(str).str.strip().str.upper()
+        ]
+        .astype(str)
+        .str.strip()
+        .str.upper()
     )
 
 
@@ -130,6 +159,33 @@ def seal_factor_output(
             raise CrossLayerGovernanceError("Value output requires explicit currency")
         if set(metrics["currency"].astype(str).str.upper()) != {manifest.base_currency}:
             raise CrossLayerGovernanceError("Value currency is not governed base_currency")
+    classifications = [
+        ClassificationRecord(
+            symbol=str(row.symbol),
+            sector=str(row.sector),
+            industry=str(row.industry),
+            source=str(row.source),
+            taxonomy="provider-supplied-sector-industry",
+            taxonomy_version=manifest.universe_ruleset_version,
+            available_at=pd.Timestamp(row.available_at).to_pydatetime(),
+        )
+        for row in cross_layer.universe_membership.itertuples(index=False)
+        if str(row.eligibility_status) == "ELIGIBLE"
+    ]
+    classification_by_symbol = {item.symbol.strip().upper(): item for item in classifications}
+    enriched = metrics.copy(deep=True)
+    enriched["sector"] = (
+        enriched["symbol"]
+        .astype(str)
+        .str.upper()
+        .map(lambda symbol: classification_by_symbol[symbol].sector)
+    )
+    enriched["industry"] = (
+        enriched["symbol"]
+        .astype(str)
+        .str.upper()
+        .map(lambda symbol: classification_by_symbol[symbol].industry)
+    )
     observations = tuple(
         observation_from_row(
             row,
@@ -137,7 +193,7 @@ def seal_factor_output(
             universe_snapshot_id=manifest.universe_snapshot_id,
             as_of=manifest.as_of.date(),
         )
-        for _, row in metrics.iterrows()
+        for _, row in enriched.iterrows()
     )
     values: dict[str, Any] = {
         "factor": factor,
@@ -160,6 +216,14 @@ def seal_factor_output(
         "fx_checksum": manifest.fx_checksum,
         "market_data_canonical_id": manifest.market_data_canonical_id,
         "market_data_checksum": manifest.market_data_checksum,
+        "classification_taxonomy": "provider-supplied-sector-industry",
+        "classification_taxonomy_version": manifest.universe_ruleset_version,
+        "peer_assignment_hash": peer_assignment_hash(
+            classifications,
+            as_of=manifest.as_of,
+            universe_snapshot_hash=manifest.universe_snapshot_hash,
+        ),
+        "classification_records": tuple(classifications),
         "factor_dataset_hash": factor_dataset_hash(observations),
         "observations": observations,
     }
@@ -188,16 +252,56 @@ def financial_metrics_from_governed_accounting(
         raise CrossLayerGovernanceError("duration accounting fact lacks fiscal_period_start")
     if facts.loc[~duration, "fiscal_period_start"].notna().any():
         raise CrossLayerGovernanceError("instant accounting fact has fiscal_period_start")
-    facts["confidence"] = 1.0
-    engine_columns = ["symbol", "fiscal_period_start", "fiscal_period_end", "period_type",
-        "available_at", "metric", "value", "unit", "source", "confidence"]
+    required_confidence = {"data_confidence", "calculation_confidence", "economic_confidence"}
+    missing_confidence = sorted(required_confidence - set(facts.columns))
+    if missing_confidence:
+        raise CrossLayerGovernanceError(
+            "governed accounting confidence is required; missing: " + ", ".join(missing_confidence)
+        )
+    vectors: list[ConfidenceVector] = []
+    for row in facts.itertuples(index=False):
+        try:
+            vectors.append(
+                ConfidenceVector(
+                    data_confidence=row.data_confidence,
+                    calculation_confidence=row.calculation_confidence,
+                    economic_confidence=row.economic_confidence,
+                )
+            )
+        except ValueError as error:
+            raise CrossLayerGovernanceError(
+                f"invalid governed accounting confidence: {error}"
+            ) from error
+    facts["confidence"] = [item.governed_confidence for item in vectors]
+    engine_columns = [
+        "symbol",
+        "fiscal_period_start",
+        "fiscal_period_end",
+        "period_type",
+        "available_at",
+        "metric",
+        "value",
+        "unit",
+        "source",
+        "confidence",
+    ]
     metrics = calculate_financial_metrics(facts.loc[:, engine_columns])
+    def derived_available_at(raw: str) -> pd.Timestamp | None:
+        timestamps = [
+            pd.Timestamp(item["available_at"])
+            for item in json.loads(raw)
+            if item.get("available_at") is not None
+        ]
+        return max(timestamps) if timestamps else None
+
+    metrics["available_at"] = metrics["input_lineage"].map(derived_available_at)
     provenance = {
         "accounting_contract_version": cross_layer.manifest.accounting_contract_version,
         "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
         "accounting_checksum": cross_layer.manifest.accounting_checksum,
         "accounting_snapshot_sha256": cross_layer.manifest.accounting_snapshot_sha256,
         "accounting_cutoff": cross_layer.manifest.as_of.isoformat(),
+        "confidence_policy_version": CONFIDENCE_POLICY_VERSION,
         "cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
     }
     for index, raw in metrics["input_lineage"].items():
@@ -246,8 +350,7 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
             raise CrossLayerGovernanceError(f"no compatible Value flow period for {symbol}")
         selected_start, selected_end = max(complete_periods, key=lambda item: item[1])
         selected_flows = flows.loc[
-            (flows["fiscal_period_start"] == selected_start)
-            & (flows["period_end"] == selected_end)
+            (flows["fiscal_period_start"] == selected_start) & (flows["period_end"] == selected_end)
         ]
         fact_map = selected_flows.set_index("metric")
         stocks = symbol_facts.loc[
@@ -256,9 +359,7 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
             & (symbol_facts["period_end"] == selected_end)
         ]
         if len(stocks) != len(required_stocks) or set(stocks["metric"]) != required_stocks:
-            raise CrossLayerGovernanceError(
-                f"stock and flow periods are incompatible for {symbol}"
-            )
+            raise CrossLayerGovernanceError(f"stock and flow periods are incompatible for {symbol}")
         if stocks.duplicated("metric", keep=False).any():
             raise CrossLayerGovernanceError(f"ambiguous Value stock facts for {symbol}")
         stock_map = stocks.set_index("metric")
@@ -275,69 +376,155 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
             )
         fcf = selected_metrics.iloc[0]
         market_cap = float(membership["market_cap"])
-        enterprise_value = market_cap + float(stock_map.loc["total_debt", "value"]) - float(
-            stock_map.loc["cash", "value"]
+        enterprise_value = (
+            market_cap
+            + float(stock_map.loc["total_debt", "value"])
+            - float(stock_map.loc["cash", "value"])
         )
-        values = {"free_cash_flow": float(fcf["value"]),
+        values = {
+            "free_cash_flow": float(fcf["value"]),
             "earnings": float(fact_map.loc["net_income", "value"]),
             "ebit": float(fact_map.loc["operating_income", "value"]),
-            "ebitda": float(fact_map.loc["ebitda", "value"]), "market_cap": market_cap,
-            "enterprise_value": enterprise_value}
+            "ebitda": float(fact_map.loc["ebitda", "value"]),
+            "market_cap": market_cap,
+            "enterprise_value": enterprise_value,
+        }
+        confidence_sources = {
+            "free_cash_flow": [fcf],
+            "earnings": [fact_map.loc["net_income"]],
+            "ebit": [fact_map.loc["operating_income"]],
+            "ebitda": [fact_map.loc["ebitda"]],
+            "market_cap": [],
+            "enterprise_value": [stock_map.loc["total_debt"], stock_map.loc["cash"]],
+        }
         for metric, value in values.items():
             instant = metric in {"market_cap", "enterprise_value"}
-            rows.append({"symbol": symbol, "valuation_as_of": cross_layer.manifest.as_of.date(),
-                "fiscal_period_end": selected_end,
-                "period_basis": "INSTANT" if instant else "FY", "metric": metric, "value": value,
-                "unit": "currency", "currency": cross_layer.manifest.base_currency,
-                "available_at": cross_layer.manifest.as_of.isoformat(), "status": "PASS",
-                "reason": None, "confidence": 1.0,
-                "input_lineage": json.dumps([{"cross_layer_fingerprint":
-                    cross_layer.manifest.cross_layer_fingerprint,
-                    "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
-                    "fx_canonical_id": cross_layer.manifest.fx_canonical_id,
-                    "market_data_canonical_id": cross_layer.manifest.market_data_canonical_id,
-                    "value_temporal_selection_policy_version":
-                        VALUE_TEMPORAL_SELECTION_POLICY_VERSION,
-                    "selected_fiscal_period_start": str(selected_start),
-                    "selected_fiscal_period_end": str(selected_end)}],
-                    sort_keys=True), "industry": membership.get("industry")})
+            sources = confidence_sources[metric]
+            if metric in {"market_cap", "enterprise_value"}:
+                universe_confidence = membership.get("universe_confidence")
+                if universe_confidence is None or pd.isna(universe_confidence):
+                    raise CrossLayerGovernanceError(
+                        f"Value {metric} requires governed universe_confidence for {symbol}"
+                    )
+                sources = [
+                    *sources,
+                    {"confidence": universe_confidence, "available_at": membership["available_at"]},
+                ]
+            vectors = [
+                ConfidenceVector(
+                    data_confidence=float(source.get("data_confidence", source.get("confidence"))),
+                    calculation_confidence=float(
+                        source.get("calculation_confidence", source.get("confidence"))
+                    ),
+                    economic_confidence=float(
+                        source.get("economic_confidence", source.get("confidence"))
+                    ),
+                )
+                for source in sources
+            ]
+            aggregate = conservative_confidence(vectors)
+            available_at = max(
+                pd.Timestamp(
+                    source.get("available_at", source.get("source_available_at"))
+                ).to_pydatetime()
+                for source in sources
+            )
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "valuation_as_of": cross_layer.manifest.as_of.date(),
+                    "fiscal_period_end": selected_end,
+                    "period_basis": "INSTANT" if instant else "FY",
+                    "metric": metric,
+                    "value": value,
+                    "unit": "currency",
+                    "currency": cross_layer.manifest.base_currency,
+                    "available_at": available_at,
+                    "status": "PASS",
+                    "reason": None,
+                    "confidence": aggregate.governed_confidence,
+                    "data_confidence": aggregate.data_confidence,
+                    "calculation_confidence": aggregate.calculation_confidence,
+                    "economic_confidence": aggregate.economic_confidence,
+                    "input_lineage": json.dumps(
+                        [
+                            {
+                                "cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
+                                "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
+                                "fx_canonical_id": cross_layer.manifest.fx_canonical_id,
+                                "market_data_canonical_id": cross_layer.manifest.market_data_canonical_id,
+                                "value_temporal_selection_policy_version": VALUE_TEMPORAL_SELECTION_POLICY_VERSION,
+                                "selected_fiscal_period_start": str(selected_start),
+                                "selected_fiscal_period_end": str(selected_end),
+                            }
+                        ],
+                        sort_keys=True,
+                    ),
+                    "industry": membership.get("industry"),
+                }
+            )
     return pd.DataFrame(rows)
 
 
-def evaluate_governed_quality(*, cross_layer: CrossLayerGovernanceResult,
-    experiment_id: str) -> tuple[QualityEvaluation, GovernedFactorBatch]:
+def evaluate_governed_quality(
+    *, cross_layer: CrossLayerGovernanceResult, experiment_id: str
+) -> tuple[QualityEvaluation, GovernedFactorBatch]:
     financial = financial_metrics_from_governed_accounting(cross_layer)
-    evaluation = evaluate_quality_metrics(financial, experiment_id=experiment_id,
-        dataset_lineage={"cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
-            "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id})
-    return evaluation, seal_factor_output(factor="Quality", metrics=evaluation.metrics,
-        cross_layer=cross_layer)
+    evaluation = evaluate_quality_metrics(
+        financial,
+        experiment_id=experiment_id,
+        dataset_lineage={
+            "cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
+            "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
+        },
+    )
+    return evaluation, seal_factor_output(
+        factor="Quality", metrics=evaluation.metrics, cross_layer=cross_layer
+    )
 
 
-def evaluate_governed_value(*, cross_layer: CrossLayerGovernanceResult,
-    experiment_id: str) -> tuple[ValueEvaluation, GovernedFactorBatch]:
+def evaluate_governed_value(
+    *, cross_layer: CrossLayerGovernanceResult, experiment_id: str
+) -> tuple[ValueEvaluation, GovernedFactorBatch]:
     financial = financial_metrics_from_governed_accounting(cross_layer)
     inputs = _value_inputs(cross_layer, financial)
-    evaluation = evaluate_value_metrics(inputs, experiment_id=experiment_id,
-        dataset_lineage={"cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
+    evaluation = evaluate_value_metrics(
+        inputs,
+        experiment_id=experiment_id,
+        dataset_lineage={
+            "cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
             "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
-            "fx_canonical_id": cross_layer.manifest.fx_canonical_id})
-    return evaluation, seal_factor_output(factor="Value", metrics=evaluation.metrics,
-        cross_layer=cross_layer)
+            "fx_canonical_id": cross_layer.manifest.fx_canonical_id,
+        },
+    )
+    return evaluation, seal_factor_output(
+        factor="Value", metrics=evaluation.metrics, cross_layer=cross_layer
+    )
 
 
-def evaluate_governed_momentum(*, cross_layer: CrossLayerGovernanceResult,
-    experiment_id: str, benchmark_symbol: str) -> tuple[MomentumEvaluation, GovernedFactorBatch]:
-    if cross_layer.market_data.metadata.canonical_id != cross_layer.manifest.market_data_canonical_id:
+def evaluate_governed_momentum(
+    *, cross_layer: CrossLayerGovernanceResult, experiment_id: str, benchmark_symbol: str
+) -> tuple[MomentumEvaluation, GovernedFactorBatch]:
+    if (
+        cross_layer.market_data.metadata.canonical_id
+        != cross_layer.manifest.market_data_canonical_id
+    ):
         raise CrossLayerGovernanceError("Market Data canonical mismatch")
     prices = cross_layer.market_data.momentum_frame()
-    evaluation = evaluate_momentum_metrics(prices, experiment_id=experiment_id,
-        dataset_lineage={"cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
+    evaluation = evaluate_momentum_metrics(
+        prices,
+        experiment_id=experiment_id,
+        dataset_lineage={
+            "cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
             "market_data_canonical_id": cross_layer.manifest.market_data_canonical_id,
-            "market_data_checksum": cross_layer.manifest.market_data_checksum},
-        as_of=cross_layer.manifest.as_of.date(), benchmark_symbol=benchmark_symbol)
-    return evaluation, seal_factor_output(factor="Momentum", metrics=evaluation.metrics,
-        cross_layer=cross_layer)
+            "market_data_checksum": cross_layer.manifest.market_data_checksum,
+        },
+        as_of=cross_layer.manifest.as_of.date(),
+        benchmark_symbol=benchmark_symbol,
+    )
+    return evaluation, seal_factor_output(
+        factor="Momentum", metrics=evaluation.metrics, cross_layer=cross_layer
+    )
 
 
 def evaluate_governed_qvm(
@@ -345,7 +532,9 @@ def evaluate_governed_qvm(
 ) -> QVMEvaluation:
     symbols = _verify_result(expected)
     if {batch.factor for batch in batches} != {"Quality", "Value", "Momentum"} or len(batches) != 3:
-        raise CrossLayerGovernanceError("exactly one Quality, Value, and Momentum batch is required")
+        raise CrossLayerGovernanceError(
+            "exactly one Quality, Value, and Momentum batch is required"
+        )
     manifest = expected.manifest
     identity_fields = {
         "cross_layer_contract_version": manifest.contract_version,
@@ -374,6 +563,8 @@ def evaluate_governed_qvm(
                 raise CrossLayerGovernanceError(f"{batch.factor} {name} mismatch")
         if {item.symbol for item in batch.observations} != symbols:
             raise CrossLayerGovernanceError(f"{batch.factor} eligible universe mismatch")
+    if len({batch.peer_assignment_hash for batch in batches}) != 1:
+        raise CrossLayerGovernanceError("factor batch peer assignment mismatch")
     hashes = {batch.factor: batch.factor_dataset_hash for batch in batches}
     lineage_hash = qvm_lineage_hash(
         universe_snapshot_id=manifest.universe_snapshot_id,
@@ -405,4 +596,6 @@ def evaluate_governed_qvm(
         cross_layer_fingerprint=manifest.cross_layer_fingerprint,
         eligible_symbols_hash=manifest.eligible_symbols_hash,
     )
-    return QVMEvaluation(evaluation.matrix, health, evaluation.lineage, evaluation.validation_report)
+    return QVMEvaluation(
+        evaluation.matrix, health, evaluation.lineage, evaluation.validation_report
+    )

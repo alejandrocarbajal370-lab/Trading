@@ -96,7 +96,9 @@ class MarketDataDataset:
                 f"market-data checksum mismatch: expected {self.metadata.checksum}, observed {observed}"
             )
         if self.metadata.canonical_id != f"market-data:{observed}":
-            raise MarketDataGovernanceError("market-data canonical identity does not match checksum")
+            raise MarketDataGovernanceError(
+                "market-data canonical identity does not match checksum"
+            )
 
     def momentum_frame(self) -> pd.DataFrame:
         """Return a defensive copy carrying the governed identity into Momentum."""
@@ -196,7 +198,9 @@ def govern_market_data(
         timestamp.to_pydatetime() > available_at.astimezone(datetime.UTC)
         for timestamp in timestamps
     ):
-        raise MarketDataGovernanceError("PIT violation: row available_at exceeds dataset availability")
+        raise MarketDataGovernanceError(
+            "PIT violation: row available_at exceeds dataset availability"
+        )
     if (data["date"] > as_of.date()).any():
         raise MarketDataGovernanceError("PIT violation: price date exceeds as_of")
     for column in ("raw_close", "adjusted_close", "adjustment_factor"):

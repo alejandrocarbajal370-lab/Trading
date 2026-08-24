@@ -91,11 +91,11 @@ METRIC_SEMANTICS_REGISTRY: Mapping[tuple[str, str], MetricSemantics] = {
         ),
         _semantics(
             "Quality",
-            "accrual_quality",
+            "raw_accrual_ratio",
             "ratio",
-            direction="higher_is_better",
+            direction="lower_is_better",
             comparison_group="cash_conversion_ratio",
-            economic_meaning="accrual quality",
+            economic_meaning="raw accrual ratio: (net income - CFO) / assets; lower is better",
         ),
         _semantics(
             "Quality",
@@ -283,6 +283,7 @@ class FactorObservation(QVMContractModel):
     status: str = Field(min_length=1)
     reason: str | None = None
     sector: str | None = None
+    industry: str | None = None
     normalization: NormalizationMetadata = NormalizationMetadata()
 
     @model_validator(mode="after")
@@ -383,6 +384,7 @@ def observation_from_row(
         status=str(row["status"]),
         reason=None if pd.isna(row.get("reason")) else str(row.get("reason")),
         sector=None if pd.isna(row.get("sector")) else str(row.get("sector")),
+        industry=None if pd.isna(row.get("industry")) else str(row.get("industry")),
     )
 
 

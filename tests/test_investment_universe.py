@@ -228,9 +228,7 @@ def test_excessive_concentration_is_warning() -> None:
         stress_tests=[],
     )
     assert diagnostic["status"] == "WARNING"
-    assert "excessive_sector_concentration" in {
-        reason["code"] for reason in diagnostic["reasons"]
-    }
+    assert "excessive_sector_concentration" in {reason["code"] for reason in diagnostic["reasons"]}
 
 
 def test_snapshot_checksum_failure_leaves_detectable_audit_violation(tmp_path: Path) -> None:

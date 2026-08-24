@@ -59,7 +59,9 @@ def _write_failure(
     )
 
 
-def _attach_confidence(snapshot: pd.DataFrame, history: pd.DataFrame, *, data_date: datetime.date | datetime.datetime) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _attach_confidence(
+    snapshot: pd.DataFrame, history: pd.DataFrame, *, data_date: datetime.date | datetime.datetime
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Attach PIT-safe data confidence to the selected economic facts."""
     cutoff = normalize_data_timestamp(data_date)
     eligible_history = history.loc[history["available_at"] <= cutoff].copy()
@@ -69,7 +71,9 @@ def _attach_confidence(snapshot: pd.DataFrame, history: pd.DataFrame, *, data_da
         result["confidence"] = pd.Series(dtype=float)
         return result, confidence
     keys = ["symbol", "fiscal_period_start", "fiscal_period_end", "period_type", "metric"]
-    enriched = snapshot.merge(confidence[keys + ["confidence"]], on=keys, how="left", validate="one_to_one")
+    enriched = snapshot.merge(
+        confidence[keys + ["confidence"]], on=keys, how="left", validate="one_to_one"
+    )
     return enriched, confidence
 
 
@@ -104,9 +108,7 @@ def run_phase2(
         assert_point_in_time(snapshot, data_date=data_date)
         snapshot, confidence = _attach_confidence(snapshot, history, data_date=data_date)
     except Exception as error:
-        _write_failure(
-            context=context, output_dir=output_dir, source_name=source_name, error=error
-        )
+        _write_failure(context=context, output_dir=output_dir, source_name=source_name, error=error)
         raise
 
     output_dir.mkdir(parents=True, exist_ok=False)
@@ -120,7 +122,9 @@ def run_phase2(
         "point_in_time": "PASS",
         "records": len(snapshot),
         "cutoff": date_label,
-        "reason": None if has_data else "no fundamental facts were publicly available at the PIT cutoff",
+        "reason": None
+        if has_data
+        else "no fundamental facts were publicly available at the PIT cutoff",
     }
     (output_dir / "fundamental_health.json").write_text(
         json.dumps(health, indent=2, sort_keys=True), encoding="utf-8"
