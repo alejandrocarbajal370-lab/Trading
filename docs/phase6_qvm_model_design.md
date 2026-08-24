@@ -22,7 +22,7 @@ or live execution. Every artifact must retain `NO_TRADE` and execution disabled.
 ## 2. Authoritative input contract
 
 The only admissible entry point is `sealed-pre-phase6-admission-v2`, delivered by PR #18 at
-`dd25fc0068545bffa8e2c9f8c5b36d345ba209fd`. It accepts the verified Phase 5.6 chain through
+`eafa908f9a79b494370bfa5560b856c9a5a3a7c1`. It accepts the verified Phase 5.6 chain through
 exact sealed Quality/Value/Momentum batches. Direct `FactorBatch`, DataFrame, partial Q/V/M, or APIs
 marked `research_legacy` or `phase6_eligible=false` are forbidden.
 
@@ -316,7 +316,7 @@ Filenames describe a contract, not authorization to implement them in this desig
 These items require independent audit or a separately authorized contract change; they are not
 permission to code the model now:
 
-1. Treat PR #18 head `dd25fc0068545bffa8e2c9f8c5b36d345ba209fd` as the final PRE-Phase 6
+1. Treat PR #18 head `eafa908f9a79b494370bfa5560b856c9a5a3a7c1` as the final PRE-Phase 6
    contract for admission, typed identities, confidence, status taxonomy, PIT sector/industry,
    peer assignment, applicability, and `raw_accrual_ratio` semantics. Any later head requires a new
    independent audit reference.
@@ -359,7 +359,7 @@ These clarifications freeze contract intent and do not implement scoring.
 8. **Corrected upstream contracts:** `raw_accrual_ratio=(NI-CFO)/assets` with
    `lower_is_better`, sealed PIT industry/sector identity, deterministic peer assignment, typed QVM
    lineage, and exact Q/V/M admission are supplied by PR #18 head
-   `dd25fc0068545bffa8e2c9f8c5b36d345ba209fd`. They must pass re-audit before scoring starts.
+   `eafa908f9a79b494370bfa5560b856c9a5a3a7c1`. They must pass re-audit before scoring starts.
 
 ### 16.1 Frozen golden examples
 
