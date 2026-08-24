@@ -333,3 +333,30 @@ This design does not implement or authorize portfolio construction, position siz
 turnover control, transaction costs, backtesting, expected returns, buy/sell signals, broker
 integration, order generation, reconciliation, paper trading, leverage, shorts, options, or live
 execution. It does not merge code and does not enable trading. Phase 6 remains `RESEARCH_ONLY`.
+
+
+## 16. PRE-Phase 6 audit clarifications (design only)
+
+These clarifications freeze contract intent and do not implement scoring.
+
+1. **Gate order:** confidence filter -> sector/industry applicability and metric activation -> PIT
+   industry/sector/market peer fallback -> metric coverage -> within-factor coverage -> composite
+   coverage. No later gate may revive an observation rejected earlier.
+2. **Cohort ties:** an equal-value midrank group that crosses a cohort boundary remains intact.
+   The cohort expands as needed; symbol ordering is display-only and never splits an economic tie.
+3. **Five-MAD clipping:** clipping before rank-Gaussian is intended only to collapse extreme tails
+   into explicit ties. Sensitivities at 3-MAD, 5-MAD, and no clipping are preregistered diagnostics,
+   not alternatives selected using returns.
+4. **Degenerate cases:** scale `s=0` makes the metric inactive with an explicit status. Exact
+   percentile conventions and minimum-size examples require golden tests before implementation.
+5. **Active within-factor denominator:** the denominator is the sum of configured weights for
+   applicable observations that passed confidence. Missing or non-applicable observations receive
+   no weight and are never imputed.
+6. **Policy versus alpha:** capital-preservation thresholds are separately versioned
+   policy/diagnostic settings, not alpha parameters.
+7. **Alternative weights:** alternatives remain future preregistered experiments and are not
+   promotable candidates during the initial implementation.
+8. **Corrected upstream contracts:** the implementation prerequisite is
+   `raw_accrual_ratio=(NI-CFO)/assets` with `lower_is_better`, sealed PIT industry/sector identity,
+   and a deterministic peer-assignment hash. These contracts are delivered separately by the
+   PRE-Phase 6 remediation PR and must pass re-audit before scoring starts.
