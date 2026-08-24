@@ -55,6 +55,7 @@ class GovernedFactorBatch(ResearchChainModel):
     universe_snapshot_id: str
     universe_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     membership_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    validation_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     eligible_symbols_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     availability_policy_version: str
     entity_policy_version: str
@@ -66,8 +67,10 @@ class GovernedFactorBatch(ResearchChainModel):
     accounting_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     fx_canonical_id: str
     fx_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
+    fx_conversions_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     market_data_canonical_id: str
     market_data_checksum: str = Field(pattern=r"^[0-9a-f]{64}$")
+    market_data_snapshot_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     classification_contract_version: Literal["pit-classification-v1"] = (
         CLASSIFICATION_CONTRACT_VERSION
     )
@@ -131,6 +134,7 @@ def governed_factor_batch_identity(batch: GovernedFactorBatch | dict[str, Any]) 
         "universe_snapshot_id",
         "universe_snapshot_hash",
         "membership_hash",
+        "validation_hash",
         "eligible_symbols_hash",
         "availability_policy_version",
         "entity_policy_version",
@@ -142,8 +146,10 @@ def governed_factor_batch_identity(batch: GovernedFactorBatch | dict[str, Any]) 
         "accounting_snapshot_sha256",
         "fx_canonical_id",
         "fx_checksum",
+        "fx_conversions_sha256",
         "market_data_canonical_id",
         "market_data_checksum",
+        "market_data_snapshot_sha256",
         "classification_contract_version",
         "classification_taxonomy",
         "classification_taxonomy_version",
@@ -263,6 +269,7 @@ def seal_factor_output(
         "universe_snapshot_id": manifest.universe_snapshot_id,
         "universe_snapshot_hash": manifest.universe_snapshot_hash,
         "membership_hash": manifest.membership_hash,
+        "validation_hash": manifest.validation_hash,
         "eligible_symbols_hash": manifest.eligible_symbols_hash,
         "availability_policy_version": manifest.availability_policy_version,
         "entity_policy_version": manifest.entity_policy_version,
@@ -274,8 +281,10 @@ def seal_factor_output(
         "accounting_snapshot_sha256": manifest.accounting_snapshot_sha256,
         "fx_canonical_id": manifest.fx_canonical_id,
         "fx_checksum": manifest.fx_checksum,
+        "fx_conversions_sha256": manifest.fx_conversions_sha256,
         "market_data_canonical_id": manifest.market_data_canonical_id,
         "market_data_checksum": manifest.market_data_checksum,
+        "market_data_snapshot_sha256": manifest.market_data_snapshot_sha256,
         "classification_contract_version": CLASSIFICATION_CONTRACT_VERSION,
         "classification_taxonomy": "provider-supplied-sector-industry",
         "classification_taxonomy_version": manifest.universe_ruleset_version,
@@ -606,6 +615,7 @@ def evaluate_governed_qvm(
         "universe_snapshot_id": manifest.universe_snapshot_id,
         "universe_snapshot_hash": manifest.universe_snapshot_hash,
         "membership_hash": manifest.membership_hash,
+        "validation_hash": manifest.validation_hash,
         "eligible_symbols_hash": manifest.eligible_symbols_hash,
         "as_of": manifest.as_of,
         "availability_policy_version": manifest.availability_policy_version,
@@ -618,8 +628,10 @@ def evaluate_governed_qvm(
         "accounting_snapshot_sha256": manifest.accounting_snapshot_sha256,
         "fx_canonical_id": manifest.fx_canonical_id,
         "fx_checksum": manifest.fx_checksum,
+        "fx_conversions_sha256": manifest.fx_conversions_sha256,
         "market_data_canonical_id": manifest.market_data_canonical_id,
         "market_data_checksum": manifest.market_data_checksum,
+        "market_data_snapshot_sha256": manifest.market_data_snapshot_sha256,
     }
     for batch in batches:
         for name, expected_value in identity_fields.items():

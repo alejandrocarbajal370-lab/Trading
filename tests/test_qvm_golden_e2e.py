@@ -669,12 +669,15 @@ def test_pre_phase6_admission_emits_research_only_identity_artifact(tmp_path: Pa
         "as_of",
         "universe_snapshot_hash",
         "eligible_symbols_hash",
+        "validation_hash",
         "cross_layer_fingerprint",
         "peer_assignment_hash",
         "classification_taxonomy_version",
         "accounting_canonical_id",
         "market_data_canonical_id",
+        "market_data_snapshot_sha256",
         "fx_canonical_id",
+        "fx_conversions_sha256",
     ],
 )
 def test_admission_rejects_each_outer_identity_mutation(
@@ -782,6 +785,17 @@ def test_sector_applicability_is_enforced_before_admission(
     observation = batch.observations[0]
     assert observation.status == "NOT_APPLICABLE"
     assert observation.applicability in {"NOT_APPLICABLE", "REVIEW"}
+    assert observation.value is None
+
+
+def test_value_financials_applicability_never_reaches_pass(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path, sector="Financials", industry="Banks")
+    batch = seal_factor_output(
+        factor="Value", metrics=_value_output().query("metric == 'ev_to_ebit'"), cross_layer=chain
+    )
+    observation = batch.observations[0]
+    assert observation.status == "NOT_APPLICABLE"
+    assert observation.applicability == "NOT_APPLICABLE"
     assert observation.value is None
 
 
