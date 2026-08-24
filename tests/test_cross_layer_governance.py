@@ -15,7 +15,7 @@ from governance.integration import (
     write_governed_inputs,
 )
 from governance.units import UnitOntologyError, normalize_unit, unit_kind
-from universe.validation import UniverseRules
+from universe.validation import UniverseRules, UniverseValidationError
 
 AS_OF = datetime.datetime(2025, 1, 31, 23, 59, tzinfo=datetime.UTC)
 
@@ -47,6 +47,7 @@ def _fx():
 
 def _accounting():
     common = {"entity": "AAA", "fiscal_period": "FY2024", "period_end": "2024-12-31",
+        "fiscal_period_start": "2024-01-01", "period_type": "duration",
         "filing_date": "2025-01-20T12:00:00Z", "available_at": "2025-01-20T12:01:00Z",
         "source": "accounting-fixture", "dataset_version": "accounting-v1", "revision": 0,
         "revision_type": "ORIGINAL", "supersedes_revision": None}
@@ -64,17 +65,21 @@ def _accounting():
     )
 
 
-def _universe(tmp_path):
+def _universe(tmp_path, *, market_cap_currency: str | None = "EUR"):
     existing = tmp_path / "snapshots" / AS_OF.date().isoformat()
     if existing.exists():
         return existing
     source = tmp_path / "universe.csv"
-    pd.DataFrame([{"symbol": "AAA", "exchange": "NYSE", "asset_type": "COMMON_STOCK",
+    row = {"symbol": "AAA", "exchange": "NYSE", "asset_type": "COMMON_STOCK",
         "country": "US", "region": "North America", "sector": "Industrials",
-        "industry": "Machinery", "market_cap": 100.0, "average_volume": 1000,
+        "industry": "Machinery", "market_cap": 100.0,
+        "average_volume": 1000,
         "average_dollar_volume": 100000, "listing_date": "2020-01-01T00:00:00Z",
         "source": "universe-fixture", "source_timestamp": "2025-01-31T20:00:00Z",
-        "available_at": "2025-01-31T21:00:00Z"}]).to_csv(source, index=False)
+        "available_at": "2025-01-31T21:00:00Z"}
+    if market_cap_currency is not None:
+        row["market_cap_currency"] = market_cap_currency
+    pd.DataFrame([row]).to_csv(source, index=False)
     return run_phase36(source_path=source, rules=UniverseRules(allowed_exchanges=("NYSE",)),
         as_of=AS_OF, output_root=tmp_path / "validation", snapshot_root=tmp_path / "snapshots",
         now=AS_OF).snapshot_dir
@@ -103,6 +108,45 @@ def test_cross_layer_integration_translates_and_preserves_identity(tmp_path) -> 
     assert result.manifest.scores_calculated is False
     assert result.manifest.ranking_calculated is False
     assert result.manifest.portfolio_constructed is False
+
+
+def test_market_cap_currency_is_explicitly_converted_with_complete_fx_lineage(tmp_path) -> None:
+    result = _integrate(tmp_path)
+    membership = result.universe_membership.set_index("symbol").loc["AAA"]
+    conversion = result.fx_conversions.query("metric == 'market_cap'").iloc[0]
+    assert membership["original_market_cap"] == pytest.approx(100.0)
+    assert membership["market_cap_currency"] == "EUR"
+    assert membership["market_cap"] == pytest.approx(110.0)
+    assert conversion["source_currency"] == "EUR"
+    assert conversion["target_currency"] == "USD"
+    assert conversion["rate"] == pytest.approx(1.1)
+    assert conversion["conversion_method"] == "direct"
+    assert conversion["rate_market_timestamp"] == pd.Timestamp("2024-12-31T16:00:00Z")
+    assert conversion["rate_available_at"] == pd.Timestamp("2024-12-31T16:01:00Z")
+    assert conversion["fx_canonical_id"] == result.manifest.fx_canonical_id
+    assert conversion["fx_checksum"] == result.manifest.fx_checksum
+
+
+def test_market_cap_in_base_currency_records_identity_without_synthetic_fixing(tmp_path) -> None:
+    result = _integrate(
+        tmp_path,
+        universe_snapshot_dir=_universe(tmp_path, market_cap_currency="USD"),
+    )
+    conversion = result.fx_conversions.query("metric == 'market_cap'").iloc[0]
+    assert conversion["conversion_method"] == "identity"
+    assert conversion["rate"] == pytest.approx(1.0)
+    assert pd.isna(conversion["rate_market_timestamp"])
+    assert pd.isna(conversion["rate_available_at"])
+    assert pd.isna(conversion["fx_canonical_id"])
+
+
+@pytest.mark.parametrize("currency", [None, "", "XYZ", "RATIO"])
+def test_missing_or_invalid_market_cap_currency_fails_closed(tmp_path, currency) -> None:
+    with pytest.raises((UniverseValidationError, CrossLayerGovernanceError, UnitOntologyError)):
+        _integrate(
+            tmp_path,
+            universe_snapshot_dir=_universe(tmp_path, market_cap_currency=currency),
+        )
 
 
 def test_cross_layer_fingerprint_is_reproducible(tmp_path) -> None:

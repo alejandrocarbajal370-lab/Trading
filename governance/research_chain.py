@@ -21,6 +21,7 @@ from factors.qvm import (
 from factors.value import ValueEvaluation, evaluate_value_metrics
 from fundamentals.financial_engine import INSTANT_INPUTS, calculate_financial_metrics
 from governance.integration import (
+    VALUE_TEMPORAL_SELECTION_POLICY_VERSION,
     CrossLayerGovernanceError,
     CrossLayerGovernanceResult,
     CrossLayerManifest,
@@ -173,15 +174,20 @@ def financial_metrics_from_governed_accounting(
     facts = cross_layer.accounting_snapshot.copy(deep=True)
     facts["symbol"] = facts["entity"]
     facts["fiscal_period_end"] = pd.to_datetime(facts["period_end"]).dt.date
-    facts["period_type"] = facts["metric"].map(
+    facts["fiscal_period_start"] = pd.to_datetime(
+        facts["fiscal_period_start"], errors="coerce"
+    ).dt.date
+    facts["period_type"] = facts["period_type"].astype(str).str.lower()
+    expected_types = facts["metric"].map(
         lambda metric: "instant" if metric in INSTANT_INPUTS else "duration"
     )
-    facts["fiscal_period_start"] = facts.apply(
-        lambda row: None
-        if row["period_type"] == "instant"
-        else datetime.date(row["fiscal_period_end"].year, 1, 1),
-        axis=1,
-    )
+    if (facts["period_type"] != expected_types).any():
+        raise CrossLayerGovernanceError("accounting period_type conflicts with metric semantics")
+    duration = facts["period_type"] == "duration"
+    if facts.loc[duration, "fiscal_period_start"].isna().any():
+        raise CrossLayerGovernanceError("duration accounting fact lacks fiscal_period_start")
+    if facts.loc[~duration, "fiscal_period_start"].notna().any():
+        raise CrossLayerGovernanceError("instant accounting fact has fiscal_period_start")
     facts["confidence"] = 1.0
     engine_columns = ["symbol", "fiscal_period_start", "fiscal_period_end", "period_type",
         "available_at", "metric", "value", "unit", "source", "confidence"]
@@ -206,24 +212,73 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
     facts = cross_layer.accounting_snapshot
     rows: list[dict[str, Any]] = []
     for symbol in sorted(_eligible_symbols(cross_layer)):
-        fact_map = facts.loc[facts["entity"] == symbol].set_index("metric")
-        metric_map = financial.loc[financial["symbol"] == symbol].set_index("metric")
+        symbol_facts = facts.loc[facts["entity"] == symbol].copy()
+        valuation_date = cross_layer.manifest.as_of.date()
+        symbol_facts["period_end"] = pd.to_datetime(symbol_facts["period_end"]).dt.date
+        symbol_facts["fiscal_period_start"] = pd.to_datetime(
+            symbol_facts["fiscal_period_start"], errors="coerce"
+        ).dt.date
         membership = cross_layer.universe_membership.loc[
             cross_layer.universe_membership["symbol"] == symbol
         ].iloc[0]
-        required_facts = {"net_income", "operating_income", "ebitda", "total_debt", "cash"}
-        if not required_facts <= set(fact_map.index):
+        required_flows = {"net_income", "operating_income", "ebitda"}
+        required_stocks = {"total_debt", "cash"}
+        required_facts = required_flows | required_stocks
+        if not required_facts <= set(symbol_facts["metric"]):
             raise CrossLayerGovernanceError(
                 f"Value governed adapter missing accounting facts for {symbol}: "
-                f"{', '.join(sorted(required_facts - set(fact_map.index)))}"
+                f"{', '.join(sorted(required_facts - set(symbol_facts['metric'])))}"
             )
-        if "free_cash_flow" not in metric_map.index:
-            raise CrossLayerGovernanceError("Value governed adapter missing free_cash_flow")
+        flows = symbol_facts.loc[
+            symbol_facts["metric"].isin(required_flows)
+            & (symbol_facts["period_type"] == "duration")
+            & symbol_facts["fiscal_period"].astype(str).str.upper().str.startswith("FY")
+            & (symbol_facts["period_end"] <= valuation_date)
+        ]
+        duplicate_keys = ["metric", "fiscal_period_start", "period_end", "period_type"]
+        if flows.duplicated(duplicate_keys, keep=False).any():
+            raise CrossLayerGovernanceError(f"ambiguous Value flow facts for {symbol}")
+        complete_periods: list[tuple[datetime.date, datetime.date]] = []
+        for key, group in flows.groupby(["fiscal_period_start", "period_end"], dropna=False):
+            if set(group["metric"]) == required_flows and len(group) == len(required_flows):
+                complete_periods.append(key)
+        if not complete_periods:
+            raise CrossLayerGovernanceError(f"no compatible Value flow period for {symbol}")
+        selected_start, selected_end = max(complete_periods, key=lambda item: item[1])
+        selected_flows = flows.loc[
+            (flows["fiscal_period_start"] == selected_start)
+            & (flows["period_end"] == selected_end)
+        ]
+        fact_map = selected_flows.set_index("metric")
+        stocks = symbol_facts.loc[
+            symbol_facts["metric"].isin(required_stocks)
+            & (symbol_facts["period_type"] == "instant")
+            & (symbol_facts["period_end"] == selected_end)
+        ]
+        if len(stocks) != len(required_stocks) or set(stocks["metric"]) != required_stocks:
+            raise CrossLayerGovernanceError(
+                f"stock and flow periods are incompatible for {symbol}"
+            )
+        if stocks.duplicated("metric", keep=False).any():
+            raise CrossLayerGovernanceError(f"ambiguous Value stock facts for {symbol}")
+        stock_map = stocks.set_index("metric")
+        selected_metrics = financial.loc[
+            (financial["symbol"] == symbol)
+            & (financial["fiscal_period_start"] == selected_start)
+            & (financial["fiscal_period_end"] == selected_end)
+            & (financial["metric"] == "free_cash_flow")
+            & (financial["status"] == "PASS")
+        ]
+        if len(selected_metrics) != 1:
+            raise CrossLayerGovernanceError(
+                f"Value governed adapter requires one compatible free_cash_flow for {symbol}"
+            )
+        fcf = selected_metrics.iloc[0]
         market_cap = float(membership["market_cap"])
-        enterprise_value = market_cap + float(fact_map.loc["total_debt", "value"]) - float(
-            fact_map.loc["cash", "value"]
+        enterprise_value = market_cap + float(stock_map.loc["total_debt", "value"]) - float(
+            stock_map.loc["cash", "value"]
         )
-        values = {"free_cash_flow": float(metric_map.loc["free_cash_flow", "value"]),
+        values = {"free_cash_flow": float(fcf["value"]),
             "earnings": float(fact_map.loc["net_income", "value"]),
             "ebit": float(fact_map.loc["operating_income", "value"]),
             "ebitda": float(fact_map.loc["ebitda", "value"]), "market_cap": market_cap,
@@ -231,7 +286,7 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
         for metric, value in values.items():
             instant = metric in {"market_cap", "enterprise_value"}
             rows.append({"symbol": symbol, "valuation_as_of": cross_layer.manifest.as_of.date(),
-                "fiscal_period_end": fact_map.iloc[0]["period_end"],
+                "fiscal_period_end": selected_end,
                 "period_basis": "INSTANT" if instant else "FY", "metric": metric, "value": value,
                 "unit": "currency", "currency": cross_layer.manifest.base_currency,
                 "available_at": cross_layer.manifest.as_of.isoformat(), "status": "PASS",
@@ -240,7 +295,11 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
                     cross_layer.manifest.cross_layer_fingerprint,
                     "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
                     "fx_canonical_id": cross_layer.manifest.fx_canonical_id,
-                    "market_data_canonical_id": cross_layer.manifest.market_data_canonical_id}],
+                    "market_data_canonical_id": cross_layer.manifest.market_data_canonical_id,
+                    "value_temporal_selection_policy_version":
+                        VALUE_TEMPORAL_SELECTION_POLICY_VERSION,
+                    "selected_fiscal_period_start": str(selected_start),
+                    "selected_fiscal_period_end": str(selected_end)}],
                     sort_keys=True), "industry": membership.get("industry")})
     return pd.DataFrame(rows)
 

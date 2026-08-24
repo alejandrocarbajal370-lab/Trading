@@ -12,14 +12,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from data.fx import FXDataset, FXGovernanceError
 from data.market_data import MarketDataDataset, MarketDataGovernanceError
-from fundamentals.governance import AccountingDataset, AccountingGovernanceError
+from fundamentals.governance import (
+    ACCOUNTING_PERIOD_ADAPTER_VERSION,
+    AccountingDataset,
+    AccountingGovernanceError,
+)
 from governance.units import UNIT_ONTOLOGY_VERSION, normalize_unit, unit_kind
 from research.datasets import DatasetVersionError, verify_universe_snapshot
 
-CROSS_LAYER_CONTRACT_VERSION = "cross-layer-governance-v2"
+CROSS_LAYER_CONTRACT_VERSION = "cross-layer-governance-v3"
 AVAILABILITY_POLICY_VERSION = "known-by-common-cutoff-v1"
 ENTITY_POLICY_VERSION = "exact-eligible-set-v1"
 CALENDAR_ALIGNMENT_POLICY_VERSION = "cross-layer-temporal-alignment-v1"
+MARKET_CAP_CURRENCY_POLICY_VERSION = "explicit-market-cap-currency-v1"
+VALUE_TEMPORAL_SELECTION_POLICY_VERSION = "value-fy-flow-and-period-end-instant-v1"
 
 
 class CrossLayerGovernanceError(ValueError):
@@ -28,7 +34,7 @@ class CrossLayerGovernanceError(ValueError):
 
 class CrossLayerManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contract_version: Literal["cross-layer-governance-v2"] = CROSS_LAYER_CONTRACT_VERSION
+    contract_version: Literal["cross-layer-governance-v3"] = CROSS_LAYER_CONTRACT_VERSION
     as_of: datetime.datetime
     universe_snapshot_id: str
     universe_snapshot_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -41,6 +47,9 @@ class CrossLayerManifest(BaseModel):
     availability_policy_version: Literal["known-by-common-cutoff-v1"] = AVAILABILITY_POLICY_VERSION
     entity_policy_version: Literal["exact-eligible-set-v1"] = ENTITY_POLICY_VERSION
     calendar_alignment_policy_version: Literal["cross-layer-temporal-alignment-v1"] = CALENDAR_ALIGNMENT_POLICY_VERSION
+    market_cap_currency_policy_version: Literal["explicit-market-cap-currency-v1"] = MARKET_CAP_CURRENCY_POLICY_VERSION
+    accounting_period_adapter_version: Literal["accounting-period-semantics-v1"] = ACCOUNTING_PERIOD_ADAPTER_VERSION
+    value_temporal_selection_policy_version: Literal["value-fy-flow-and-period-end-instant-v1"] = VALUE_TEMPORAL_SELECTION_POLICY_VERSION
     unit_ontology_version: Literal["unit-ontology-v1"] = UNIT_ONTOLOGY_VERSION
     fx_translation_policy: Literal["FISCAL_PERIOD_END"] = "FISCAL_PERIOD_END"
     base_currency: str = Field(pattern=r"^[A-Z]{3}$")
@@ -176,6 +185,11 @@ def integrate_governed_inputs(*, universe_snapshot_dir: Path, market_data: Marke
         raise CrossLayerGovernanceError("accounting entities do not exactly match eligible universe")
     facts["original_value"] = pd.to_numeric(facts["value"], errors="raise")
     facts["original_unit"] = facts["unit"].map(normalize_unit)
+    required_period_columns = {"fiscal_period_start", "period_type"}
+    if not required_period_columns <= set(facts.columns):
+        raise CrossLayerGovernanceError(
+            "accounting snapshot lacks explicit fiscal_period_start/period_type"
+        )
     rows: list[dict[str, Any]] = []
     for index, row in facts.iterrows():
         unit = row["original_unit"]
@@ -192,29 +206,40 @@ def integrate_governed_inputs(*, universe_snapshot_dir: Path, market_data: Marke
         rows.append({"entity": row["entity"], "metric": row["metric"], "period_end": row["period_end"], **conversion})
     membership = membership.copy(deep=True)
     membership["original_market_cap"] = membership["market_cap"]
-    membership["market_cap_currency"] = None
     membership["base_currency"] = base
     for symbol in universe["symbols"]:
-        latest = market.loc[market["symbol"] == symbol].sort_values("date").iloc[-1]
-        source_currency = normalize_unit(latest["currency"])
-        market_at = pd.Timestamp(latest["date"], tz="UTC").replace(
-            hour=23, minute=59, second=59
-        ).to_pydatetime()
+        member_index = membership.index[membership["symbol"] == symbol]
+        if len(member_index) != 1:
+            raise CrossLayerGovernanceError(f"ambiguous universe membership for {symbol}")
+        member = membership.loc[member_index[0]]
+        try:
+            source_currency = normalize_unit(member["market_cap_currency"])
+        except (TypeError, ValueError) as error:
+            raise CrossLayerGovernanceError(
+                f"invalid or missing market_cap_currency for {symbol}: {error}"
+            ) from error
+        if unit_kind(source_currency) != "MONETARY":
+            raise CrossLayerGovernanceError(
+                f"market_cap_currency must be monetary for {symbol}"
+            )
+        market_at = pd.Timestamp(member["source_timestamp"]).to_pydatetime()
         source_amount = float(
-            membership.loc[membership["symbol"] == symbol, "market_cap"].iloc[0]
+            member["market_cap"]
         )
         try:
             converted = fx.convert(source_amount, source_currency=source_currency,
                 target_currency=base, market_at=market_at, cutoff=cutoff)
         except FXGovernanceError as error:
             raise CrossLayerGovernanceError(f"market_cap FX translation failed for {symbol}: {error}") from error
-        membership.loc[membership["symbol"] == symbol, "market_cap"] = converted.converted_amount
-        membership.loc[membership["symbol"] == symbol, "market_cap_currency"] = source_currency
-        rows.append({"entity": symbol, "metric": "market_cap", "period_end": latest["date"],
+        membership.loc[member_index, "market_cap"] = converted.converted_amount
+        membership.loc[member_index, "market_cap_currency"] = source_currency
+        rows.append({"entity": symbol, "metric": "market_cap",
+            "period_end": pd.Timestamp(member["source_timestamp"]).date(),
+            "conversion_policy_version": MARKET_CAP_CURRENCY_POLICY_VERSION,
             **converted.__dict__})
     conversions = pd.DataFrame(rows)
     hashes = {"market": _frame_hash(market, ["symbol", "date"]), "accounting": _frame_hash(facts, ["entity", "metric", "period_end", "revision"]), "fx": _frame_hash(conversions, ["entity", "metric", "period_end"])}
-    identity = {"contract": CROSS_LAYER_CONTRACT_VERSION, "as_of": cutoff.isoformat(), "universe": universe, "policies": [AVAILABILITY_POLICY_VERSION, ENTITY_POLICY_VERSION, CALENDAR_ALIGNMENT_POLICY_VERSION, UNIT_ONTOLOGY_VERSION, "FISCAL_PERIOD_END"], "base": base, "market": market_data.metadata.model_dump(mode="json"), "fx": fx.metadata.model_dump(mode="json"), "accounting": accounting.metadata.model_dump(mode="json"), "hashes": hashes, "required": required}
+    identity = {"contract": CROSS_LAYER_CONTRACT_VERSION, "as_of": cutoff.isoformat(), "universe": universe, "policies": [AVAILABILITY_POLICY_VERSION, ENTITY_POLICY_VERSION, CALENDAR_ALIGNMENT_POLICY_VERSION, UNIT_ONTOLOGY_VERSION, "FISCAL_PERIOD_END", MARKET_CAP_CURRENCY_POLICY_VERSION, ACCOUNTING_PERIOD_ADAPTER_VERSION, VALUE_TEMPORAL_SELECTION_POLICY_VERSION], "base": base, "market": market_data.metadata.model_dump(mode="json"), "fx": fx.metadata.model_dump(mode="json"), "accounting": accounting.metadata.model_dump(mode="json"), "hashes": hashes, "required": required}
     manifest = CrossLayerManifest(as_of=cutoff, universe_snapshot_id=universe["id"], universe_snapshot_hash=universe["hash"], membership_hash=universe["membership"], validation_hash=universe["validation"], eligible_symbols_hash=universe["symbols_hash"], eligible_symbols_count=len(universe["symbols"]), universe_ruleset_version=universe["ruleset"], universe_as_of=universe["as_of"], base_currency=base, market_data_contract_version=market_data.metadata.contract_version, market_data_canonical_id=market_data.metadata.canonical_id, market_data_checksum=market_data.metadata.checksum, market_data_snapshot_sha256=hashes["market"], fx_contract_version=fx.metadata.contract_version, fx_canonical_id=fx.metadata.canonical_id, fx_checksum=fx.metadata.checksum, fx_staleness_policy_version=fx.metadata.staleness_policy.version, fx_conversions_sha256=hashes["fx"], accounting_contract_version=accounting.metadata.contract_version, accounting_canonical_id=accounting.metadata.canonical_id, accounting_checksum=accounting.metadata.checksum, accounting_snapshot_sha256=hashes["accounting"], required_fundamentals=required, cross_layer_fingerprint=_hash(identity))
     return CrossLayerGovernanceResult(market_data, fx, accounting, membership, market, facts,
         conversions, manifest)

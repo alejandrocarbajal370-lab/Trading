@@ -406,6 +406,19 @@ that cutoff, and translates
 monetary facts to the configured research currency using only the governed fiscal-period-end FX
 observation. Non-monetary units are preserved without inference.
 
+`explicit-market-cap-currency-v1` requires every Universe market cap to carry its own governed
+ISO currency; price currency is never used as a proxy. Non-base market caps require a governed FX
+fixing with complete conversion lineage. Base-currency market caps record an explicit identity
+conversion with no synthetic fixing. Enterprise value is formed only after market cap, debt, and
+cash are comparable in the configured base currency.
+
+Accounting duration facts carry their explicit fiscal start and end through
+`accounting-period-semantics-v1`; no calendar-year start is manufactured. The fingerprinted
+`value-fy-flow-and-period-end-instant-v1` policy chooses the latest complete eligible FY at the
+valuation cutoff, requires all flow inputs from that exact duration period, and requires cash and
+debt instants at its period end. Quarters, incompatible periods, and duplicate temporal identities
+are never mixed and fail closed when they make selection ambiguous.
+
 The immutable output bundle binds all upstream canonical IDs and checksums to the exact market,
 accounting, and conversion snapshots with a deterministic cross-layer fingerprint. Missing required
 fundamentals, entity or currency disagreement, future availability, stale FX, unsupported contracts,

@@ -15,6 +15,7 @@ REQUIRED_COLUMNS = (
     "sector",
     "industry",
     "market_cap",
+    "market_cap_currency",
     "average_volume",
     "average_dollar_volume",
     "listing_date",
@@ -73,8 +74,13 @@ def _normalize(records: pd.DataFrame) -> pd.DataFrame:
     frame["symbol"] = frame["symbol"].astype("string").str.strip().str.upper()
     frame["exchange"] = frame["exchange"].astype("string").str.strip().str.upper()
     frame["asset_type"] = frame["asset_type"].astype("string").str.strip().str.upper()
+    frame["market_cap_currency"] = (
+        frame["market_cap_currency"].astype("string").str.strip().str.upper()
+    )
     if frame["symbol"].isna().any() or (frame["symbol"] == "").any():
         raise UniverseValidationError("symbol must be present")
+    if frame["market_cap_currency"].isna().any() or (frame["market_cap_currency"] == "").any():
+        raise UniverseValidationError("market_cap_currency must be present")
     duplicates = sorted(frame.loc[frame["symbol"].duplicated(keep=False), "symbol"].unique())
     if duplicates:
         raise UniverseValidationError(f"duplicate symbols: {', '.join(duplicates)}")
@@ -149,6 +155,7 @@ def validate_universe(
             "country",
             "region",
             "market_cap",
+            "market_cap_currency",
             "average_volume",
             "average_dollar_volume",
             "listing_date",

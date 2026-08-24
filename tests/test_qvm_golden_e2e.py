@@ -21,10 +21,12 @@ from factors.value import evaluate_value_metrics
 from fundamentals.governance import AccountingLineageEntry, govern_accounting
 from governance.integration import CrossLayerGovernanceError, integrate_governed_inputs
 from governance.research_chain import (
+    _value_inputs,
     evaluate_governed_momentum,
     evaluate_governed_quality,
     evaluate_governed_qvm,
     evaluate_governed_value,
+    financial_metrics_from_governed_accounting,
     seal_factor_output,
 )
 from research.datasets import file_sha256
@@ -52,7 +54,7 @@ def _lineage(metric: str) -> str:
     )
 
 
-def _universe_snapshot(tmp_path: Path) -> Path:
+def _universe_snapshot(tmp_path: Path, *, as_of: datetime.date = AS_OF) -> Path:
     source = tmp_path / "universe.csv"
     pd.DataFrame(
         [
@@ -65,6 +67,7 @@ def _universe_snapshot(tmp_path: Path) -> Path:
                 "sector": "Industrials",
                 "industry": "Machinery",
                 "market_cap": 1_000_000_000,
+                "market_cap_currency": "EUR",
                 "average_volume": 1_000_000,
                 "average_dollar_volume": 20_000_000,
                 "listing_date": "2020-01-01T00:00:00Z",
@@ -77,7 +80,7 @@ def _universe_snapshot(tmp_path: Path) -> Path:
     return run_phase36(
         source_path=source,
         rules=UniverseRules(allowed_exchanges=("NYSE",)),
-        as_of=datetime.datetime.combine(AS_OF, datetime.time.min, tzinfo=datetime.UTC),
+        as_of=datetime.datetime.combine(as_of, datetime.time.min, tzinfo=datetime.UTC),
         output_root=tmp_path / "universe_validation",
         snapshot_root=tmp_path / "universe_snapshots",
     ).snapshot_dir
@@ -410,15 +413,21 @@ def test_qvm_golden_e2e_fails_closed_for_invalid_metric_semantics(
         )
 
 
-def _phase56_chain(tmp_path: Path):
-    cutoff = datetime.datetime.combine(AS_OF, datetime.time(23, 59), tzinfo=datetime.UTC)
-    universe_dir = _universe_snapshot(tmp_path)
+def _phase56_chain(
+    tmp_path: Path,
+    *,
+    valuation_date: datetime.date = AS_OF,
+    periods: tuple[tuple[str, str, str], ...] = (("FY2024", "2024-01-01", "2024-12-31"),),
+    row_overrides: dict[tuple[str, str], dict[str, object]] | None = None,
+):
+    cutoff = datetime.datetime.combine(valuation_date, datetime.time(23, 59), tzinfo=datetime.UTC)
+    universe_dir = _universe_snapshot(tmp_path, as_of=valuation_date)
     metadata_path = universe_dir / "snapshot_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["as_of"] = cutoff.isoformat()
     metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True), encoding="utf-8")
 
-    sessions = get_trading_calendar("XNYS").sessions(datetime.date(2024, 1, 2), AS_OF)
+    sessions = get_trading_calendar("XNYS").sessions(datetime.date(2024, 1, 2), valuation_date)
     price_rows = []
     for symbol, growth in (("AAA", 0.001), ("SPY", 0.0004)):
         for index, day in enumerate(sessions):
@@ -432,23 +441,35 @@ def _phase56_chain(tmp_path: Path):
         dataset_version="market-v1", available_at=cutoff,
         lineage=(LineageEntry(source="phase56-market", dataset="prices", dataset_version="v1"),),
         trading_calendar="XNYS", as_of=cutoff, maximum_staleness_sessions=0)
-    fx = govern_fx(pd.DataFrame([{"currency_pair": "EUR/USD", "base_currency": "EUR",
-        "quote_currency": "USD", "market_timestamp": "2024-12-31T16:00:00Z",
-        "available_at": "2024-12-31T16:01:00Z", "rate": 1.1}]), source="phase56-fx",
+    fx_dates = {period_end for _, _, period_end in periods} | {"2024-11-30", "2024-12-31"}
+    fx_rows = [{"currency_pair": "EUR/USD", "base_currency": "EUR",
+        "quote_currency": "USD", "market_timestamp": f"{day}T16:00:00Z",
+        "available_at": f"{day}T16:01:00Z", "rate": 1.1} for day in sorted(fx_dates)]
+    fx = govern_fx(pd.DataFrame(fx_rows), source="phase56-fx",
         dataset_version="fx-v1", available_at=cutoff,
         lineage=(FXLineageEntry(source="phase56-fx", dataset="rates", dataset_version="v1"),),
-        as_of=cutoff, staleness_policy=FXStalenessPolicy(maximum_sessions=60))
+        as_of=cutoff, staleness_policy=FXStalenessPolicy(maximum_sessions=120))
     accounting_values = {"cash_from_operations": 25.0, "capital_expenditures": 5.0,
         "revenue": 100.0, "net_income": 12.0, "operating_income": 18.0, "ebitda": 22.0,
         "total_debt": 30.0, "cash": 10.0, "total_equity": 70.0, "total_assets": 120.0,
         "tax_rate": 0.25}
-    accounting_rows = [{"fact_id": f"aaa-{metric}", "entity": "AAA", "metric": metric,
-        "fiscal_period": "FY2024", "period_end": "2024-12-31",
-        "filing_date": "2025-03-01T00:00:00Z", "available_at": "2025-03-01T00:01:00Z",
-        "value": value, "unit": "RATIO" if metric == "tax_rate" else "EUR",
-        "source": "phase56-accounting", "dataset_version": "accounting-v1", "revision": 0,
-        "revision_type": "ORIGINAL", "supersedes_revision": None}
-        for metric, value in accounting_values.items()]
+    accounting_rows = []
+    instant_metrics = {"total_debt", "cash", "total_equity", "total_assets"}
+    row_overrides = row_overrides or {}
+    for fiscal_period, period_start, period_end in periods:
+        filing_date = pd.Timestamp(period_end, tz="UTC") + pd.Timedelta(days=1)
+        for metric, value in accounting_values.items():
+            row = {"fact_id": f"aaa-{metric}-{fiscal_period}", "entity": "AAA",
+                "metric": metric, "fiscal_period": fiscal_period, "period_end": period_end,
+                "fiscal_period_start": None if metric in instant_metrics else period_start,
+                "period_type": "instant" if metric in instant_metrics else "duration",
+                "filing_date": filing_date.isoformat(),
+                "available_at": (filing_date + pd.Timedelta(minutes=1)).isoformat(),
+                "value": value, "unit": "RATIO" if metric == "tax_rate" else "EUR",
+                "source": "phase56-accounting", "dataset_version": "accounting-v1",
+                "revision": 0, "revision_type": "ORIGINAL", "supersedes_revision": None}
+            row.update(row_overrides.get((fiscal_period, metric), {}))
+            accounting_rows.append(row)
     accounting = govern_accounting(pd.DataFrame(accounting_rows), source="phase56-accounting",
         dataset_version="accounting-v1", available_at=cutoff,
         lineage=(AccountingLineageEntry(source="phase56-accounting", dataset="filings",
@@ -503,6 +524,76 @@ def test_phase56_governed_adapters_execute_real_factor_engines(tmp_path: Path) -
     )
     assert evaluation.health["phase6_eligible"] is True
     assert evaluation.health["governance_mode"] == "phase5.6_cross_layer_verified"
+
+
+def test_non_calendar_fiscal_year_is_preserved_end_to_end(tmp_path: Path) -> None:
+    chain = _phase56_chain(
+        tmp_path,
+        valuation_date=datetime.date(2025, 4, 15),
+        periods=(("FY2025", "2024-04-01", "2025-03-31"),),
+    )
+    financial = financial_metrics_from_governed_accounting(chain)
+    fcf = financial.query("metric == 'free_cash_flow' and status == 'PASS'").iloc[0]
+    assert fcf["fiscal_period_start"] == datetime.date(2024, 4, 1)
+    assert fcf["fiscal_period_end"] == datetime.date(2025, 3, 31)
+    value_inputs = _value_inputs(chain, financial)
+    assert set(value_inputs["fiscal_period_end"]) == {datetime.date(2025, 3, 31)}
+    lineage = json.loads(value_inputs.iloc[0]["input_lineage"])[0]
+    assert lineage["selected_fiscal_period_start"] == "2024-04-01"
+    assert lineage["selected_fiscal_period_end"] == "2025-03-31"
+    assert lineage["accounting_canonical_id"] == chain.manifest.accounting_canonical_id
+
+
+def test_value_policy_selects_latest_complete_fy_and_ignores_quarter(tmp_path: Path) -> None:
+    periods = (
+        ("FY2023", "2023-01-01", "2023-12-31"),
+        ("Q1-2024", "2024-01-01", "2024-03-31"),
+        ("FY2024", "2024-01-01", "2024-12-31"),
+    )
+    chain = _phase56_chain(
+        tmp_path,
+        periods=periods,
+        row_overrides={("FY2024", "net_income"): {"value": 99.0}},
+    )
+    financial = financial_metrics_from_governed_accounting(chain)
+    inputs = _value_inputs(chain, financial).set_index("metric")
+    assert inputs.loc["earnings", "value"] == pytest.approx(108.9)
+    assert set(inputs["fiscal_period_end"]) == {datetime.date(2024, 12, 31)}
+
+
+def test_value_rejects_flows_from_different_periods(tmp_path: Path) -> None:
+    chain = _phase56_chain(
+        tmp_path,
+        row_overrides={("FY2024", "operating_income"): {
+            "fiscal_period_start": "2024-04-01"}},
+    )
+    financial = financial_metrics_from_governed_accounting(chain)
+    with pytest.raises(CrossLayerGovernanceError, match="compatible Value flow period"):
+        _value_inputs(chain, financial)
+
+
+def test_value_rejects_stock_and_flow_temporal_incompatibility(tmp_path: Path) -> None:
+    chain = _phase56_chain(
+        tmp_path,
+        row_overrides={
+            ("FY2024", "cash"): {"period_end": "2024-11-30"},
+            ("FY2024", "total_debt"): {"period_end": "2024-11-30"},
+        },
+    )
+    financial = financial_metrics_from_governed_accounting(chain)
+    with pytest.raises(CrossLayerGovernanceError, match="stock and flow periods"):
+        _value_inputs(chain, financial)
+
+
+def test_value_rejects_duplicate_temporal_facts_across_fiscal_labels(tmp_path: Path) -> None:
+    chain = _phase56_chain(
+        tmp_path,
+        periods=(("FY2024", "2024-01-01", "2024-12-31"),
+            ("FY-ALT", "2024-01-01", "2024-12-31")),
+    )
+    financial = financial_metrics_from_governed_accounting(chain)
+    with pytest.raises(CrossLayerGovernanceError, match="ambiguous Value flow facts"):
+        _value_inputs(chain, financial)
 
 
 @pytest.mark.parametrize("field", [
