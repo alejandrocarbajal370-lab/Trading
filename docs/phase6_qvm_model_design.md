@@ -1,6 +1,6 @@
 # Phase 6 — QVM Alpha Model Research Design
 
-**Document version:** `phase6-qvm-design-v1.0`  
+**Document version:** `phase6-qvm-design-v1.1`
 **Status:** frozen design proposed for independent review; implementation not authorized  
 **Base:** `main@2331a46f664f58e2a4bffed97e91ccd9831ddbdc`  
 **Mode:** `RESEARCH_ONLY`  
@@ -21,9 +21,10 @@ or live execution. Every artifact must retain `NO_TRADE` and execution disabled.
 
 ## 2. Authoritative input contract
 
-The only admissible entry point is the verified Phase 5.6 chain in
-`governance/research_chain.py`. Direct factor or QVM APIs marked `research_legacy` or
-`phase6_eligible=false` are forbidden.
+The only admissible entry point is `sealed-pre-phase6-admission-v2`, delivered by PR #18 at
+`dd25fc0068545bffa8e2c9f8c5b36d345ba209fd`. It accepts the verified Phase 5.6 chain through
+exact sealed Quality/Value/Momentum batches. Direct `FactorBatch`, DataFrame, partial Q/V/M, or APIs
+marked `research_legacy` or `phase6_eligible=false` are forbidden.
 
 An input snapshot is admitted only when all of the following are true:
 
@@ -56,7 +57,7 @@ preservation overlay. A deferred item cannot be used until its PIT contract is a
 | Quality | ROIC | primary | higher | available; direct operating profitability anchor |
 | Quality | FCF margin | primary | higher | available; cash profitability anchor |
 | Quality | CFO / net income | primary | higher within valid domain | available; cash backing, with pathology rules below |
-| Quality | cash accrual quality = `-(NI-CFO)/assets` | primary | higher | source available, but semantic sign contract must be corrected before scoring |
+| Quality | cash accrual quality = `-(NI-CFO)/assets` | primary | higher | `raw_accrual_ratio=(NI-CFO)/assets`, `lower_is_better`, is sealed by PR #18 |
 | Quality | ROIC stability | primary | lower dispersion | available when history is sufficient |
 | Quality | margin stability | primary | lower dispersion | available when history is sufficient |
 | Quality | net debt / EBITDA | primary | lower | available only for positive EBITDA; stress handled separately |
@@ -68,7 +69,7 @@ preservation overlay. A deferred item cannot be used until its PIT contract is a
 | Value | earnings yield | primary | higher | available; secondary equity valuation anchor |
 | Value | EV / EBIT | diagnostic | lower | available but reciprocal/redundant with EBIT yield |
 | Value | EV / EBITDA | diagnostic | lower | available; depreciation/capital-intensity caveat |
-| Value | sector/history relative valuation | deferred | contextual | no approved PIT historical-relative contract; current metadata is insufficient |
+| Value | sector/history relative valuation | deferred | contextual | PR #18 admission does not provide an approved PIT historical-relative contract |
 | Momentum | 12–1 momentum | primary | higher | available; canonical medium-term trend measure |
 | Momentum | volatility-adjusted 12–1 | primary | higher | available; distinguishes unstable price paths |
 | Momentum | 6-month momentum | diagnostic | higher | available but overlaps 12–1 |
@@ -148,16 +149,18 @@ Transformations are calculated separately by metric and monthly `as_of`, using o
 observations. They are applied in this order:
 
 1. Apply the economic direction: multiply lower-is-better metrics by `-1`. Cash accrual quality is
-   explicitly `-1 * raw_accrual_ratio`; the current semantic registry must be corrected before
-   implementation. Contextual/non-directional metrics cannot be scored.
+   explicitly `-1 * raw_accrual_ratio`; PR #18 seals the source metric as `lower_is_better`.
+   Contextual/non-directional metrics cannot be scored.
 2. Assign the PIT peer group. Fundamental Quality and Value metrics use industry peers when
    `n >= 20`; otherwise sector peers when `n >= 30`; otherwise the full eligible universe when
    `n >= 100`, tagged `MARKET_FALLBACK`. Momentum uses the full eligible universe by default.
    If no permitted group meets its minimum, that metric is ineligible for the affected company.
 3. Robust-clip within the assigned group. Let `m = median(x)`,
-   `s = 1.4826 * median(|x-m|)`. When `s > 0`, clip to `[m-5s, m+5s]`. When `s = 0`, clip to the
-   empirical 2.5th/97.5th percentiles using linear interpolation. If those bounds are also equal,
-   all observations receive score `0` and the metric is tagged `NO_CROSS_SECTIONAL_VARIATION`.
+   `s = 1.4826 * median(|x-m|)`. When `s > 0`, clip to `[m-5s, m+5s]`. When `s = 0`, the metric is
+   inactive for the entire assigned group with status `NO_CROSS_SECTIONAL_VARIATION`; it receives
+   no percentile, score, or weight. There is no percentile fallback. This conservative rule avoids
+   manufacturing dispersion when a majority tie makes robust scale undefined, including the case
+   of one isolated outlier.
 4. Convert clipped values to midranks with deterministic ties: equal values receive the average
    rank; `p=(rank-0.5)/n`.
 5. Produce the metric score `z = clip(Phi^-1(p), -3, 3)`, where `Phi^-1` is the standard-normal
@@ -201,10 +204,10 @@ The mandatory composite baseline is equal-factor weight:
 
 An additional all-primary-metrics-equal baseline must be reported as a sensitivity check, but it
 cannot replace equal-factor QVM because it implicitly overweights the factor with more metrics.
-No weights may be optimized on the full history. Alternative factor weights are limited to the
-preregistered discrete set `{(1/3,1/3,1/3), (0.40,0.30,0.30), (0.40,0.25,0.35)}` for later OOS
-comparison; the equal-weight result remains the reference and no alternative is promotable in this
-design phase.
+No weights may be optimized on the full history. Alternative factor weights are not part of the
+initial implementation; they may exist only as future, separately preregistered experiments for
+later OOS comparison. The equal-weight result remains the reference, and no alternative is
+promotable in this design phase.
 
 ## 8. Ranking and research cohorts
 
@@ -313,17 +316,14 @@ Filenames describe a contract, not authorization to implement them in this desig
 These items require independent audit or a separately authorized contract change; they are not
 permission to code the model now:
 
-1. Correct and version the accrual semantic mapping so `(NI-CFO)/assets` is lower-is-better, or
-   expose the explicitly negated cash-accrual-quality metric. Current semantics are inconsistent.
-2. Confirm that Phase 5.6 factor sealing can preserve PIT sector **and industry** labels for every
-   scored observation and bind the peer-assignment hash. Current QVM observations expose sector
-   but not industry.
-3. Decide whether financials/other structurally distinct industries require explicit metric
-   exclusions beyond the existing EV restrictions before the initial research universe is run.
-4. Add a governed multi-period shares-outstanding contract before activating dilution thresholds.
-5. Define an authoritative PIT restatement-materiality and corporate-action resolution feed before
+1. Treat PR #18 head `dd25fc0068545bffa8e2c9f8c5b36d345ba209fd` as the final PRE-Phase 6
+   contract for admission, typed identities, confidence, status taxonomy, PIT sector/industry,
+   peer assignment, applicability, and `raw_accrual_ratio` semantics. Any later head requires a new
+   independent audit reference.
+2. Add a governed multi-period shares-outstanding contract before activating dilution thresholds.
+3. Define an authoritative PIT restatement-materiality and corporate-action resolution feed before
    their overlay flags can move from contract placeholders to automated decisions.
-6. Validate whether the proposed confidence threshold, peer minimums, and company/snapshot coverage
+4. Validate whether the proposed confidence threshold, peer minimums, and company/snapshot coverage
    gates preserve adequate coverage on a blinded representative snapshot. This is a contract
    feasibility check, not return optimization.
 
@@ -347,8 +347,8 @@ These clarifications freeze contract intent and do not implement scoring.
 3. **Five-MAD clipping:** clipping before rank-Gaussian is intended only to collapse extreme tails
    into explicit ties. Sensitivities at 3-MAD, 5-MAD, and no clipping are preregistered diagnostics,
    not alternatives selected using returns.
-4. **Degenerate cases:** scale `s=0` makes the metric inactive with an explicit status. Exact
-   percentile conventions and minimum-size examples require golden tests before implementation.
+4. **Degenerate cases:** scale `s=0` makes the metric inactive with
+   `NO_CROSS_SECTIONAL_VARIATION`, without percentile fallback, score, or weight.
 5. **Active within-factor denominator:** the denominator is the sum of configured weights for
    applicable observations that passed confidence. Missing or non-applicable observations receive
    no weight and are never imputed.
@@ -356,7 +356,43 @@ These clarifications freeze contract intent and do not implement scoring.
    policy/diagnostic settings, not alpha parameters.
 7. **Alternative weights:** alternatives remain future preregistered experiments and are not
    promotable candidates during the initial implementation.
-8. **Corrected upstream contracts:** the implementation prerequisite is
-   `raw_accrual_ratio=(NI-CFO)/assets` with `lower_is_better`, sealed PIT industry/sector identity,
-   and a deterministic peer-assignment hash. These contracts are delivered separately by the
-   PRE-Phase 6 remediation PR and must pass re-audit before scoring starts.
+8. **Corrected upstream contracts:** `raw_accrual_ratio=(NI-CFO)/assets` with
+   `lower_is_better`, sealed PIT industry/sector identity, deterministic peer assignment, typed QVM
+   lineage, and exact Q/V/M admission are supplied by PR #18 head
+   `dd25fc0068545bffa8e2c9f8c5b36d345ba209fd`. They must pass re-audit before scoring starts.
+
+### 16.1 Frozen golden examples
+
+These examples are exact future test vectors. They document design only and do not authorize or
+implement scoring.
+
+1. **No variation:** directed values `[5, 5, 5, 5]` give `m=5`, `MAD=0`, `s=0`. The metric is
+   inactive as `NO_CROSS_SECTIONAL_VARIATION`; all four percentile/score fields are null.
+2. **Majority tie plus outlier:** directed values `[0, 0, 0, 0, 100]` give `m=0`, `MAD=0`, `s=0`.
+   The entire group is inactive. The outlier does not trigger a percentile fallback and cannot
+   manufacture four favorable/unfavorable scores.
+3. **Peer minimums:** industry size `20` uses industry; industry `19` plus sector `30` uses sector;
+   industry `19`, sector `29`, and market `100` uses `MARKET_FALLBACK`; sizes `19/29/99` are
+   ineligible. The comparisons are inclusive at `20`, `30`, and `100`.
+4. **Midrank and percentile:** for ascending directed values `[10, 10, 20, 40]`, ranks are
+   `[1.5, 1.5, 3, 4]` and `p=(rank-0.5)/4` gives `[0.25, 0.25, 0.625, 0.875]`. The corresponding
+   unclipped inverse-normal values, rounded to five decimals, are
+   `[-0.67449, -0.67449, 0.31864, 1.15035]`.
+5. **Cohort boundary ties at n=100:** if positions `9–12` share the boundary value, the top-decile
+   cohort expands from `1–10` to `1–12`. If positions `38–41` and `59–63` are the tie groups crossing
+   the nominal middle `40–60` boundaries, the middle cohort expands to `38–63`. If positions
+   `89–92` tie across the bottom-decile boundary, the bottom cohort expands to `89–100`. Symbol
+   order never splits these groups.
+6. **Metric activation:** in a universe of `100`, `39` eligible PASS observations mean 39% and the
+   metric is inactive; `40` mean 40% and it is active because `n>=30`. In a universe of `60`, `30`
+   observations mean 50% and activate; `29` remain inactive because the count floor fails.
+7. **Quality company coverage:** with all Quality primaries active, denominator `1.00`, available
+   ROIC+FCF margin+CFO conversion weights total `0.55`, so coverage is 55% and fails the 70% gate.
+   For a bank where net debt/EBITDA is `NOT_APPLICABLE`, the denominator is `0.90`; available
+   ROIC+FCF margin+CFO conversion+accrual weights total `0.70`, so coverage is `0.70/0.90 =
+   77.777...%` and passes both named-anchor requirements. If CFO conversion is also unavailable,
+   coverage is `0.55/0.90 = 61.111...%` and fails even though the accrual anchor remains.
+8. **Value and Momentum coverage:** Value with only EBIT yield+earnings yield has `0.60/1.00=60%`
+   and fails 65%; FCF yield+EBIT yield has `0.75/1.00=75%` and passes. Momentum requires both
+   primaries, so one of two is exactly 60% or 40% by configured weight but always fails the frozen
+   100% requirement.
