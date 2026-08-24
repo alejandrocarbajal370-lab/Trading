@@ -134,3 +134,45 @@ def test_golden_governed_market_data_to_momentum_preserves_pit_and_lineage() -> 
     assert evaluation.health["trade_decision"] == "NO_TRADE"
     assert evaluation.health["live_execution_enabled"] is False
     assert evaluation.health["ranking_calculated"] is False
+
+
+def test_momentum_confidence_has_no_default_and_fails_closed_when_absent() -> None:
+    governed = _govern(_raw_prices().drop(columns=["confidence"]))
+    with pytest.raises(MarketDataGovernanceError, match="defaults are forbidden"):
+        governed.momentum_frame()
+
+
+def test_momentum_confidence_is_conservative_and_never_promoted() -> None:
+    frame = _raw_prices().drop(columns=["confidence"]).assign(
+        data_confidence=0.96,
+        calculation_confidence=0.91,
+        economic_confidence=0.83,
+    )
+    governed = _govern(frame)
+    momentum = governed.momentum_frame()
+    assert set(momentum["confidence"]) == {0.83}
+    lineage = json.loads(momentum.iloc[0]["input_lineage"])[0]
+    assert lineage["confidence_policy_version"] == "market-data-confidence-min-input-lookback-v1"
+    assert lineage["confidence_inputs"] == [
+        "data_confidence",
+        "calculation_confidence",
+        "economic_confidence",
+    ]
+
+
+def test_low_market_confidence_never_reaches_momentum_pass() -> None:
+    governed = _govern(_raw_prices().assign(confidence=0.79))
+    evaluation = evaluate_momentum_metrics(
+        governed.momentum_frame(),
+        experiment_id="low-confidence-e2e",
+        dataset_lineage=governed.metadata.model_dump(mode="json"),
+        as_of=AS_OF.date(),
+        benchmark_symbol="SPY",
+        low_confidence_threshold=0.80,
+    )
+    assert set(evaluation.metrics["status"]) == {"LOW_CONFIDENCE"}
+
+
+def test_confidence_one_is_preserved_only_when_provider_declares_one() -> None:
+    governed = _govern(_raw_prices().assign(confidence=1.0))
+    assert set(governed.momentum_frame()["confidence"]) == {1.0}

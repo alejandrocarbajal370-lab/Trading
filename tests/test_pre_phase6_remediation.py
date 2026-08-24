@@ -23,6 +23,7 @@ from research.pre_phase6_readiness import (
     admit_sealed_for_phase6,
     run_blind_coverage,
 )
+from research.pre_phase6_scale_smoke import run_synthetic_scale_smoke
 
 AS_OF = datetime.datetime(2025, 1, 31, 23, 59, tzinfo=datetime.UTC)
 
@@ -76,6 +77,12 @@ def test_typed_canonicalization_preserves_types_and_order_independence() -> None
     runtime = runtime_fingerprint()
     assert len(runtime.fingerprint) == 64
     assert len(runtime.requirements_lock_sha256) == 64
+    assert typed_frame_hash(first, ["symbol"]) != typed_frame_hash(
+        first.assign(value=first["value"].astype("int64")), ["symbol"]
+    )
+    assert typed_hash(datetime.datetime(2025, 1, 1, tzinfo=datetime.UTC)) == typed_hash(
+        datetime.datetime(2024, 12, 31, 18, tzinfo=datetime.timezone(datetime.timedelta(hours=-6)))
+    )
 
 
 def test_status_taxonomy_and_sector_applicability_fail_closed() -> None:
@@ -128,10 +135,32 @@ def test_provider_contract_and_blind_harness_are_honest_about_external_data() ->
     assert report.scores_calculated is False
 
 
-def test_pre_phase6_admission_rejects_legacy_and_scale_hash_smoke() -> None:
+def test_pre_phase6_admission_rejects_legacy() -> None:
     with pytest.raises(TypeError, match="GovernedFactorBatch"):
         admit_sealed_for_phase6(batches=(object(),))  # type: ignore[arg-type]
-    frame = pd.DataFrame({"symbol": [f"S{i:05d}" for i in range(5000)],
-                          "year": [2020 + i % 5 for i in range(5000)],
-                          "value": [i / 10 for i in range(5000)]})
-    assert len(typed_frame_hash(frame, ["symbol", "year"])) == 64
+
+
+def test_ci_safe_scale_smoke_runs_full_pipeline_and_is_reorder_deterministic(tmp_path) -> None:
+    first = run_synthetic_scale_smoke(
+        security_count=3, workdir=tmp_path / "ordered", reorder_inputs=False
+    )
+    second = run_synthetic_scale_smoke(
+        security_count=3, workdir=tmp_path / "reordered", reorder_inputs=True
+    )
+    identity_fields = {
+        "cross_layer_fingerprint",
+        "factor_batch_hashes",
+        "qvm_sealed_lineage_hash",
+        "admission_artifact_hash",
+    }
+    assert {key: first[key] for key in identity_fields} == {
+        key: second[key] for key in identity_fields
+    }
+    assert first["security_count"] == 3
+    assert first["market_rows"] > first["security_count"]
+    assert first["accounting_rows"] == 3 * 11
+    assert first["qvm_governance_mode"] == "phase5.6_cross_layer_verified"
+    assert first["scores_calculated"] is False
+    assert first["signals_generated"] is False
+    assert first["trade_decision"] == "NO_TRADE"
+    assert first["live_execution_enabled"] is False

@@ -20,6 +20,7 @@ from factors.qvm import (
 )
 from factors.value import ValueEvaluation, evaluate_value_metrics
 from fundamentals.financial_engine import INSTANT_INPUTS, calculate_financial_metrics
+from governance.canonical import RuntimeFingerprint, runtime_fingerprint, typed_hash
 from governance.integration import (
     VALUE_TEMPORAL_SELECTION_POLICY_VERSION,
     CrossLayerGovernanceError,
@@ -34,6 +35,7 @@ from governance.pre_phase6 import (
     ClassificationRecord,
     ConfidenceVector,
     conservative_confidence,
+    governed_status,
     peer_assignment_hash,
 )
 
@@ -43,6 +45,9 @@ class ResearchChainModel(BaseModel):
 
 
 class GovernedFactorBatch(ResearchChainModel):
+    identity_schema_version: Literal["governed-factor-batch-identity-v2"] = (
+        "governed-factor-batch-identity-v2"
+    )
     factor: Literal["Quality", "Value", "Momentum"]
     as_of: datetime.datetime
     cross_layer_contract_version: str
@@ -72,9 +77,23 @@ class GovernedFactorBatch(ResearchChainModel):
     classification_records: tuple[ClassificationRecord, ...]
     factor_dataset_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     observations: tuple[FactorObservation, ...]
+    runtime: RuntimeFingerprint
+    batch_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    governance_order: tuple[str, ...] = (
+        "confidence",
+        "applicability_activation",
+        "peer_fallback",
+        "coverage",
+    )
     phase6_eligible: Literal[True] = True
     trade_decision: Literal["NO_TRADE"] = "NO_TRADE"
     live_execution_enabled: Literal[False] = False
+    scores_calculated: Literal[False] = False
+    ranking_calculated: Literal[False] = False
+    portfolio_constructed: Literal[False] = False
+    backtesting_performed: Literal[False] = False
+    signals_generated: Literal[False] = False
+    execution_enabled: Literal[False] = False
 
     @model_validator(mode="after")
     def validate_time(self) -> GovernedFactorBatch:
@@ -95,7 +114,48 @@ class GovernedFactorBatch(ResearchChainModel):
             item.symbol for item in self.observations
         }:
             raise ValueError("classification symbols do not match observations")
+        for item in self.observations:
+            governed_status(item.status)
+        if governed_factor_batch_identity(self) != self.batch_identity_hash:
+            raise ValueError("governed factor batch identity mismatch")
         return self
+
+
+def governed_factor_batch_identity(batch: GovernedFactorBatch | dict[str, Any]) -> str:
+    values = batch if isinstance(batch, dict) else batch.model_dump(mode="python")
+    fields = (
+        "factor",
+        "as_of",
+        "cross_layer_contract_version",
+        "cross_layer_fingerprint",
+        "universe_snapshot_id",
+        "universe_snapshot_hash",
+        "membership_hash",
+        "eligible_symbols_hash",
+        "availability_policy_version",
+        "entity_policy_version",
+        "base_currency",
+        "unit_ontology_version",
+        "calendar_alignment_policy_version",
+        "accounting_canonical_id",
+        "accounting_checksum",
+        "accounting_snapshot_sha256",
+        "fx_canonical_id",
+        "fx_checksum",
+        "market_data_canonical_id",
+        "market_data_checksum",
+        "classification_contract_version",
+        "classification_taxonomy",
+        "classification_taxonomy_version",
+        "peer_assignment_hash",
+        "factor_dataset_hash",
+        "runtime",
+    )
+    identity = {
+        "schema_version": "governed-factor-batch-identity-v2",
+        **{key: values[key] for key in fields if key in values},
+    }
+    return typed_hash(identity)
 
 
 def _eligible_symbols(result: CrossLayerGovernanceResult) -> set[str]:
@@ -216,6 +276,7 @@ def seal_factor_output(
         "fx_checksum": manifest.fx_checksum,
         "market_data_canonical_id": manifest.market_data_canonical_id,
         "market_data_checksum": manifest.market_data_checksum,
+        "classification_contract_version": CLASSIFICATION_CONTRACT_VERSION,
         "classification_taxonomy": "provider-supplied-sector-industry",
         "classification_taxonomy_version": manifest.universe_ruleset_version,
         "peer_assignment_hash": peer_assignment_hash(
@@ -226,7 +287,9 @@ def seal_factor_output(
         "classification_records": tuple(classifications),
         "factor_dataset_hash": factor_dataset_hash(observations),
         "observations": observations,
+        "runtime": runtime_fingerprint(),
     }
+    values["batch_identity_hash"] = governed_factor_batch_identity(values)
     return GovernedFactorBatch(**values)
 
 
@@ -449,6 +512,7 @@ def _value_inputs(cross_layer: CrossLayerGovernanceResult, financial: pd.DataFra
                     "input_lineage": json.dumps(
                         [
                             {
+                                "source": "phase5.6_cross_layer",
                                 "cross_layer_fingerprint": cross_layer.manifest.cross_layer_fingerprint,
                                 "accounting_canonical_id": cross_layer.manifest.accounting_canonical_id,
                                 "fx_canonical_id": cross_layer.manifest.fx_canonical_id,

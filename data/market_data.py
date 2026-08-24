@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from data.market_calendar import get_trading_calendar
 
 MARKET_DATA_CONTRACT_VERSION = "market-data-governance-v1"
+MARKET_DATA_CONFIDENCE_POLICY_VERSION = "market-data-confidence-min-input-lookback-v1"
 REQUIRED_COLUMNS = (
     "symbol",
     "date",
@@ -103,6 +104,29 @@ class MarketDataDataset:
     def momentum_frame(self) -> pd.DataFrame:
         """Return a defensive copy carrying the governed identity into Momentum."""
         result = self.frame.copy(deep=True)
+        vector_columns = (
+            "data_confidence",
+            "calculation_confidence",
+            "economic_confidence",
+        )
+        available_confidence = [
+            column for column in ("confidence", *vector_columns) if column in result
+        ]
+        if not available_confidence:
+            raise MarketDataGovernanceError(
+                "governed market-data confidence is required for Momentum; defaults are forbidden"
+            )
+        numeric = result.loc[:, available_confidence].apply(pd.to_numeric, errors="coerce")
+        if numeric.isna().any().any():
+            raise MarketDataGovernanceError("market-data confidence is missing or non-numeric")
+        values = numeric.to_numpy(dtype=float)
+        if (~np.isfinite(values)).any() or (values < 0).any() or (values > 1).any():
+            raise MarketDataGovernanceError(
+                "market-data confidence must be finite and between 0 and 1"
+            )
+        # The final confidence is the weakest declared provider/calculation/economic input.
+        # It is never promoted and reaches 1.0 only when every governed input is genuinely 1.0.
+        result["confidence"] = numeric.min(axis=1)
         lineage = {
             "source": self.metadata.source,
             "dataset": "governed_market_data",
@@ -110,6 +134,8 @@ class MarketDataDataset:
             "canonical_id": self.metadata.canonical_id,
             "checksum": self.metadata.checksum,
             "contract_version": self.metadata.contract_version,
+            "confidence_policy_version": MARKET_DATA_CONFIDENCE_POLICY_VERSION,
+            "confidence_inputs": available_confidence,
             "upstream": [item.model_dump(mode="json") for item in self.metadata.lineage],
         }
         result["input_lineage"] = json.dumps([lineage], sort_keys=True)
@@ -121,8 +147,6 @@ class MarketDataDataset:
         result["historical_dataset"] = "governed_market_data"
         result["historical_dataset_version"] = self.metadata.dataset_version
         result["historical_access_tier"] = "governed"
-        if "confidence" not in result:
-            result["confidence"] = 1.0
         return result
 
 

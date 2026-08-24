@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,7 +16,12 @@ from fundamentals.governance import (
     AccountingDataset,
     AccountingGovernanceError,
 )
-from governance.canonical import CANONICALIZATION_VERSION, runtime_fingerprint, typed_frame_hash
+from governance.canonical import (
+    CANONICALIZATION_VERSION,
+    runtime_fingerprint,
+    typed_frame_hash,
+    typed_hash,
+)
 from governance.units import UNIT_ONTOLOGY_VERSION, normalize_unit, unit_kind
 from research.datasets import DatasetVersionError, verify_universe_snapshot
 
@@ -114,17 +118,11 @@ class CrossLayerGovernanceResult:
     manifest: CrossLayerManifest
 
 
-def _hash(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
-    ).hexdigest()
-
-
 def eligible_symbols_hash(symbols: set[str] | tuple[str, ...]) -> str:
     normalized = sorted({str(item).strip().upper() for item in symbols})
     if not normalized or any(not item for item in normalized):
         raise CrossLayerGovernanceError("eligible universe must contain symbols")
-    return _hash({"version": ENTITY_POLICY_VERSION, "symbols": normalized})
+    return typed_hash({"version": ENTITY_POLICY_VERSION, "symbols": normalized})
 
 
 def _frame_hash(frame: pd.DataFrame, keys: list[str]) -> str:
@@ -170,12 +168,18 @@ def _universe(directory: Path, cutoff: datetime.datetime) -> tuple[pd.DataFrame,
     if not symbols:
         raise CrossLayerGovernanceError("governed universe has no eligible symbols")
     snapshot_id = f"universe-{universe_as_of.date().isoformat()}"
-    snapshot_hash = _hash(
+    ruleset = verified.metadata["ruleset"]
+    snapshot_hash = typed_hash(
         {
+            "schema_version": "universe-snapshot-identity-v2",
             "id": snapshot_id,
             "membership": verified.membership_sha256,
             "validation": verified.validation_sha256,
-            "ruleset": verified.metadata["ruleset"],
+            # recorded_at is audit metadata, not semantic universe identity.
+            "ruleset": {
+                "version": ruleset["version"],
+                "parameters": ruleset["parameters"],
+            },
         }
     )
     return membership, {
@@ -387,7 +391,9 @@ def integrate_governed_inputs(
         required_fundamentals=required,
         runtime_fingerprint_schema_version=runtime.schema_version,
         runtime_fingerprint=runtime.fingerprint,
-        cross_layer_fingerprint=_hash(identity),
+        cross_layer_fingerprint=typed_hash(
+            {"schema_version": "cross-layer-identity-v5", **identity}
+        ),
     )
     return CrossLayerGovernanceResult(
         market_data, fx, accounting, membership, market, facts, conversions, manifest

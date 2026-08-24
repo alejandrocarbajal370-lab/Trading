@@ -9,6 +9,10 @@ Status: research-only. Phase 6 scoring has not started. `NO_TRADE` and
   the component-wise minimum of relevant inputs; overall confidence is the minimum component.
   Missing or invalid confidence fails closed. Derived `available_at` is the maximum actual input
   availability timestamp.
+- Market Data uses `market-data-confidence-min-input-lookback-v1`. Momentum admission requires a
+  provider confidence or the three declared confidence components; the used-window confidence is
+  their minimum. There is no `1.0` fallback. A final `1.0` is possible only when every declared
+  provider/contract input is actually `1.0`.
 - Classification contract `pit-classification-v1` preserves sector and industry, source,
   taxonomy/version, and PIT availability. `peer-assignment-v1` is row-order independent and binds
   the complete mapping to `as_of` and universe snapshot hash.
@@ -19,11 +23,18 @@ Status: research-only. Phase 6 scoring has not started. `NO_TRADE` and
   CFO-conversion restrictions or review states.
 - Market cap preserves `original_market_cap` and `original_market_cap_currency`; converted
   `market_cap_currency` always equals `base_currency`.
-- Critical hashes use `typed-canonical-json-v1`; relevant manifests bind git SHA, lockfile hash,
-  Python, pandas, NumPy, and platform via `research-runtime-v1`.
+- Critical hashes use `typed-canonical-json-v1`: factor observation/dataset, governed factor batch,
+  peer assignment, universe snapshot, cross-layer fingerprint, sealed QVM lineage, and admission
+  artifact. Row order is non-semantic; dtype and timestamp semantics remain typed. Historical
+  untyped hashes remain readable in historical artifacts only and are not accepted by the v2
+  admission boundary. Runtime identity binds git SHA, lockfile hash, Python, pandas, NumPy, platform,
+  and implementation via `research-runtime-v1`; critical `UNAVAILABLE` fields are rejected.
 - Status mapping is exhaustive under `factor-status-taxonomy-v1`; unknown states fail closed.
-- The exclusive PRE-Phase 6 admission entry point accepts exact sealed governed batches and has no
-  score or ranking output.
+- The exclusive `sealed-pre-phase6-admission-v2` entry point accepts exactly one Quality, Value, and
+  Momentum governed batch. It revalidates serialized batches, outer identities, exact symbols,
+  dataset/batch hashes, taxonomy/applicability, PASS/finite/confidence>=0.80 observations, runtime,
+  and every research-only invariant. Its output contains hashes and admission evidence, never
+  batches, scores, ranks, cohorts, weights, portfolios, signals, or execution instructions.
 
 ## Design decisions frozen before implementation
 
@@ -56,6 +67,16 @@ No provider is invented or claimed ready. All six remain `REAL-DATA-OPEN` until 
 snapshots pass their contracts. The blind-coverage command therefore reports
 `INSUFFICIENT_REAL_DATA`; synthetic tests validate only the harness. It never reads outcomes or
 returns, optimizes thresholds, or calculates scores.
+
+The CI-safe scale smoke executes the complete synthetic path (universe, Market Data confidence, FX,
+Accounting confidence, cross-layer integration, Financial Engine, Quality/Value/Momentum, sealing,
+governed QVM identity, and admission) with three securities twice, including reversed input order.
+The same workload is configurable through 5,000 securities outside CI; observed runtime/memory are
+reported without brittle thresholds:
+
+```bash
+python -m research.pre_phase6_scale_smoke --securities 5000
+```
 
 ```bash
 python -m venv .venv

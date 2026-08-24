@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -10,6 +9,15 @@ from typing import Any, Literal
 
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from governance.canonical import typed_hash
+from governance.pre_phase6 import (
+    APPLICABILITY_POLICY_VERSION,
+    STATUS_TAXONOMY_VERSION,
+    GovernedStatus,
+    governed_status,
+    metric_applicability,
+)
 
 FACTOR_NAMES = ("Quality", "Value", "Momentum")
 QVM_RULESET_VERSION = "qvm-research-v1.1"
@@ -247,14 +255,6 @@ METRIC_SEMANTICS_REGISTRY: Mapping[tuple[str, str], MetricSemantics] = {
 ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES = frozenset({"PASS"})
 
 
-def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def _sha256(value: Any) -> str:
-    return hashlib.sha256(_canonical(value).encode()).hexdigest()
-
-
 class QVMContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -280,10 +280,15 @@ class FactorObservation(QVMContractModel):
     confidence: float = Field(ge=0, le=1)
     lineage: dict[str, Any]
     universe_snapshot_id: str = Field(min_length=1)
-    status: str = Field(min_length=1)
+    status: GovernedStatus
     reason: str | None = None
     sector: str | None = None
     industry: str | None = None
+    applicability: Literal["APPLICABLE", "NOT_APPLICABLE", "REVIEW"] = "APPLICABLE"
+    applicability_policy_version: Literal["sector-applicability-v1"] = (
+        APPLICABILITY_POLICY_VERSION
+    )
+    status_taxonomy_version: Literal["factor-status-taxonomy-v1"] = STATUS_TAXONOMY_VERSION
     normalization: NormalizationMetadata = NormalizationMetadata()
 
     @model_validator(mode="after")
@@ -295,6 +300,14 @@ class FactorObservation(QVMContractModel):
             raise ValueError("available_at exceeds the common PIT as_of")
         if not self.lineage:
             raise ValueError("lineage must be non-empty")
+        status = governed_status(self.status)
+        expected = metric_applicability(self.metric, self.sector, self.industry)
+        if self.applicability != expected.state:
+            raise ValueError("observation applicability does not match governed policy")
+        if expected.state != "APPLICABLE" and status != GovernedStatus.NOT_APPLICABLE:
+            raise ValueError("non-applicable observation must use NOT_APPLICABLE")
+        if status == GovernedStatus.NOT_APPLICABLE and self.value is not None:
+            raise ValueError("NOT_APPLICABLE observations cannot carry a value")
         return self
 
 
@@ -319,8 +332,36 @@ class QVMEvaluation:
 
 
 def factor_dataset_hash(observations: Sequence[FactorObservation]) -> str:
-    documents = [item.model_dump(mode="json") for item in observations]
-    return _sha256(sorted(documents, key=_canonical))
+    documents = sorted(
+        (item.model_dump(mode="python") for item in observations),
+        key=lambda item: (str(item["symbol"]), str(item["metric"]), str(item["factor"])),
+    )
+    return typed_hash({"schema_version": "factor-dataset-identity-v2", "observations": documents})
+
+
+def factor_observation_hash(observation: FactorObservation) -> str:
+    return typed_hash(
+        {
+            "schema_version": "factor-observation-identity-v2",
+            "observation": observation,
+        }
+    )
+
+
+def factor_batch_identity(batch: FactorBatch) -> str:
+    return typed_hash(
+        {
+            "schema_version": "factor-batch-identity-v2",
+            "factor": batch.factor,
+            "universe_snapshot_id": batch.universe_snapshot_id,
+            "universe_snapshot_hash": batch.universe_snapshot_hash,
+            "as_of": batch.as_of,
+            "availability_policy": batch.availability_policy,
+            "entity_policy": batch.entity_policy,
+            "factor_dataset_hash": batch.factor_dataset_hash,
+            "lineage_hash": batch.lineage_hash,
+        }
+    )
 
 
 def qvm_lineage_identity(
@@ -344,7 +385,7 @@ def qvm_lineage_identity(
 
 
 def qvm_lineage_hash(**identity_parts: Any) -> str:
-    return _sha256(qvm_lineage_identity(**identity_parts))
+    return typed_hash(qvm_lineage_identity(**identity_parts))
 
 
 def observation_from_row(
@@ -370,6 +411,15 @@ def observation_from_row(
         unit = semantics.expected_unit
     value = row.get("value")
     value = None if value is None or pd.isna(value) else float(value)
+    applicability = metric_applicability(
+        str(row["metric"]),
+        None if pd.isna(row.get("sector")) else str(row.get("sector")),
+        None if pd.isna(row.get("industry")) else str(row.get("industry")),
+    )
+    status = governed_status(row["status"])
+    if applicability.state != "APPLICABLE":
+        status = GovernedStatus.NOT_APPLICABLE
+        value = None
     return FactorObservation(
         symbol=str(row["symbol"]),
         factor=factor,
@@ -381,10 +431,15 @@ def observation_from_row(
         confidence=float(row["confidence"]),
         lineage=lineage,
         universe_snapshot_id=universe_snapshot_id,
-        status=str(row["status"]),
-        reason=None if pd.isna(row.get("reason")) else str(row.get("reason")),
+        status=status,
+        reason=(
+            applicability.reason
+            if applicability.state != "APPLICABLE"
+            else None if pd.isna(row.get("reason")) else str(row.get("reason"))
+        ),
         sector=None if pd.isna(row.get("sector")) else str(row.get("sector")),
         industry=None if pd.isna(row.get("industry")) else str(row.get("industry")),
+        applicability=applicability.state,
     )
 
 
@@ -569,7 +624,7 @@ def _economic_conflicts(frame: pd.DataFrame) -> dict[str, Any]:
                     "symbol": str(row["symbol"]),
                     "factor": str(row["factor"]),
                     "metric": str(metric),
-                    "economic_signal": direction,
+                    "economic_direction": direction,
                     "reference": float(reference),
                     "meaning": semantics.economic_meaning,
                 }
@@ -578,7 +633,7 @@ def _economic_conflicts(frame: pd.DataFrame) -> dict[str, Any]:
     signal_frame = pd.DataFrame(signals)
     if not signal_frame.empty:
         for symbol, group in signal_frame.groupby("symbol", sort=True):
-            by_factor = group.groupby("factor")["economic_signal"].agg(
+            by_factor = group.groupby("factor")["economic_direction"].agg(
                 lambda values: sorted(set(values))
             )
             directional = {
@@ -588,7 +643,7 @@ def _economic_conflicts(frame: pd.DataFrame) -> dict[str, Any]:
                 conflicts.append(
                     {
                         "symbol": str(symbol),
-                        "factor_signals": directional,
+                        "factor_diagnostics": directional,
                         "evidence": group.to_dict(orient="records"),
                     }
                 )

@@ -33,6 +33,9 @@ class ProviderSnapshot(BaseModel):
     lineage: tuple[str, ...] = Field(min_length=1)
     real_data: bool
     licensed_for_use: bool
+    bound_factor_batch_hashes: tuple[str, ...] = ()
+    coverage_symbols_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    history_sufficiency_verified: bool = False
     failure_behavior: Literal["FAIL_CLOSED"] = "FAIL_CLOSED"
 
     @field_validator("available_at")
@@ -44,7 +47,13 @@ class ProviderSnapshot(BaseModel):
 
     @property
     def operationally_ready(self) -> bool:
-        return self.real_data and self.licensed_for_use
+        return (
+            self.real_data
+            and self.licensed_for_use
+            and bool(self.bound_factor_batch_hashes)
+            and self.coverage_symbols_hash is not None
+            and self.history_sufficiency_verified
+        )
 
 
 @runtime_checkable

@@ -30,6 +30,14 @@ class GovernedStatus(StrEnum):
     NOT_COMPUTED = "NOT_COMPUTED"
     NOT_APPLICABLE = "NOT_APPLICABLE"
     INVALID_LINEAGE = "INVALID_LINEAGE"
+    INVALID_DATA = "INVALID_DATA"
+    INVALID_CURRENCY = "INVALID_CURRENCY"
+    INVALID_UNIT = "INVALID_UNIT"
+    INVALID_DENOMINATOR = "INVALID_DENOMINATOR"
+    PIT_VIOLATION = "PIT_VIOLATION"
+    STALE_PRICE = "STALE_PRICE"
+    PERIOD_MISMATCH = "PERIOD_MISMATCH"
+    INDUSTRY_RESTRICTED = "INDUSTRY_RESTRICTED"
 
 
 def governed_status(value: object) -> GovernedStatus:
@@ -135,6 +143,24 @@ APPLICABILITY_MATRIX = (
         reason="EV and operating debt are not comparable for financial institutions",
     ),
     MetricApplicability(
+        metric="ev_to_ebitda",
+        sector="Financials",
+        state="NOT_APPLICABLE",
+        reason="EV and operating debt are not comparable for financial institutions",
+    ),
+    MetricApplicability(
+        metric="ev_to_ebit",
+        sector="Financials",
+        state="NOT_APPLICABLE",
+        reason="EV and operating debt are not comparable for financial institutions",
+    ),
+    MetricApplicability(
+        metric="ebit_yield",
+        sector="Financials",
+        state="NOT_APPLICABLE",
+        reason="EV and operating debt are not comparable for financial institutions",
+    ),
+    MetricApplicability(
         metric="net_debt_to_ebitda",
         sector="Financials",
         state="NOT_APPLICABLE",
@@ -147,7 +173,19 @@ APPLICABILITY_MATRIX = (
         reason="CFO classification is not comparable for banks",
     ),
     MetricApplicability(
+        metric="cfo_to_net_income",
+        industry="Banks",
+        state="NOT_APPLICABLE",
+        reason="CFO classification is not comparable for banks",
+    ),
+    MetricApplicability(
         metric="cfo_conversion",
+        industry="Insurance",
+        state="NOT_APPLICABLE",
+        reason="CFO classification is not comparable for insurers",
+    ),
+    MetricApplicability(
+        metric="cfo_to_net_income",
         industry="Insurance",
         state="NOT_APPLICABLE",
         reason="CFO classification is not comparable for insurers",

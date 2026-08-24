@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from core.phase36 import run_phase36
 from data.fx import FXLineageEntry, FXStalenessPolicy, govern_fx
@@ -27,9 +28,11 @@ from governance.research_chain import (
     evaluate_governed_qvm,
     evaluate_governed_value,
     financial_metrics_from_governed_accounting,
+    governed_factor_batch_identity,
     seal_factor_output,
 )
 from research.datasets import file_sha256
+from research.pre_phase6_readiness import admit_sealed_for_phase6
 from research.qvm_runner import run_qvm_research
 from universe.validation import UniverseRules
 
@@ -54,7 +57,14 @@ def _lineage(metric: str) -> str:
     )
 
 
-def _universe_snapshot(tmp_path: Path, *, as_of: datetime.date = AS_OF) -> Path:
+def _universe_snapshot(
+    tmp_path: Path,
+    *,
+    as_of: datetime.date = AS_OF,
+    sector: str = "Industrials",
+    industry: str = "Machinery",
+) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "universe.csv"
     pd.DataFrame(
         [
@@ -64,8 +74,8 @@ def _universe_snapshot(tmp_path: Path, *, as_of: datetime.date = AS_OF) -> Path:
                 "asset_type": "COMMON_STOCK",
                 "country": "US",
                 "region": "North America",
-                "sector": "Industrials",
-                "industry": "Machinery",
+                "sector": sector,
+                "industry": industry,
                 "market_cap": 1_000_000_000,
                 "market_cap_currency": "EUR",
                 "average_volume": 1_000_000,
@@ -419,9 +429,13 @@ def _phase56_chain(
     valuation_date: datetime.date = AS_OF,
     periods: tuple[tuple[str, str, str], ...] = (("FY2024", "2024-01-01", "2024-12-31"),),
     row_overrides: dict[tuple[str, str], dict[str, object]] | None = None,
+    sector: str = "Industrials",
+    industry: str = "Machinery",
 ):
     cutoff = datetime.datetime.combine(valuation_date, datetime.time(23, 59), tzinfo=datetime.UTC)
-    universe_dir = _universe_snapshot(tmp_path, as_of=valuation_date)
+    universe_dir = _universe_snapshot(
+        tmp_path, as_of=valuation_date, sector=sector, industry=industry
+    )
     metadata_path = universe_dir / "snapshot_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["as_of"] = cutoff.isoformat()
@@ -443,6 +457,9 @@ def _phase56_chain(
                     "corporate_action_status": "NONE",
                     "corporate_action_type": None,
                     "adjustment_factor": 1.0,
+                    "data_confidence": 0.95,
+                    "calculation_confidence": 0.94,
+                    "economic_confidence": 0.93,
                 }
             )
     market = govern_market_data(
@@ -598,6 +615,174 @@ def test_phase56_governed_adapters_execute_real_factor_engines(tmp_path: Path) -
     )
     assert evaluation.health["phase6_eligible"] is True
     assert evaluation.health["governance_mode"] == "phase5.6_cross_layer_verified"
+
+
+def _admission_batches(tmp_path: Path):
+    chain = _phase56_chain(tmp_path)
+    return (
+        seal_factor_output(
+            factor="Quality",
+            metrics=_quality_output().query("metric in ['roic', 'fcf_margin']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Value",
+            metrics=_value_output().query("metric in ['ev_to_ebit', 'fcf_yield']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Momentum",
+            metrics=_momentum_output().query(
+                "metric in ['momentum_12_1', 'volatility_adjusted_momentum_12_1']"
+            ),
+            cross_layer=chain,
+        ),
+    )
+
+
+def _reseal(batch, **updates):
+    values = {**batch.model_dump(mode="python"), **updates}
+    values["batch_identity_hash"] = governed_factor_batch_identity(values)
+    return batch.model_copy(update={**updates, "batch_identity_hash": values["batch_identity_hash"]})
+
+
+def test_pre_phase6_admission_emits_research_only_identity_artifact(tmp_path: Path) -> None:
+    batches = _admission_batches(tmp_path)
+    artifact = admit_sealed_for_phase6(batches=batches)
+    assert artifact.admitted is True
+    assert artifact.expected_symbols == ("AAA",)
+    assert set(artifact.factor_batch_hashes) == {"Quality", "Value", "Momentum"}
+    assert len(artifact.admission_artifact_hash) == 64
+    assert artifact.scores_calculated is False
+    assert artifact.ranking_calculated is False
+    assert artifact.portfolio_constructed is False
+    assert artifact.backtesting_performed is False
+    assert artifact.signals_generated is False
+    assert artifact.execution_enabled is False
+    assert artifact.trade_decision == "NO_TRADE"
+    assert artifact.live_execution_enabled is False
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "as_of",
+        "universe_snapshot_hash",
+        "eligible_symbols_hash",
+        "cross_layer_fingerprint",
+        "peer_assignment_hash",
+        "classification_taxonomy_version",
+        "accounting_canonical_id",
+        "market_data_canonical_id",
+        "fx_canonical_id",
+    ],
+)
+def test_admission_rejects_each_outer_identity_mutation(
+    tmp_path: Path, field: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    original = getattr(batches[0], field)
+    if field == "as_of":
+        changed = original - datetime.timedelta(days=1)
+    elif field.endswith(("hash", "fingerprint")):
+        changed = "b" * 64
+    else:
+        changed = f"{original}-mutated"
+    batches[0] = _reseal(batches[0], **{field: changed})
+    with pytest.raises((ValueError, ValidationError), match="mismatch"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_admission_requires_exactly_one_qvm_batch(tmp_path: Path) -> None:
+    batches = _admission_batches(tmp_path)
+    with pytest.raises(ValueError, match="exactly one Quality, Value, and Momentum"):
+        admit_sealed_for_phase6(batches=batches[:2])
+    with pytest.raises(ValueError, match="exactly one Quality, Value, and Momentum"):
+        admit_sealed_for_phase6(batches=(batches[0], batches[0], batches[2]))
+
+
+def test_admission_rejects_low_confidence_nonfinite_and_unavailable_runtime(
+    tmp_path: Path,
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"confidence": 0.79})
+    changed = tuple(observations)
+    batches[0] = _reseal(
+        batches[0], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises(ValueError, match="confidence must be at least 0.80"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+    batches = list(_admission_batches(tmp_path / "nonfinite"))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"value": float("inf")})
+    batches[0] = batches[0].model_copy(update={"observations": tuple(observations)})
+    with pytest.raises(ValueError, match="finite"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+    batches = list(_admission_batches(tmp_path / "runtime"))
+    unavailable = batches[0].runtime.model_copy(update={"git_commit_sha": "UNAVAILABLE"})
+    batches[0] = _reseal(batches[0], runtime=unavailable)
+    with pytest.raises(ValueError, match="UNAVAILABLE"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_admission_rejects_legacy_factor_batch_and_dataframe(tmp_path: Path) -> None:
+    batches = _admission_batches(tmp_path)
+    legacy = FactorBatch(
+        factor="Quality",
+        universe_snapshot_id=batches[0].universe_snapshot_id,
+        as_of=batches[0].as_of.date(),
+        availability_policy=batches[0].availability_policy_version,
+        universe_snapshot_hash=batches[0].universe_snapshot_hash,
+        factor_dataset_hash=batches[0].factor_dataset_hash,
+        lineage_hash="a" * 64,
+        observations=batches[0].observations,
+    )
+    with pytest.raises(TypeError, match="exact GovernedFactorBatch"):
+        admit_sealed_for_phase6(batches=(legacy,))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="exact GovernedFactorBatch"):
+        admit_sealed_for_phase6(batches=(pd.DataFrame(),))  # type: ignore[arg-type]
+
+
+def test_unknown_status_fails_at_producer_sealing_and_admission(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    invalid = _quality_output().query("metric == 'roic'").copy()
+    invalid["status"] = "UNEXPECTED_PROVIDER_STATUS"
+    with pytest.raises(ValueError, match="unknown governed status"):
+        seal_factor_output(factor="Quality", metrics=invalid, cross_layer=chain)
+
+    batches = list(_admission_batches(tmp_path / "admission"))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"status": "MUTATED_UNKNOWN"})
+    changed = tuple(observations)
+    batches[0] = _reseal(
+        batches[0], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises(ValidationError, match="observations.0.status"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+@pytest.mark.parametrize(
+    ("sector", "industry", "metric"),
+    [
+        ("Financials", "Banks", "net_debt_to_ebitda"),
+        ("Financials", "Insurance", "cfo_conversion"),
+        ("Real Estate", "REITs", "cfo_conversion"),
+    ],
+)
+def test_sector_applicability_is_enforced_before_admission(
+    tmp_path: Path, sector: str, industry: str, metric: str
+) -> None:
+    chain = _phase56_chain(tmp_path, sector=sector, industry=industry)
+    batch = seal_factor_output(
+        factor="Quality", metrics=_quality_output().query("metric == @metric"), cross_layer=chain
+    )
+    observation = batch.observations[0]
+    assert observation.status == "NOT_APPLICABLE"
+    assert observation.applicability in {"NOT_APPLICABLE", "REVIEW"}
+    assert observation.value is None
 
 
 def test_non_calendar_fiscal_year_is_preserved_end_to_end(tmp_path: Path) -> None:
