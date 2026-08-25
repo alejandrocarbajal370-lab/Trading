@@ -135,7 +135,8 @@ def _accounting(symbols: tuple[str, ...]) -> pd.DataFrame:
 
 
 def run_synthetic_scale_smoke(
-    *, security_count: int, workdir: Path, reorder_inputs: bool = False
+    *, security_count: int, workdir: Path, reorder_inputs: bool = False,
+    phase6_scoring: bool = False,
 ) -> dict[str, Any]:
     """Exercise the complete research-only path without scores, outcomes, or execution."""
     started = time.perf_counter()
@@ -249,12 +250,17 @@ def run_synthetic_scale_smoke(
     batches = (quality, value, momentum)
     qvm = evaluate_governed_qvm(batches=batches, expected=cross_layer)
     admission = admit_sealed_for_phase6(batches=batches)
+    phase6 = None
+    if phase6_scoring:
+        from research.phase6_qvm import run_phase6_qvm_research
+
+        phase6 = run_phase6_qvm_research(admission=admission, batches=batches)
     mark("qvm_and_admission", stage_started)
     # Process peak RSS has negligible observer overhead, unlike tracemalloc which
     # multiplied the benchmark runtime and made the scale result misleading.
     peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     peak = int(peak_rss if sys.platform == "darwin" else peak_rss * 1024)
-    return {
+    report = {
         "schema_version": SCALE_SMOKE_VERSION,
         "security_count": security_count,
         "market_rows": len(market_frame),
@@ -276,6 +282,18 @@ def run_synthetic_scale_smoke(
         "live_execution_enabled": False,
         "execution_enabled": False,
     }
+    if phase6 is not None:
+        report.update(
+            phase6_artifact_hash=phase6.artifact_hash,
+            phase6_active_metric_set=phase6.active_metric_set,
+            phase6_composite_eligible=sum(
+                item.model_status == "ELIGIBLE" for item in phase6.composites
+            ),
+            phase6_cohort_publication_status=phase6.cohort_publication_status,
+            phase6_research_only=True,
+            scores_calculated=True,
+        )
+    return report
 
 
 def main() -> None:

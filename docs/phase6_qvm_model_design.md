@@ -19,6 +19,21 @@ factor scores, a composite research score, ranks, cohorts, diagnostics, and revi
 only. It must not produce target weights, positions, orders, signals, backtests, broker messages,
 or live execution. Every artifact must retain `NO_TRADE` and execution disabled.
 
+### 1.1 FUTURE — horizon and portfolio policy (not implemented or authorized)
+
+A monthly review/rebalance cadence does not imply a one-month prediction horizon. The
+research/investment horizon is a separate decision that must be preregistered before any
+performance testing: 1-month and 3-month forward periods are diagnostic candidates, while 6-month
+and 12-month periods are the principal horizon candidates. No horizon may be selected
+retrospectively because it produced the best backtest.
+
+The current QVM engine is a cross-sectional ranking and research model, not a target-price model.
+A future, separately authorized Portfolio/Rebalancing Policy must distinguish
+`ENTER`/`HOLD`/`EXIT`/`BLOCK` and consider hysteresis or separate entry/exit bands to control
+turnover. Those rules must be frozen before backtesting. PR #19 implements none of this future
+policy and does not authorize portfolio construction, signals, target prices, forecasting, or
+backtesting.
+
 ## 2. Authoritative input contract
 
 The only admissible entry point is `sealed-pre-phase6-admission-v2`, delivered by PR #18 at
@@ -109,9 +124,10 @@ carry-forward. Missing metrics never receive a neutral score.
   are never shifted across Q, V, and M.
 - A company enters the composite model only when all three factor scores pass. Otherwise it remains
   in the audit output with `MODEL_INELIGIBLE` and no composite score or rank.
-- A snapshot may publish research cohorts only when at least 100 companies and at least 60% of the
-  governed universe have complete composite scores. Below either threshold the run is `FAIL` for
-  cohort publication, while diagnostic artifacts remain available.
+- Cohort mode and minimum eligible-company counts are governed exclusively by the authoritative
+  policy in section 8. In every mode, at least 60% of the governed universe must have complete
+  composite scores. If the applicable count or coverage gate fails, cohort publication is `FAIL`
+  while diagnostic artifacts remain available.
 
 ## 5. Pathological and outlier policy
 
@@ -216,10 +232,29 @@ Quality descending, then Value descending, then Momentum descending, and finally
 ascending as the deterministic identity tie-breaker. Economically identical composite/factor
 values retain the same midrank percentile even though the symbol tie-breaker fixes row order.
 
-Publish research labels only: deciles when `n >= 100`, otherwise quintiles when `50 <= n < 100`.
-The primary cohorts are top 10%, middle 40–60%, and bottom 10% when deciles are available; with
-quintiles, top/middle/bottom quintiles are used and tagged as a fallback. No cohort is a portfolio,
-selection list, target position, or trade signal.
+### 8.1 Authoritative Cohort Policy
+
+This section is the single normative source for cohort publication thresholds. It corresponds to
+the immutable, versioned `CohortPolicy` identified as `phase6-research-cohorts-v1`; its complete
+executed payload, including these thresholds and tie behavior, is bound by `policy_hash` into the
+final Phase 6 research artifact.
+
+| Eligible companies with complete composite scores (`n`) | Cohort mode | Published labels |
+|---:|---|---|
+| `< 50` | `NONE` | no cohorts; publication `FAIL` |
+| `50–99` | `QUINTILES` | top 20%, middle 40–60%, bottom 20%; fallback tagged |
+| `>= 100` | `DECILES` | top 10%, middle 40–60%, bottom 10% |
+
+An equal economic-value group crossing any cohort boundary is never split; the affected cohort
+expands to contain the full tie group. Normalized symbol orders presentation only and is never an
+economic tie-breaker. These are research labels only: no cohort is a portfolio, selection list,
+target position, or trade signal.
+
+**Decision note — pre-merge clarification:** the canonical rule is frozen as
+`none <50 / quintiles 50–99 / deciles >=100`. This resolves the earlier ambiguous statement that
+required 100 complete companies for any cohort, which contradicted the intended and implemented
+quintile fallback. Future threshold or tie-policy changes require a new policy version and hash;
+editing prose alone cannot change the executed contract.
 
 ## 9. Capital-preservation overlay
 
@@ -308,7 +343,8 @@ Filenames describe a contract, not authorization to implement them in this desig
 - No size neutralization in V1; mandatory size-exposure diagnostics.
 - Explicit missing taxonomy, no imputation, factor/model coverage gates.
 - Equal-factor QVM baseline and the within-factor weights in section 7.
-- Deterministic ranking/ties, research-only cohorts, and non-additive REVIEW/BLOCK overlay.
+- Deterministic ranking/ties and the authoritative cohort thresholds in section 8, plus the
+  non-additive REVIEW/BLOCK overlay.
 - Full validation and anti-overfitting gates before later performance evaluation.
 
 ## 14. Open decisions and prerequisites for implementation

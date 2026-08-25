@@ -1,0 +1,43 @@
+# Phase 6 QVM Research Engine V1
+
+## Audit remediation identity closure
+
+The admission boundary fails closed against the canonical QVM metric-semantics registry for every
+observation, including exact factor/metric ownership and unit compatibility. Recomputed dataset
+and batch hashes do not authorize unknown semantics. Status, confidence, finite-value,
+applicability, uniqueness, and governed classification checks are repeated at the consumer
+boundary.
+
+The final research artifact binds canonical identities for the metric registry, normalization,
+within-factor/composite weights, capital-preservation overlay, research cohorts, governance order,
+and active metric set. Overlay and cohort policies are immutable versioned objects whose hashes
+include executed thresholds, mappings, eligibility rules, tie behavior, ordering conventions, and
+deferred-control state. Provider-dependent controls remain `NOT_EVALUATED`.
+
+This implementation is strictly `RESEARCH_ONLY`. Its sole public consumer boundary is
+`run_phase6_qvm_research(admission=..., batches=...)`, which accepts the exact
+`sealed-pre-phase6-admission-v2` artifact and exact `GovernedFactorBatch` contracts. The consumer
+reconstructs admission from the supplied sealed batches and requires exact equality before any
+score is calculated.
+
+The engine implements the frozen five-MAD transform, the `s=0` inactive rule, deterministic
+midranks, industry/sector/market peer fallback, directionality, active/applicable denominators,
+frozen within-factor weights, equal Q/V/M composite, research-only rankings/cohorts, and the
+automatable subset of the capital-preservation overlay. Every typed result is frozen and includes
+a canonical content hash. The final artifact binds admission, sealed lineage, factor batch,
+peer-assignment, active-metric, policy, runtime, and output identities.
+
+The overlay policy payload explicitly enumerates dilution, restatement-materiality, FCF-history,
+and corporate-action as `DEFERRED` with a missing-governed-PIT-contract/provider reason. Those
+entries are part of the versioned canonical policy hash and final artifact lineage. The checks remain
+fail-closed upstream or unautomated because their governed PIT contracts are explicitly deferred
+by the design. No real provider is treated as ready; successful fixtures remain synthetic contract
+validation only.
+
+This change adds no portfolio construction, position sizing, orders, broker messages, execution,
+signals, backtesting, performance evaluation, outcome-driven tuning, or weight optimization.
+Research cohorts use deciles for at least 100 eligible companies, quintiles as the mandatory
+fallback for 50--99, and publish no cohorts below 50. Equal economic values are never split at a
+boundary; symbol ordering is display-only. Every composite and cohort retains
+`trade_decision=NO_TRADE`, `live_execution_enabled=false`,
+`signals_generated=false`, and `research_only=true`.
