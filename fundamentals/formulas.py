@@ -50,9 +50,7 @@ def positive_denominator_ratio(
     if invalid := _finite_inputs(numerator=numerator, denominator=denominator):
         return invalid
     if denominator <= 0:
-        return FormulaResult(
-            None, "NOT_COMPUTED", f"{denominator_name} must be positive"
-        )
+        return FormulaResult(None, "NOT_COMPUTED", f"{denominator_name} must be positive")
     return FormulaResult(numerator / denominator, "PASS")
 
 

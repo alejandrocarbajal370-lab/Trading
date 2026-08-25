@@ -20,6 +20,10 @@ from data.connectors.base import (
 from data.connectors.csv_prices import REQUIRED_COLUMNS
 
 DEFAULT_BASE_URL = "https://www.alphavantage.co/query"
+ALPHA_VANTAGE_HISTORY_CONFIDENCE_POLICY_VERSION = (
+    "alpha-vantage-adjusted-history-observable-fields-v1"
+)
+ALPHA_VANTAGE_HISTORY_MAX_DERIVED_CONFIDENCE = 0.90
 
 
 @dataclass(frozen=True)
@@ -213,7 +217,12 @@ class AlphaVantageMomentumHistoricalPriceSource:
             "raw_close": raw_close,
             "currency": "USD",
             "available_at": f"{date.isoformat()}T22:00:00+00:00",
-            "confidence": 1.0,
+            # Alpha Vantage supplies no confidence score. This conservative ceiling is
+            # derived only after all adjusted-price/action fields parse and reconcile;
+            # it must never be represented as provider-supplied or perfect confidence.
+            "confidence": ALPHA_VANTAGE_HISTORY_MAX_DERIVED_CONFIDENCE,
+            "confidence_policy_version": ALPHA_VANTAGE_HISTORY_CONFIDENCE_POLICY_VERSION,
+            "confidence_basis": "required adjusted-price and corporate-action fields validated",
             "input_lineage": json.dumps(lineage, sort_keys=True),
             "price_basis": "ADJUSTED",
             "corporate_action_status": "APPLIED" if action_type else "NONE",

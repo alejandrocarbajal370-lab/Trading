@@ -43,10 +43,12 @@ def assemble_ttm(quarterly: pd.DataFrame, *, cutoff: pd.Timestamp) -> pd.DataFra
     ].copy()
     eligible = eligible[
         eligible.apply(
-            lambda row: classify_period(
-                row["fiscal_period_start"], row["fiscal_period_end"], row["period_type"]
-            )
-            == "quarterly",
+            lambda row: (
+                classify_period(
+                    row["fiscal_period_start"], row["fiscal_period_end"], row["period_type"]
+                )
+                == "quarterly"
+            ),
             axis=1,
         )
     ]

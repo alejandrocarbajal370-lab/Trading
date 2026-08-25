@@ -12,8 +12,16 @@ def evaluate_accounting_quality(snapshot: pd.DataFrame) -> pd.DataFrame:
     metrics = calculate_financial_metrics(snapshot)
     rows: list[dict[str, object]] = []
     specifications = {
-        "cfo_to_net_income": ("cfo_to_net_income", lambda value: value < 0.5, "weak cash conversion (<0.5)"),
-        "accrual_ratio": ("accrual_ratio", lambda value: value > 0.1, "high positive accruals (>0.1)"),
+        "cfo_to_net_income": (
+            "cfo_to_net_income",
+            lambda value: value < 0.5,
+            "weak cash conversion (<0.5)",
+        ),
+        "accrual_ratio": (
+            "accrual_ratio",
+            lambda value: value > 0.1,
+            "high positive accruals (>0.1)",
+        ),
     }
     for source_metric, (check, warning_rule, warning_text) in specifications.items():
         selected = metrics.loc[metrics["metric"] == source_metric]

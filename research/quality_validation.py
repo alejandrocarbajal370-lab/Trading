@@ -18,7 +18,7 @@ CORE_QUALITY_METRICS = (
     "roic",
     "fcf_margin",
     "cfo_conversion",
-    "accrual_quality",
+    "raw_accrual_ratio",
     "net_debt_to_ebitda",
     "roic_stability",
     "margin_stability",
@@ -114,8 +114,7 @@ def _metric_coverage(
     rows = quality[(quality["metric"] == metric) & quality["symbol"].isin(universe_symbols)].copy()
     observed_symbols = set(rows["symbol"])
     passing = rows[
-        rows["status"].eq("PASS")
-        & pd.to_numeric(rows["value"], errors="coerce").notna()
+        rows["status"].eq("PASS") & pd.to_numeric(rows["value"], errors="coerce").notna()
     ]
     passing_symbols = set(passing["symbol"])
     denominator = len(universe_symbols)
@@ -147,8 +146,7 @@ def _coverage_by_group(
     output: list[dict[str, Any]] = []
     for group_value, rows in merged.groupby(group, dropna=False, sort=True):
         passing = rows[
-            rows["status"].eq("PASS")
-            & pd.to_numeric(rows["value"], errors="coerce").notna()
+            rows["status"].eq("PASS") & pd.to_numeric(rows["value"], errors="coerce").notna()
         ]
         count = len(rows)
         output.append(
@@ -157,9 +155,7 @@ def _coverage_by_group(
                 "metric": metric,
                 "eligible_symbols": count,
                 "passing_symbols": int(passing["symbol"].nunique()),
-                "pass_coverage": (
-                    round(passing["symbol"].nunique() / count, 6) if count else 0.0
-                ),
+                "pass_coverage": (round(passing["symbol"].nunique() / count, 6) if count else 0.0),
             }
         )
     return output
@@ -310,8 +306,10 @@ def build_quality_validation_report(
         .str.contains("PIT violation", case=False, na=False)
     )
     if financial_metrics is not None:
-        pit_mask_financial = financial_metrics["reason"].astype("string").str.contains(
-            "PIT violation", case=False, na=False
+        pit_mask_financial = (
+            financial_metrics["reason"]
+            .astype("string")
+            .str.contains("PIT violation", case=False, na=False)
         )
         pit_violations = int(pit_mask.sum() + pit_mask_financial.sum())
     else:
@@ -339,9 +337,7 @@ def build_quality_validation_report(
     warnings: list[str] = []
     for item in coverage:
         if item["pass_coverage"] < minimum_pass_coverage:
-            warnings.append(
-                f"low pass coverage for {item['metric']}: {item['pass_coverage']:.2%}"
-            )
+            warnings.append(f"low pass coverage for {item['metric']}: {item['pass_coverage']:.2%}")
     unavailable = (
         int((availability["availability_status"] != "AVAILABLE").sum())
         if not availability.empty
@@ -433,7 +429,9 @@ def run_quality_validation(
     input_hashes = {
         "quality_metrics": file_sha256(quality_metrics_path),
         "universe_membership": file_sha256(universe_membership_path),
-        "financial_metrics": file_sha256(financial_metrics_path) if financial_metrics_path else None,
+        "financial_metrics": file_sha256(financial_metrics_path)
+        if financial_metrics_path
+        else None,
     }
     fingerprint_payload = {
         "schema_version": QUALITY_VALIDATION_SCHEMA_VERSION,
@@ -476,7 +474,9 @@ def run_quality_validation(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build the research-only Quality validation report")
+    parser = argparse.ArgumentParser(
+        description="Build the research-only Quality validation report"
+    )
     parser.add_argument("--quality-metrics", required=True, type=Path)
     parser.add_argument("--universe-membership", required=True, type=Path)
     parser.add_argument("--financial-metrics", type=Path)

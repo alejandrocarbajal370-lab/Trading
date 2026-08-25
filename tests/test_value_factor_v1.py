@@ -14,12 +14,16 @@ from universe.validation import UniverseRules
 
 
 def _lineage(metric: str) -> str:
-    return json.dumps([{
-        "metric": metric,
-        "source": "sec_fixture",
-        "available_at": "2025-03-01T00:00:00+00:00",
-        "fiscal_period_end": "2024-12-31",
-    }])
+    return json.dumps(
+        [
+            {
+                "metric": metric,
+                "source": "sec_fixture",
+                "available_at": "2025-03-01T00:00:00+00:00",
+                "fiscal_period_end": "2024-12-31",
+            }
+        ]
+    )
 
 
 def _metrics() -> pd.DataFrame:
@@ -34,22 +38,24 @@ def _metrics() -> pd.DataFrame:
     rows = []
     for metric, value in values.items():
         instant = metric in {"market_cap", "enterprise_value"}
-        rows.append({
-            "symbol": "AAA",
-            "valuation_as_of": "2025-03-15",
-            "fiscal_period_end": "2024-12-31",
-            "period_basis": "INSTANT" if instant else "TTM",
-            "metric": metric,
-            "value": value,
-            "unit": "currency",
-            "currency": "USD",
-            "available_at": "2025-03-01T00:00:00+00:00",
-            "status": "PASS",
-            "reason": None,
-            "confidence": 0.95,
-            "input_lineage": _lineage(metric),
-            "industry": "Machinery",
-        })
+        rows.append(
+            {
+                "symbol": "AAA",
+                "valuation_as_of": "2025-03-15",
+                "fiscal_period_end": "2024-12-31",
+                "period_basis": "INSTANT" if instant else "TTM",
+                "metric": metric,
+                "value": value,
+                "unit": "currency",
+                "currency": "USD",
+                "available_at": "2025-03-01T00:00:00+00:00",
+                "status": "PASS",
+                "reason": None,
+                "confidence": 0.95,
+                "input_lineage": _lineage(metric),
+                "industry": "Machinery",
+            }
+        )
     return pd.DataFrame(rows)
 
 
@@ -116,7 +122,9 @@ def test_invalid_enterprise_value_fails_all_ev_metrics() -> None:
     frame = _metrics()
     frame.loc[frame["metric"] == "enterprise_value", "value"] = -1.0
     result = _evaluate(frame)
-    assert (result.loc[["ebit_yield", "ev_to_ebit", "ev_to_ebitda"], "status"] == "INVALID_DENOMINATOR").all()
+    assert (
+        result.loc[["ebit_yield", "ev_to_ebit", "ev_to_ebitda"], "status"] == "INVALID_DENOMINATOR"
+    ).all()
 
 
 def test_period_mismatch_fails_closed() -> None:
@@ -258,7 +266,12 @@ def test_value_run_is_reproducible_and_writes_governed_outputs(tmp_path: Path) -
     second = run_value_experiment(**kwargs)
     assert first.output_dir == second.output_dir
     assert first.research_run == second.research_run
-    for name in ("value_metrics.csv", "value_health.json", "value_lineage.json", "value_validation_report.json"):
+    for name in (
+        "value_metrics.csv",
+        "value_health.json",
+        "value_lineage.json",
+        "value_validation_report.json",
+    ):
         assert (first.output_dir / name).is_file()
     assert first.research_run["trade_decision"] == "NO_TRADE"
     assert first.research_run["live_execution_enabled"] is False

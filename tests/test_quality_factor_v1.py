@@ -106,7 +106,7 @@ def test_quality_returns_individual_metrics_and_stability_without_score() -> Non
     assert values["cfo_conversion"] == pytest.approx(1.2)
     assert values["fcf_margin"] == pytest.approx(0.16)
     assert values["net_debt_to_ebitda"] == pytest.approx(1.5)
-    assert values["accrual_quality"] == pytest.approx(0.02)
+    assert values["raw_accrual_ratio"] == pytest.approx(0.02)
     assert values["roic_stability"] == pytest.approx(0.02)
     assert values["margin_stability"] == pytest.approx(0.02)
     assert "score" not in result.metrics.columns
@@ -171,7 +171,7 @@ def test_quality_research_run_is_reproducible_and_auditable(tmp_path: Path) -> N
     assert first.research_run == second.research_run
     run = json.loads((first.output_dir / "quality_research_run.json").read_text())
     assert run["universe_snapshot_id"] == "universe-2024-12-31"
-    assert run["quality_ruleset_version"] == "quality-v1.1"
+    assert run["quality_ruleset_version"] == "quality-v1.2"
     assert run["trade_decision"] == "NO_TRADE"
     assert run["live_execution_enabled"] is False
     assert run["composite_score_calculated"] is False
@@ -214,7 +214,12 @@ def test_absent_metric_is_emitted_as_missing() -> None:
 
 @pytest.mark.parametrize(
     ("confidence", "expected"),
-    [(None, "MISSING_CONFIDENCE"), (float("nan"), "MISSING_CONFIDENCE"), ("bad", "LOW_CONFIDENCE"), (1.2, "LOW_CONFIDENCE")],
+    [
+        (None, "MISSING_CONFIDENCE"),
+        (float("nan"), "MISSING_CONFIDENCE"),
+        ("bad", "LOW_CONFIDENCE"),
+        (1.2, "LOW_CONFIDENCE"),
+    ],
 )
 def test_missing_null_and_invalid_confidence_never_assume_full_confidence(
     confidence: object, expected: str
@@ -258,9 +263,13 @@ def test_sector_foundation_and_primary_source_are_propagated() -> None:
     metrics["sector_percentile"] = 82.0
     metrics["industry_percentile"] = 74.0
     metrics["pit_metadata"] = json.dumps({"knowledge_date": "2025-03-01"})
-    row = evaluate_quality_metrics(
-        metrics, experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
-    ).metrics.set_index("metric").loc["roic"]
+    row = (
+        evaluate_quality_metrics(
+            metrics, experiment_id="quality-001", dataset_lineage={"snapshot_id": "snapshot"}
+        )
+        .metrics.set_index("metric")
+        .loc["roic"]
+    )
     assert row["sector"] == "Industrials"
     assert row["industry_percentile"] == 74.0
     assert row["primary_source"] == "sec_fixture"

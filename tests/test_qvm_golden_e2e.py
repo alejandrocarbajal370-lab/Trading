@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from pydantic import ValidationError
 
 from core.phase36 import run_phase36
 from data.fx import FXLineageEntry, FXStalenessPolicy, govern_fx
@@ -27,9 +28,11 @@ from governance.research_chain import (
     evaluate_governed_qvm,
     evaluate_governed_value,
     financial_metrics_from_governed_accounting,
+    governed_factor_batch_identity,
     seal_factor_output,
 )
 from research.datasets import file_sha256
+from research.pre_phase6_readiness import admit_sealed_for_phase6
 from research.qvm_runner import run_qvm_research
 from universe.validation import UniverseRules
 
@@ -54,7 +57,14 @@ def _lineage(metric: str) -> str:
     )
 
 
-def _universe_snapshot(tmp_path: Path, *, as_of: datetime.date = AS_OF) -> Path:
+def _universe_snapshot(
+    tmp_path: Path,
+    *,
+    as_of: datetime.date = AS_OF,
+    sector: str = "Industrials",
+    industry: str = "Machinery",
+) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
     source = tmp_path / "universe.csv"
     pd.DataFrame(
         [
@@ -64,8 +74,8 @@ def _universe_snapshot(tmp_path: Path, *, as_of: datetime.date = AS_OF) -> Path:
                 "asset_type": "COMMON_STOCK",
                 "country": "US",
                 "region": "North America",
-                "sector": "Industrials",
-                "industry": "Machinery",
+                "sector": sector,
+                "industry": industry,
                 "market_cap": 1_000_000_000,
                 "market_cap_currency": "EUR",
                 "average_volume": 1_000_000,
@@ -419,9 +429,13 @@ def _phase56_chain(
     valuation_date: datetime.date = AS_OF,
     periods: tuple[tuple[str, str, str], ...] = (("FY2024", "2024-01-01", "2024-12-31"),),
     row_overrides: dict[tuple[str, str], dict[str, object]] | None = None,
+    sector: str = "Industrials",
+    industry: str = "Machinery",
 ):
     cutoff = datetime.datetime.combine(valuation_date, datetime.time(23, 59), tzinfo=datetime.UTC)
-    universe_dir = _universe_snapshot(tmp_path, as_of=valuation_date)
+    universe_dir = _universe_snapshot(
+        tmp_path, as_of=valuation_date, sector=sector, industry=industry
+    )
     metadata_path = universe_dir / "snapshot_metadata.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
     metadata["as_of"] = cutoff.isoformat()
@@ -432,63 +446,139 @@ def _phase56_chain(
     for symbol, growth in (("AAA", 0.001), ("SPY", 0.0004)):
         for index, day in enumerate(sessions):
             price = 100.0 * (1 + growth) ** index
-            price_rows.append({"symbol": symbol, "date": day, "raw_close": price,
-                "adjusted_close": price, "currency": "USD",
-                "available_at": f"{day.isoformat()}T22:00:00Z",
-                "corporate_action_status": "NONE", "corporate_action_type": None,
-                "adjustment_factor": 1.0})
-    market = govern_market_data(pd.DataFrame(price_rows), source="phase56-market",
-        dataset_version="market-v1", available_at=cutoff,
+            price_rows.append(
+                {
+                    "symbol": symbol,
+                    "date": day,
+                    "raw_close": price,
+                    "adjusted_close": price,
+                    "currency": "USD",
+                    "available_at": f"{day.isoformat()}T22:00:00Z",
+                    "corporate_action_status": "NONE",
+                    "corporate_action_type": None,
+                    "adjustment_factor": 1.0,
+                    "data_confidence": 0.95,
+                    "calculation_confidence": 0.94,
+                    "economic_confidence": 0.93,
+                }
+            )
+    market = govern_market_data(
+        pd.DataFrame(price_rows),
+        source="phase56-market",
+        dataset_version="market-v1",
+        available_at=cutoff,
         lineage=(LineageEntry(source="phase56-market", dataset="prices", dataset_version="v1"),),
-        trading_calendar="XNYS", as_of=cutoff, maximum_staleness_sessions=0)
+        trading_calendar="XNYS",
+        as_of=cutoff,
+        maximum_staleness_sessions=0,
+    )
     fx_dates = {period_end for _, _, period_end in periods} | {"2024-11-30", "2024-12-31"}
-    fx_rows = [{"currency_pair": "EUR/USD", "base_currency": "EUR",
-        "quote_currency": "USD", "market_timestamp": f"{day}T16:00:00Z",
-        "available_at": f"{day}T16:01:00Z", "rate": 1.1} for day in sorted(fx_dates)]
-    fx = govern_fx(pd.DataFrame(fx_rows), source="phase56-fx",
-        dataset_version="fx-v1", available_at=cutoff,
+    fx_rows = [
+        {
+            "currency_pair": "EUR/USD",
+            "base_currency": "EUR",
+            "quote_currency": "USD",
+            "market_timestamp": f"{day}T16:00:00Z",
+            "available_at": f"{day}T16:01:00Z",
+            "rate": 1.1,
+        }
+        for day in sorted(fx_dates)
+    ]
+    fx = govern_fx(
+        pd.DataFrame(fx_rows),
+        source="phase56-fx",
+        dataset_version="fx-v1",
+        available_at=cutoff,
         lineage=(FXLineageEntry(source="phase56-fx", dataset="rates", dataset_version="v1"),),
-        as_of=cutoff, staleness_policy=FXStalenessPolicy(maximum_sessions=120))
-    accounting_values = {"cash_from_operations": 25.0, "capital_expenditures": 5.0,
-        "revenue": 100.0, "net_income": 12.0, "operating_income": 18.0, "ebitda": 22.0,
-        "total_debt": 30.0, "cash": 10.0, "total_equity": 70.0, "total_assets": 120.0,
-        "tax_rate": 0.25}
+        as_of=cutoff,
+        staleness_policy=FXStalenessPolicy(maximum_sessions=120),
+    )
+    accounting_values = {
+        "cash_from_operations": 25.0,
+        "capital_expenditures": 5.0,
+        "revenue": 100.0,
+        "net_income": 12.0,
+        "operating_income": 18.0,
+        "ebitda": 22.0,
+        "total_debt": 30.0,
+        "cash": 10.0,
+        "total_equity": 70.0,
+        "total_assets": 120.0,
+        "tax_rate": 0.25,
+    }
     accounting_rows = []
     instant_metrics = {"total_debt", "cash", "total_equity", "total_assets"}
     row_overrides = row_overrides or {}
     for fiscal_period, period_start, period_end in periods:
         filing_date = pd.Timestamp(period_end, tz="UTC") + pd.Timedelta(days=1)
         for metric, value in accounting_values.items():
-            row = {"fact_id": f"aaa-{metric}-{fiscal_period}", "entity": "AAA",
-                "metric": metric, "fiscal_period": fiscal_period, "period_end": period_end,
+            row = {
+                "fact_id": f"aaa-{metric}-{fiscal_period}",
+                "entity": "AAA",
+                "metric": metric,
+                "fiscal_period": fiscal_period,
+                "period_end": period_end,
                 "fiscal_period_start": None if metric in instant_metrics else period_start,
                 "period_type": "instant" if metric in instant_metrics else "duration",
                 "filing_date": filing_date.isoformat(),
                 "available_at": (filing_date + pd.Timedelta(minutes=1)).isoformat(),
-                "value": value, "unit": "RATIO" if metric == "tax_rate" else "EUR",
-                "source": "phase56-accounting", "dataset_version": "accounting-v1",
-                "revision": 0, "revision_type": "ORIGINAL", "supersedes_revision": None}
+                "value": value,
+                "unit": "RATIO" if metric == "tax_rate" else "EUR",
+                "source": "phase56-accounting",
+                "dataset_version": "accounting-v1",
+                "revision": 0,
+                "revision_type": "ORIGINAL",
+                "supersedes_revision": None,
+                "data_confidence": 0.95,
+                "calculation_confidence": 0.94,
+                "economic_confidence": 0.90,
+            }
             row.update(row_overrides.get((fiscal_period, metric), {}))
             accounting_rows.append(row)
-    accounting = govern_accounting(pd.DataFrame(accounting_rows), source="phase56-accounting",
-        dataset_version="accounting-v1", available_at=cutoff,
-        lineage=(AccountingLineageEntry(source="phase56-accounting", dataset="filings",
-            dataset_version="v1"),), as_of=cutoff)
-    return integrate_governed_inputs(universe_snapshot_dir=universe_dir, market_data=market, fx=fx,
-        accounting=accounting, as_of=cutoff, base_currency="USD",
-        required_fundamentals=set(accounting_values), reference_symbols={"SPY"})
+    accounting = govern_accounting(
+        pd.DataFrame(accounting_rows),
+        source="phase56-accounting",
+        dataset_version="accounting-v1",
+        available_at=cutoff,
+        lineage=(
+            AccountingLineageEntry(
+                source="phase56-accounting", dataset="filings", dataset_version="v1"
+            ),
+        ),
+        as_of=cutoff,
+    )
+    return integrate_governed_inputs(
+        universe_snapshot_dir=universe_dir,
+        market_data=market,
+        fx=fx,
+        accounting=accounting,
+        as_of=cutoff,
+        base_currency="USD",
+        required_fundamentals=set(accounting_values),
+        reference_symbols={"SPY"},
+    )
 
 
 def test_phase56_golden_universe_to_qvm_is_one_governed_chain(tmp_path: Path) -> None:
     chain = _phase56_chain(tmp_path)
     batches = (
-        seal_factor_output(factor="Quality", metrics=_quality_output().query(
-            "metric in ['roic', 'fcf_margin']"), cross_layer=chain),
-        seal_factor_output(factor="Value", metrics=_value_output().query(
-            "metric in ['ev_to_ebit', 'fcf_yield']"), cross_layer=chain),
-        seal_factor_output(factor="Momentum", metrics=_momentum_output().query(
-            "metric in ['momentum_12_1', 'volatility_adjusted_momentum_12_1']"),
-            cross_layer=chain),
+        seal_factor_output(
+            factor="Quality",
+            metrics=_quality_output().query("metric in ['roic', 'fcf_margin']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Value",
+            metrics=_value_output().query("metric in ['ev_to_ebit', 'fcf_yield']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Momentum",
+            metrics=_momentum_output().query(
+                "metric in ['momentum_12_1', 'volatility_adjusted_momentum_12_1']"
+            ),
+            cross_layer=chain,
+        ),
     )
     evaluation = evaluate_governed_qvm(batches=batches, expected=chain)
     assert evaluation.health["status"] == "PASS"
@@ -506,12 +596,13 @@ def test_phase56_golden_universe_to_qvm_is_one_governed_chain(tmp_path: Path) ->
 
 def test_phase56_governed_adapters_execute_real_factor_engines(tmp_path: Path) -> None:
     chain = _phase56_chain(tmp_path)
-    quality, quality_batch = evaluate_governed_quality(cross_layer=chain,
-        experiment_id="phase56-quality")
-    value, value_batch = evaluate_governed_value(cross_layer=chain,
-        experiment_id="phase56-value")
-    momentum, momentum_batch = evaluate_governed_momentum(cross_layer=chain,
-        experiment_id="phase56-momentum", benchmark_symbol="SPY")
+    quality, quality_batch = evaluate_governed_quality(
+        cross_layer=chain, experiment_id="phase56-quality"
+    )
+    value, value_batch = evaluate_governed_value(cross_layer=chain, experiment_id="phase56-value")
+    momentum, momentum_batch = evaluate_governed_momentum(
+        cross_layer=chain, experiment_id="phase56-momentum", benchmark_symbol="SPY"
+    )
     assert quality_batch.cross_layer_fingerprint == chain.manifest.cross_layer_fingerprint
     assert value_batch.accounting_snapshot_sha256 == chain.manifest.accounting_snapshot_sha256
     assert value_batch.fx_checksum == chain.manifest.fx_checksum
@@ -524,6 +615,239 @@ def test_phase56_governed_adapters_execute_real_factor_engines(tmp_path: Path) -
     )
     assert evaluation.health["phase6_eligible"] is True
     assert evaluation.health["governance_mode"] == "phase5.6_cross_layer_verified"
+
+
+def _admission_batches(tmp_path: Path):
+    chain = _phase56_chain(tmp_path)
+    return (
+        seal_factor_output(
+            factor="Quality",
+            metrics=_quality_output().query("metric in ['roic', 'fcf_margin']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Value",
+            metrics=_value_output().query("metric in ['ev_to_ebit', 'fcf_yield']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Momentum",
+            metrics=_momentum_output().query(
+                "metric in ['momentum_12_1', 'volatility_adjusted_momentum_12_1']"
+            ),
+            cross_layer=chain,
+        ),
+    )
+
+
+def _reseal(batch, **updates):
+    values = {**batch.model_dump(mode="python"), **updates}
+    values["batch_identity_hash"] = governed_factor_batch_identity(values)
+    return batch.model_copy(update={**updates, "batch_identity_hash": values["batch_identity_hash"]})
+
+
+def test_pre_phase6_admission_emits_research_only_identity_artifact(tmp_path: Path) -> None:
+    batches = _admission_batches(tmp_path)
+    artifact = admit_sealed_for_phase6(batches=batches)
+    assert artifact.admitted is True
+    assert artifact.expected_symbols == ("AAA",)
+    assert set(artifact.factor_batch_hashes) == {"Quality", "Value", "Momentum"}
+    assert len(artifact.admission_artifact_hash) == 64
+    assert artifact.scores_calculated is False
+    assert artifact.ranking_calculated is False
+    assert artifact.portfolio_constructed is False
+    assert artifact.backtesting_performed is False
+    assert artifact.signals_generated is False
+    assert artifact.execution_enabled is False
+    assert artifact.trade_decision == "NO_TRADE"
+    assert artifact.live_execution_enabled is False
+
+
+@pytest.mark.parametrize("batch_index,new_factor", [(0, "Value"), (1, "Momentum"), (2, "Quality")])
+def test_admission_rejects_observation_factor_mismatch(
+    tmp_path: Path, batch_index: int, new_factor: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = list(batches[batch_index].observations)
+    observations[0] = observations[0].model_copy(update={"factor": new_factor})
+    changed = tuple(observations)
+    # Deliberately recompute the inner dataset hash and outer identity: the semantic
+    # batch/observation mismatch must still fail closed at the consumer boundary.
+    batches[batch_index] = _reseal(
+        batches[batch_index], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises((ValueError, ValidationError), match="batch factor|mismatched observation"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_governance_order_is_versioned_hashed_and_revalidated(tmp_path: Path) -> None:
+    batches = list(_admission_batches(tmp_path))
+    original_hash = batches[0].batch_identity_hash
+    mutated = tuple(reversed(batches[0].governance_order))
+    stale = batches[0].model_copy(update={"governance_order": mutated})
+    batches[0] = stale
+    with pytest.raises((ValueError, ValidationError), match="governance order|identity"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+    values = {**stale.model_dump(mode="python"), "governance_order": mutated}
+    assert governed_factor_batch_identity(values) != original_hash
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "as_of",
+        "universe_snapshot_hash",
+        "eligible_symbols_hash",
+        "validation_hash",
+        "cross_layer_fingerprint",
+        "peer_assignment_hash",
+        "classification_taxonomy_version",
+        "accounting_canonical_id",
+        "market_data_canonical_id",
+        "market_data_snapshot_sha256",
+        "fx_canonical_id",
+        "fx_conversions_sha256",
+    ],
+)
+def test_admission_rejects_each_outer_identity_mutation(
+    tmp_path: Path, field: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    original = getattr(batches[0], field)
+    if field == "as_of":
+        changed = original - datetime.timedelta(days=1)
+    elif field.endswith(("hash", "fingerprint")):
+        changed = "b" * 64
+    else:
+        changed = f"{original}-mutated"
+    batches[0] = _reseal(batches[0], **{field: changed})
+    with pytest.raises((ValueError, ValidationError), match="mismatch"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_admission_requires_exactly_one_qvm_batch(tmp_path: Path) -> None:
+    batches = _admission_batches(tmp_path)
+    with pytest.raises(ValueError, match="exactly one Quality, Value, and Momentum"):
+        admit_sealed_for_phase6(batches=batches[:2])
+    with pytest.raises(ValueError, match="exactly one Quality, Value, and Momentum"):
+        admit_sealed_for_phase6(batches=(batches[0], batches[0], batches[2]))
+
+
+def test_admission_rejects_low_confidence_nonfinite_and_unavailable_runtime(
+    tmp_path: Path,
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"confidence": 0.79})
+    changed = tuple(observations)
+    batches[0] = _reseal(
+        batches[0], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises(ValueError, match="confidence must be at least 0.80"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+    batches = list(_admission_batches(tmp_path / "nonfinite"))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"value": float("inf")})
+    batches[0] = batches[0].model_copy(update={"observations": tuple(observations)})
+    with pytest.raises(ValueError, match="finite"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+    batches = list(_admission_batches(tmp_path / "runtime"))
+    unavailable = batches[0].runtime.model_copy(update={"git_commit_sha": "UNAVAILABLE"})
+    batches[0] = _reseal(batches[0], runtime=unavailable)
+    with pytest.raises(ValueError, match="UNAVAILABLE|runtime fingerprint"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+@pytest.mark.parametrize(
+    "field,changed",
+    [
+        ("git_commit_sha", "b" * 40),
+        ("requirements_lock_sha256", "b" * 64),
+        ("python_version", "0.0-mutated"),
+        ("pandas_version", "0.0-mutated"),
+        ("numpy_version", "0.0-mutated"),
+        ("platform", "mutated-platform"),
+        ("implementation", "mutated-implementation"),
+    ],
+)
+def test_admission_rejects_stale_runtime_fingerprint_payload(
+    tmp_path: Path, field: str, changed: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    runtime = batches[0].runtime.model_copy(update={field: changed})
+    batches[0] = _reseal(batches[0], runtime=runtime)
+    with pytest.raises((ValueError, ValidationError), match="runtime fingerprint"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_admission_rejects_legacy_factor_batch_and_dataframe(tmp_path: Path) -> None:
+    batches = _admission_batches(tmp_path)
+    legacy = FactorBatch(
+        factor="Quality",
+        universe_snapshot_id=batches[0].universe_snapshot_id,
+        as_of=batches[0].as_of.date(),
+        availability_policy=batches[0].availability_policy_version,
+        universe_snapshot_hash=batches[0].universe_snapshot_hash,
+        factor_dataset_hash=batches[0].factor_dataset_hash,
+        lineage_hash="a" * 64,
+        observations=batches[0].observations,
+    )
+    with pytest.raises(TypeError, match="exact GovernedFactorBatch"):
+        admit_sealed_for_phase6(batches=(legacy,))  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="exact GovernedFactorBatch"):
+        admit_sealed_for_phase6(batches=(pd.DataFrame(),))  # type: ignore[arg-type]
+
+
+def test_unknown_status_fails_at_producer_sealing_and_admission(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    invalid = _quality_output().query("metric == 'roic'").copy()
+    invalid["status"] = "UNEXPECTED_PROVIDER_STATUS"
+    with pytest.raises(ValueError, match="unknown governed status"):
+        seal_factor_output(factor="Quality", metrics=invalid, cross_layer=chain)
+
+    batches = list(_admission_batches(tmp_path / "admission"))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"status": "MUTATED_UNKNOWN"})
+    changed = tuple(observations)
+    batches[0] = _reseal(
+        batches[0], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises(ValidationError, match="observations.0.status"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+@pytest.mark.parametrize(
+    ("sector", "industry", "metric"),
+    [
+        ("Financials", "Banks", "net_debt_to_ebitda"),
+        ("Financials", "Insurance", "cfo_conversion"),
+        ("Real Estate", "REITs", "cfo_conversion"),
+    ],
+)
+def test_sector_applicability_is_enforced_before_admission(
+    tmp_path: Path, sector: str, industry: str, metric: str
+) -> None:
+    chain = _phase56_chain(tmp_path, sector=sector, industry=industry)
+    batch = seal_factor_output(
+        factor="Quality", metrics=_quality_output().query("metric == @metric"), cross_layer=chain
+    )
+    observation = batch.observations[0]
+    assert observation.status == "NOT_APPLICABLE"
+    assert observation.applicability in {"NOT_APPLICABLE", "REVIEW"}
+    assert observation.value is None
+
+
+def test_value_financials_applicability_never_reaches_pass(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path, sector="Financials", industry="Banks")
+    batch = seal_factor_output(
+        factor="Value", metrics=_value_output().query("metric == 'ev_to_ebit'"), cross_layer=chain
+    )
+    observation = batch.observations[0]
+    assert observation.status == "NOT_APPLICABLE"
+    assert observation.applicability == "NOT_APPLICABLE"
+    assert observation.value is None
 
 
 def test_non_calendar_fiscal_year_is_preserved_end_to_end(tmp_path: Path) -> None:
@@ -564,8 +888,7 @@ def test_value_policy_selects_latest_complete_fy_and_ignores_quarter(tmp_path: P
 def test_value_rejects_flows_from_different_periods(tmp_path: Path) -> None:
     chain = _phase56_chain(
         tmp_path,
-        row_overrides={("FY2024", "operating_income"): {
-            "fiscal_period_start": "2024-04-01"}},
+        row_overrides={("FY2024", "operating_income"): {"fiscal_period_start": "2024-04-01"}},
     )
     financial = financial_metrics_from_governed_accounting(chain)
     with pytest.raises(CrossLayerGovernanceError, match="compatible Value flow period"):
@@ -588,28 +911,42 @@ def test_value_rejects_stock_and_flow_temporal_incompatibility(tmp_path: Path) -
 def test_value_rejects_duplicate_temporal_facts_across_fiscal_labels(tmp_path: Path) -> None:
     chain = _phase56_chain(
         tmp_path,
-        periods=(("FY2024", "2024-01-01", "2024-12-31"),
-            ("FY-ALT", "2024-01-01", "2024-12-31")),
+        periods=(("FY2024", "2024-01-01", "2024-12-31"), ("FY-ALT", "2024-01-01", "2024-12-31")),
     )
     financial = financial_metrics_from_governed_accounting(chain)
     with pytest.raises(CrossLayerGovernanceError, match="ambiguous Value flow facts"):
         _value_inputs(chain, financial)
 
 
-@pytest.mark.parametrize("field", [
-    "cross_layer_fingerprint", "universe_snapshot_hash", "membership_hash",
-    "eligible_symbols_hash", "accounting_checksum", "accounting_snapshot_sha256",
-    "fx_checksum", "market_data_checksum",
-])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "cross_layer_fingerprint",
+        "universe_snapshot_hash",
+        "membership_hash",
+        "eligible_symbols_hash",
+        "accounting_checksum",
+        "accounting_snapshot_sha256",
+        "fx_checksum",
+        "market_data_checksum",
+    ],
+)
 def test_phase56_qvm_rejects_any_upstream_identity_mismatch(tmp_path: Path, field: str) -> None:
     chain = _phase56_chain(tmp_path)
     batches = [
-        seal_factor_output(factor="Quality", metrics=_quality_output().query("metric == 'roic'"),
-            cross_layer=chain),
-        seal_factor_output(factor="Value", metrics=_value_output().query("metric == 'fcf_yield'"),
-            cross_layer=chain),
-        seal_factor_output(factor="Momentum", metrics=_momentum_output().query(
-            "metric == 'momentum_12_1'"), cross_layer=chain),
+        seal_factor_output(
+            factor="Quality", metrics=_quality_output().query("metric == 'roic'"), cross_layer=chain
+        ),
+        seal_factor_output(
+            factor="Value",
+            metrics=_value_output().query("metric == 'fcf_yield'"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Momentum",
+            metrics=_momentum_output().query("metric == 'momentum_12_1'"),
+            cross_layer=chain,
+        ),
     ]
     batches[0] = batches[0].model_copy(update={field: "b" * 64})
     with pytest.raises(CrossLayerGovernanceError, match="mismatch"):

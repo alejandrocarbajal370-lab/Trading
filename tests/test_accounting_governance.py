@@ -108,9 +108,9 @@ def test_valid_pit_accounting_contract_and_snapshot() -> None:
 
 def test_typed_financial_fact_rejects_naive_availability() -> None:
     payload = _facts().iloc[0].to_dict()
-    payload["available_at"] = datetime.datetime(
-        2025, 2, 15, 14, 5, tzinfo=datetime.UTC
-    ).replace(tzinfo=None)
+    payload["available_at"] = datetime.datetime(2025, 2, 15, 14, 5, tzinfo=datetime.UTC).replace(
+        tzinfo=None
+    )
     with pytest.raises(ValidationError, match="timezone-aware"):
         FinancialFact.model_validate(payload)
 
@@ -132,9 +132,7 @@ def test_available_at_before_filing_fails() -> None:
 
 def test_restatement_does_not_rewrite_historical_snapshot() -> None:
     governed = _govern()
-    before = governed.snapshot(
-        cutoff=datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC)
-    )
+    before = governed.snapshot(cutoff=datetime.datetime(2025, 3, 1, tzinfo=datetime.UTC))
     after = governed.snapshot(cutoff=AS_OF)
     assert before.loc[before["metric"] == "revenue", "value"].tolist() == [100.0]
     assert before.loc[before["metric"] == "revenue", "revision"].tolist() == [0]
@@ -154,9 +152,9 @@ def test_snapshot_selection_is_temporal_even_when_input_rows_are_reverse_revisio
     assert before_restatement.loc[
         before_restatement["metric"] == "revenue", "revision"
     ].tolist() == [0]
-    assert after_restatement.loc[
-        after_restatement["metric"] == "revenue", "revision"
-    ].tolist() == [1]
+    assert after_restatement.loc[after_restatement["metric"] == "revenue", "revision"].tolist() == [
+        1
+    ]
 
 
 def test_revision_order_diverging_from_availability_fails_closed() -> None:
@@ -229,11 +227,7 @@ def test_missing_fundamentals_fail_or_are_allowed_according_to_policy() -> None:
         source=SOURCE,
         dataset_version=VERSION,
         available_at=AS_OF,
-        lineage=(
-            AccountingLineageEntry(
-                source=SOURCE, dataset="filings", dataset_version="v7"
-            ),
-        ),
+        lineage=(AccountingLineageEntry(source=SOURCE, dataset="filings", dataset_version="v7"),),
         as_of=AS_OF,
         missing_policy=MissingFundamentalsPolicy(action="ALLOW"),
     )

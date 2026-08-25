@@ -60,9 +60,7 @@ def _update_audit(
     checks["live_execution"] = "DISABLED"
     checks["trade_decision"] = "NO_TRADE"
     manifest["overall_status"] = overall_status
-    manifest["warnings"] = sum(
-        check == "WARNING" for check in (financial_status, quality_status)
-    )
+    manifest["warnings"] = sum(check == "WARNING" for check in (financial_status, quality_status))
     manifest["critical_errors"] = sum(
         check == "FAIL" for check in (financial_status, quality_status)
     )
