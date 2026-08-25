@@ -191,9 +191,44 @@ def test_overlay_and_cohort_policy_stale_hashes_are_rejected() -> None:
     with pytest.raises(ValidationError, match="overlay policy hash mismatch"):
         OverlayPolicy(**overlay)
     cohort = COHORT_POLICY.model_dump(mode="python")
-    cohort["minimum_eligible_count"] = 99
-    with pytest.raises(ValidationError, match="cohort policy hash mismatch"):
+    cohort["quintile_minimum_eligible_count"] = 49
+    with pytest.raises(ValidationError, match="(cohort policy hash mismatch|eligibility thresholds)"):
         CohortPolicy(**cohort)
+
+
+def test_cohort_mode_mutation_with_stale_hash_is_rejected() -> None:
+    payload = COHORT_POLICY.model_dump(mode="python")
+    payload["cohort_mode_hierarchy"] = ("QUINTILES", "DECILES", "NONE")
+    with pytest.raises(ValidationError, match="cohort mode hierarchy"):
+        CohortPolicy(**payload)
+
+
+def test_valid_cohort_policy_change_updates_policy_and_artifact_identity() -> None:
+    payload = COHORT_POLICY.model_dump(mode="python")
+    original_policy_hash = payload["policy_hash"]
+    payload["minimum_complete_fraction"] = 0.65
+    payload["policy_hash"] = typed_hash(
+        {key: value for key, value in payload.items() if key != "policy_hash"}
+    )
+    changed = CohortPolicy(**payload)
+    assert changed.policy_hash != original_policy_hash
+    assert typed_hash({"cohort_policy": changed}) != typed_hash(
+        {"cohort_policy": COHORT_POLICY}
+    )
+
+
+def test_valid_overlay_payload_change_updates_policy_and_artifact_identity() -> None:
+    payload = OVERLAY_POLICY.model_dump(mode="python")
+    original_policy_hash = payload["policy_hash"]
+    payload["leverage_review_threshold"] = 4.5
+    payload["policy_hash"] = typed_hash(
+        {key: value for key, value in payload.items() if key != "policy_hash"}
+    )
+    changed = OverlayPolicy(**payload)
+    assert changed.policy_hash != original_policy_hash
+    assert typed_hash({"overlay_policy": changed}) != typed_hash(
+        {"overlay_policy": OVERLAY_POLICY}
+    )
 
 
 def _composite(index: int, score: float, overlay: str = "PASS") -> QVMCompositeResult:
@@ -204,7 +239,7 @@ def _composite(index: int, score: float, overlay: str = "PASS") -> QVMCompositeR
     })
 
 
-def test_cohort_boundary_ties_expand_and_symbol_is_display_only() -> None:
+def test_decile_boundary_ties_expand_and_symbol_is_display_only() -> None:
     scores = [100 - i for i in range(100)]
     for index in range(8, 12):
         scores[index] = 91
@@ -215,14 +250,79 @@ def test_cohort_boundary_ties_expand_and_symbol_is_display_only() -> None:
     assert len({item.economic_rank for item in tied}) == 1
 
 
+def test_quintile_boundary_ties_expand_without_split() -> None:
+    scores = [60 - i for i in range(60)]
+    for index in range(10, 14):
+        scores[index] = 49
+    cohorts, status, _ = _cohorts([_composite(i, score) for i, score in enumerate(scores)])
+    assert status == "PASS"
+    assert all(item.bucket.startswith("QUINTILE_") for item in cohorts)
+    assert sum(item.cohort == "TOP" for item in cohorts) == 14
+    tied = [item for item in cohorts if item.symbol in {f"S{i:03d}" for i in range(10, 14)}]
+    assert len({item.economic_rank for item in tied}) == 1
+
+
 def test_review_is_not_publishable_in_top_cohort() -> None:
     inputs = [_composite(i, 100 - i, "REVIEW" if i == 0 else "PASS") for i in range(100)]
     cohorts, _, _ = _cohorts(inputs)
     assert next(item for item in cohorts if item.symbol == "S000").cohort is None
 
 
-def test_cohort_publication_fails_below_one_hundred() -> None:
-    cohorts, status, reason = _cohorts([_composite(i, 60 - i) for i in range(60)])
+@pytest.mark.parametrize("count", [50, 51, 75, 99])
+def test_quintile_fallback_for_fifty_through_ninety_nine(count: int) -> None:
+    cohorts, status, reason = _cohorts(
+        [_composite(i, count - i) for i in range(count)]
+    )
+    assert status == "PASS"
+    assert reason is None
+    assert all(item.bucket.startswith("QUINTILE_") for item in cohorts)
+
+
+@pytest.mark.parametrize("count", [100, 101, 125])
+def test_deciles_from_one_hundred(count: int) -> None:
+    cohorts, status, reason = _cohorts(
+        [_composite(i, count - i) for i in range(count)]
+    )
+    assert status == "PASS"
+    assert reason is None
+    assert all(item.bucket.startswith("DECILE_") for item in cohorts)
+
+
+def test_cohort_publication_fails_below_fifty() -> None:
+    cohorts, status, reason = _cohorts([_composite(i, 49 - i) for i in range(49)])
     assert cohorts == []
     assert status == "FAIL"
-    assert "100" in str(reason)
+    assert "50" in str(reason)
+
+
+def test_overlay_policy_requires_all_four_deferred_controls_even_when_rehashed() -> None:
+    assert {item.control_id for item in OVERLAY_POLICY.deferred_controls} == {
+        "dilution", "restatement-materiality", "FCF-history", "corporate-action",
+    }
+    for omitted in range(4):
+        payload = OVERLAY_POLICY.model_dump(mode="python")
+        payload["deferred_controls"] = tuple(
+            item for index, item in enumerate(payload["deferred_controls"]) if index != omitted
+        )
+        payload["policy_hash"] = typed_hash(
+            {key: value for key, value in payload.items() if key != "policy_hash"}
+        )
+        with pytest.raises(ValidationError, match="missing required deferred controls"):
+            OverlayPolicy(**payload)
+
+
+def test_deferred_overlay_control_cannot_be_activated_without_contract() -> None:
+    payload = OVERLAY_POLICY.model_dump(mode="python")
+    payload["deferred_controls"][0]["state"] = "ACTIVE"
+    payload["policy_hash"] = typed_hash(
+        {key: value for key, value in payload.items() if key != "policy_hash"}
+    )
+    with pytest.raises(ValidationError, match="DEFERRED"):
+        OverlayPolicy(**payload)
+
+
+def test_deferred_control_reason_stale_hash_is_rejected() -> None:
+    payload = OVERLAY_POLICY.model_dump(mode="python")
+    payload["deferred_controls"][0]["reason"] = "changed"
+    with pytest.raises(ValidationError):
+        OverlayPolicy(**payload)

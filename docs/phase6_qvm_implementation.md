@@ -27,12 +27,17 @@ automatable subset of the capital-preservation overlay. Every typed result is fr
 a canonical content hash. The final artifact binds admission, sealed lineage, factor batch,
 peer-assignment, active-metric, policy, runtime, and output identities.
 
-The dilution, restatement-materiality, FCF-history, and corporate-action overlay checks remain
+The overlay policy payload explicitly enumerates dilution, restatement-materiality, FCF-history,
+and corporate-action as `DEFERRED` with a missing-governed-PIT-contract/provider reason. Those
+entries are part of the versioned canonical policy hash and final artifact lineage. The checks remain
 fail-closed upstream or unautomated because their governed PIT contracts are explicitly deferred
 by the design. No real provider is treated as ready; successful fixtures remain synthetic contract
 validation only.
 
 This change adds no portfolio construction, position sizing, orders, broker messages, execution,
 signals, backtesting, performance evaluation, outcome-driven tuning, or weight optimization.
-Every composite and cohort retains `trade_decision=NO_TRADE`, `live_execution_enabled=false`,
+Research cohorts use deciles for at least 100 eligible companies, quintiles as the mandatory
+fallback for 50--99, and publish no cohorts below 50. Equal economic values are never split at a
+boundary; symbol ordering is display-only. Every composite and cohort retains
+`trade_decision=NO_TRADE`, `live_execution_enabled=false`,
 `signals_generated=false`, and `research_only=true`.

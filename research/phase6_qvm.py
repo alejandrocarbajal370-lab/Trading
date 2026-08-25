@@ -47,6 +47,19 @@ class ResearchModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class DeferredOverlayControl(ResearchModel):
+    control_id: Literal[
+        "dilution",
+        "restatement-materiality",
+        "FCF-history",
+        "corporate-action",
+    ]
+    state: Literal["DEFERRED"] = "DEFERRED"
+    reason: Literal["MISSING_GOVERNED_PIT_CONTRACT_OR_PROVIDER"] = (
+        "MISSING_GOVERNED_PIT_CONTRACT_OR_PROVIDER"
+    )
+
+
 class OverlayPolicy(ResearchModel):
     policy_version: Literal["capital-preservation-overlay-v1"] = OVERLAY_POLICY_VERSION
     leverage_review_threshold: float = 4.0
@@ -58,11 +71,12 @@ class OverlayPolicy(ResearchModel):
     cfo_review_flag: Literal["CFO_CONVERSION_REVIEW"] = "CFO_CONVERSION_REVIEW"
     accrual_review_flag: Literal["ACCRUAL_REVIEW"] = "ACCRUAL_REVIEW"
     missing_metric_semantics: Literal["NO_FLAG"] = "NO_FLAG"
-    deferred_controls: tuple[str, ...] = (
-        "provider-dependent-distress-controls",
-        "provider-dependent-liquidity-controls",
+    deferred_controls: tuple[DeferredOverlayControl, ...] = (
+        DeferredOverlayControl(control_id="dilution"),
+        DeferredOverlayControl(control_id="restatement-materiality"),
+        DeferredOverlayControl(control_id="FCF-history"),
+        DeferredOverlayControl(control_id="corporate-action"),
     )
-    deferred_controls_state: Literal["NOT_EVALUATED"] = "NOT_EVALUATED"
     outcome_mapping: tuple[str, ...] = ("PASS", "REVIEW", "BLOCK")
     governance_position: Literal["AFTER_COMPOSITE_ELIGIBILITY"] = (
         "AFTER_COMPOSITE_ELIGIBILITY"
@@ -71,6 +85,11 @@ class OverlayPolicy(ResearchModel):
 
     @model_validator(mode="after")
     def verify_policy_hash(self, info: ValidationInfo) -> OverlayPolicy:
+        required = {"dilution", "restatement-materiality", "FCF-history", "corporate-action"}
+        if {control.control_id for control in self.deferred_controls} != required or len(
+            self.deferred_controls
+        ) != len(required):
+            raise ValueError("overlay policy missing required deferred controls")
         if not (info.context and info.context.get("skip_hash")) and typed_hash(
             self.model_dump(mode="python", exclude={"policy_hash"})
         ) != self.policy_hash:
@@ -80,18 +99,29 @@ class OverlayPolicy(ResearchModel):
 
 class CohortPolicy(ResearchModel):
     policy_version: Literal["phase6-research-cohorts-v1"] = COHORT_POLICY_VERSION
-    bucket_count: Literal[10] = 10
-    top_fraction: float = 0.10
+    cohort_mode_hierarchy: tuple[Literal["DECILES", "QUINTILES", "NONE"], ...] = (
+        "DECILES", "QUINTILES", "NONE",
+    )
+    decile_minimum_eligible_count: int = 100
+    quintile_minimum_eligible_count: int = 50
+    decile_bucket_count: Literal[10] = 10
+    quintile_bucket_count: Literal[5] = 5
+    decile_top_fraction: float = 0.10
+    quintile_top_fraction: float = 0.20
     middle_lower_fraction: float = 0.40
     middle_upper_fraction: float = 0.60
-    bottom_fraction: float = 0.10
-    cohort_definitions: tuple[str, ...] = ("TOP_10_PERCENT", "MIDDLE_40_60", "BOTTOM_10_PERCENT")
+    decile_bottom_fraction: float = 0.10
+    quintile_bottom_fraction: float = 0.20
+    cohort_definitions: tuple[str, ...] = (
+        "DECILES_TOP_10_MIDDLE_40_60_BOTTOM_10",
+        "QUINTILES_TOP_20_MIDDLE_40_60_BOTTOM_20_FALLBACK",
+        "NONE_BELOW_50",
+    )
     tie_boundary_policy: Literal["EXPAND_DO_NOT_SPLIT_EQUAL_COMPOSITES"] = (
         "EXPAND_DO_NOT_SPLIT_EQUAL_COMPOSITES"
     )
     economic_order: tuple[str, ...] = ("composite", "quality", "value", "momentum")
     display_tiebreaker: Literal["SYMBOL_ONLY"] = "SYMBOL_ONLY"
-    minimum_eligible_count: int = 100
     minimum_complete_fraction: float = 0.60
     top_review_semantics: Literal["EXCLUDE_FROM_TOP"] = "EXCLUDE_FROM_TOP"
     research_only: Literal[True] = True
@@ -99,6 +129,13 @@ class CohortPolicy(ResearchModel):
 
     @model_validator(mode="after")
     def verify_policy_hash(self, info: ValidationInfo) -> CohortPolicy:
+        if self.cohort_mode_hierarchy != ("DECILES", "QUINTILES", "NONE"):
+            raise ValueError("invalid cohort mode hierarchy")
+        if (
+            self.decile_minimum_eligible_count != 100
+            or self.quintile_minimum_eligible_count != 50
+        ):
+            raise ValueError("invalid cohort eligibility thresholds")
         if not (info.context and info.context.get("skip_hash")) and typed_hash(
             self.model_dump(mode="python", exclude={"policy_hash"})
         ) != self.policy_hash:
@@ -551,10 +588,20 @@ def _cohorts(
 ) -> tuple[list[ResearchCohortResult], str, str | None]:
     eligible = [item for item in composites if item.model_status == "ELIGIBLE" and item.composite is not None]
     governed_count = len(composites)
-    if len(eligible) < policy.minimum_eligible_count or (
+    if len(eligible) < policy.quintile_minimum_eligible_count or (
         governed_count and len(eligible) / governed_count < policy.minimum_complete_fraction
     ):
-        return [], "FAIL", "requires at least 100 and 60% complete composite scores"
+        return [], "FAIL", "requires at least 50 and 60% complete composite scores"
+    if len(eligible) >= policy.decile_minimum_eligible_count:
+        mode = "DECILE"
+        bucket_count = policy.decile_bucket_count
+        top_fraction = policy.decile_top_fraction
+        bottom_fraction = policy.decile_bottom_fraction
+    else:
+        mode = "QUINTILE"
+        bucket_count = policy.quintile_bucket_count
+        top_fraction = policy.quintile_top_fraction
+        bottom_fraction = policy.quintile_bottom_fraction
     ordered = sorted(eligible, key=lambda item: (
         -float(item.composite), -float(item.quality), -float(item.value),
         -float(item.momentum), item.symbol,
@@ -563,13 +610,13 @@ def _cohorts(
     ranks = _midranks(economic_values)
     output = []
     n = len(ordered)
-    top_cutoff = float(ordered[math.ceil(n * policy.top_fraction) - 1].composite)
+    top_cutoff = float(ordered[math.ceil(n * top_fraction) - 1].composite)
     middle_high = float(ordered[math.floor(n * policy.middle_lower_fraction)].composite)
     middle_low = float(ordered[math.ceil(n * policy.middle_upper_fraction) - 1].composite)
-    bottom_cutoff = float(ordered[math.floor(n * (1 - policy.bottom_fraction))].composite)
+    bottom_cutoff = float(ordered[math.floor(n * (1 - bottom_fraction))].composite)
     for position, (item, rank) in enumerate(zip(ordered, ranks, strict=True), start=1):
         percentile = (rank - 0.5) / n
-        decile = min(policy.bucket_count, int((rank - 1) * policy.bucket_count / n) + 1)
+        bucket = min(bucket_count, int((rank - 1) * bucket_count / n) + 1)
         composite = float(item.composite)
         cohort = (
             "TOP" if composite >= top_cutoff else
@@ -580,7 +627,7 @@ def _cohorts(
             cohort = None
         output.append(_hashed(ResearchCohortResult, {
             "symbol": item.symbol, "display_position": position, "economic_rank": rank,
-            "percentile": percentile, "bucket": f"DECILE_{decile}", "cohort": cohort,
+            "percentile": percentile, "bucket": f"{mode}_{bucket}", "cohort": cohort,
             "overlay": item.overlay,
         }))
     return output, "PASS", None
