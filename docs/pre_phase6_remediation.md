@@ -78,6 +78,29 @@ reported without brittle thresholds:
 python -m research.pre_phase6_scale_smoke --securities 5000
 ```
 
+The benchmark uses process peak RSS rather than `tracemalloc`: allocation tracing was measured to
+dominate the workload and made the reported pipeline runtime misleading. Stage timings identify
+fixture generation, Universe, Market Data, FX, Accounting, cross-layer integration, factors, and
+QVM/admission independently. The 5,000-security case remains explicitly **not demonstrated**.
+
+## Fourth-remediation integrity closure
+
+- Every observation factor must equal its sealed batch factor at construction and at final
+  admission. Mixed-factor content fails even if inner and outer hashes are recomputed.
+- Alpha Vantage adjusted history has no provider confidence. Policy
+  `alpha-vantage-adjusted-history-observable-fields-v1` derives a conservative `0.90` ceiling only
+  after required price and corporate-action fields validate; it never emits synthetic `1.0`.
+- `research-runtime-v1` recomputes its fingerprint from every runtime field during validation.
+  `model_copy` mutations with stale fingerprints fail when batches are consumed.
+- Governance order is fixed by `pre-phase6-governance-order-v1` and included in the governed batch
+  identity. Reordering changes identity; stale or unsupported order fails closed.
+- Blind readiness states are distinct: `SYNTHETIC_CONTRACT_VALIDATED`,
+  `INSUFFICIENT_REAL_DATA`, and `REAL_DATA_READY`. Real readiness requires content-addressed provider
+  evidence, exact effective symbols, calculated history counts, peer membership, exact batch
+  bindings, and complete provider kinds. Boolean declarations cannot produce real-data readiness.
+- The admission boundary reparses every batch and rechecks identities, hashes, runtime, Q/V/M
+  uniqueness, exact symbols, status, applicability, finite values, confidence, and safety flags.
+
 ```bash
 python -m venv .venv
 source .venv/bin/activate

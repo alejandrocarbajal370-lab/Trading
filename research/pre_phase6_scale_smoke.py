@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import resource
+import sys
 import time
-import tracemalloc
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
@@ -138,12 +139,20 @@ def run_synthetic_scale_smoke(
 ) -> dict[str, Any]:
     """Exercise the complete research-only path without scores, outcomes, or execution."""
     started = time.perf_counter()
-    tracemalloc.start()
+    stages: dict[str, float] = {}
+
+    def mark(stage: str, since: float) -> float:
+        now = time.perf_counter()
+        stages[stage] = now - since
+        return now
+
+    stage_started = started
     workdir.mkdir(parents=True, exist_ok=True)
     symbols = _symbols(security_count)
     universe = _universe(symbols)
     market_frame = _market(symbols)
     accounting_frame = _accounting(symbols)
+    stage_started = mark("fixture_generation", stage_started)
     if reorder_inputs:
         universe = universe.iloc[::-1].reset_index(drop=True)
         market_frame = market_frame.iloc[::-1].reset_index(drop=True)
@@ -158,6 +167,7 @@ def run_synthetic_scale_smoke(
         output_root=workdir / "universe_validation",
         snapshot_root=workdir / "universe_snapshots",
     ).snapshot_dir
+    stage_started = mark("universe", stage_started)
     market = govern_market_data(
         market_frame,
         source="synthetic-scale-smoke",
@@ -172,6 +182,7 @@ def run_synthetic_scale_smoke(
         as_of=AS_OF,
         maximum_staleness_sessions=0,
     )
+    stage_started = mark("market_data", stage_started)
     fx = govern_fx(
         pd.DataFrame(
             [
@@ -196,6 +207,7 @@ def run_synthetic_scale_smoke(
         as_of=AS_OF,
         staleness_policy=FXStalenessPolicy(maximum_sessions=120),
     )
+    stage_started = mark("fx", stage_started)
     accounting = govern_accounting(
         accounting_frame,
         source="synthetic-scale-smoke",
@@ -210,6 +222,7 @@ def run_synthetic_scale_smoke(
         ),
         as_of=AS_OF,
     )
+    stage_started = mark("accounting", stage_started)
     cross_layer = integrate_governed_inputs(
         universe_snapshot_dir=snapshot,
         market_data=market,
@@ -220,6 +233,7 @@ def run_synthetic_scale_smoke(
         required_fundamentals=set(ACCOUNTING_VALUES),
         reference_symbols={"SPY"},
     )
+    stage_started = mark("cross_layer", stage_started)
     _, quality = evaluate_governed_quality(
         cross_layer=cross_layer, experiment_id="synthetic-scale-quality"
     )
@@ -231,11 +245,15 @@ def run_synthetic_scale_smoke(
         experiment_id="synthetic-scale-momentum",
         benchmark_symbol="SPY",
     )
+    stage_started = mark("factors", stage_started)
     batches = (quality, value, momentum)
     qvm = evaluate_governed_qvm(batches=batches, expected=cross_layer)
     admission = admit_sealed_for_phase6(batches=batches)
-    peak = tracemalloc.get_traced_memory()[1]
-    tracemalloc.stop()
+    mark("qvm_and_admission", stage_started)
+    # Process peak RSS has negligible observer overhead, unlike tracemalloc which
+    # multiplied the benchmark runtime and made the scale result misleading.
+    peak_rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    peak = int(peak_rss if sys.platform == "darwin" else peak_rss * 1024)
     return {
         "schema_version": SCALE_SMOKE_VERSION,
         "security_count": security_count,
@@ -248,6 +266,7 @@ def run_synthetic_scale_smoke(
         "qvm_governance_mode": qvm.health["governance_mode"],
         "runtime_seconds_observed": time.perf_counter() - started,
         "peak_memory_bytes_observed": peak,
+        "stage_runtime_seconds": stages,
         "scores_calculated": False,
         "ranking_calculated": False,
         "portfolio_constructed": False,

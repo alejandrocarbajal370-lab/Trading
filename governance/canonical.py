@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 CANONICALIZATION_VERSION = "typed-canonical-json-v1"
 RUNTIME_FINGERPRINT_VERSION = "research-runtime-v1"
@@ -87,6 +87,13 @@ class RuntimeFingerprint(BaseModel):
     platform: str
     implementation: str
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def verify_fingerprint(self) -> RuntimeFingerprint:
+        identity = self.model_dump(mode="python", exclude={"fingerprint"})
+        if typed_hash(identity) != self.fingerprint:
+            raise ValueError("runtime fingerprint does not match its canonical payload")
+        return self
 
 
 def runtime_fingerprint(repo_root: Path | None = None) -> RuntimeFingerprint:

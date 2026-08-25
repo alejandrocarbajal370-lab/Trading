@@ -135,6 +135,54 @@ def test_provider_contract_and_blind_harness_are_honest_about_external_data() ->
     assert report.scores_calculated is False
 
 
+def test_provider_flags_cannot_self_declare_real_data_ready() -> None:
+    declarative = ProviderSnapshot(
+        kind=ProviderKind.FUNDAMENTALS_PIT,
+        source="claimed-provider",
+        dataset_version="v1",
+        canonical_id="claimed:without-evidence",
+        checksum="a" * 64,
+        available_at=AS_OF,
+        pit_semantics="claimed",
+        raw_snapshot_reference="claimed://snapshot",
+        raw_snapshot_retention="claimed",
+        lineage=("claimed",),
+        real_data=True,
+        licensed_for_use=True,
+        bound_factor_batch_hashes=("b" * 64,),
+        coverage_symbols_hash="c" * 64,
+        history_sufficiency_verified=True,
+    )
+    assert declarative.operationally_ready is False
+    report = run_blind_coverage(batches=(), providers=(declarative,), as_of=AS_OF)
+    assert report.state == ReadinessState.INSUFFICIENT_REAL_DATA
+    assert report.state != ReadinessState.REAL_DATA_READY
+
+
+def test_provider_snapshot_checksum_and_canonical_id_bind_effective_evidence() -> None:
+    values = {
+        "kind": ProviderKind.FX,
+        "source": "evidence-provider",
+        "dataset_version": "v1",
+        "canonical_id": "provider-snapshot:" + "a" * 64,
+        "checksum": "a" * 64,
+        "available_at": AS_OF,
+        "pit_semantics": "known-by available_at",
+        "raw_snapshot_reference": "evidence://snapshot",
+        "raw_snapshot_retention": "immutable",
+        "lineage": ("raw-snapshot",),
+        "real_data": True,
+        "licensed_for_use": True,
+        "observed_symbols": ("AAA",),
+        "observed_metrics": ("EUR/USD",),
+        "history_rows_by_symbol": {"AAA": 252},
+        "peer_membership_by_symbol": {"AAA": "Machinery"},
+        "snapshot_payload_hash": "a" * 64,
+    }
+    with pytest.raises(ValidationError, match="payload hash mismatch"):
+        ProviderSnapshot(**values)
+
+
 def test_pre_phase6_admission_rejects_legacy() -> None:
     with pytest.raises(TypeError, match="GovernedFactorBatch"):
         admit_sealed_for_phase6(batches=(object(),))  # type: ignore[arg-type]

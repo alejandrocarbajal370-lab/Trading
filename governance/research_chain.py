@@ -44,6 +44,15 @@ class ResearchChainModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+GOVERNANCE_ORDER_VERSION = "pre-phase6-governance-order-v1"
+GOVERNANCE_ORDER = (
+    "confidence",
+    "applicability_activation",
+    "peer_fallback",
+    "coverage",
+)
+
+
 class GovernedFactorBatch(ResearchChainModel):
     identity_schema_version: Literal["governed-factor-batch-identity-v2"] = (
         "governed-factor-batch-identity-v2"
@@ -82,12 +91,10 @@ class GovernedFactorBatch(ResearchChainModel):
     observations: tuple[FactorObservation, ...]
     runtime: RuntimeFingerprint
     batch_identity_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    governance_order: tuple[str, ...] = (
-        "confidence",
-        "applicability_activation",
-        "peer_fallback",
-        "coverage",
+    governance_order_version: Literal["pre-phase6-governance-order-v1"] = (
+        GOVERNANCE_ORDER_VERSION
     )
+    governance_order: tuple[str, ...] = GOVERNANCE_ORDER
     phase6_eligible: Literal[True] = True
     trade_decision: Literal["NO_TRADE"] = "NO_TRADE"
     live_execution_enabled: Literal[False] = False
@@ -104,6 +111,10 @@ class GovernedFactorBatch(ResearchChainModel):
             raise ValueError("factor as_of must be timezone-aware")
         if any(item.as_of != self.as_of.date() for item in self.observations):
             raise ValueError("factor observation as_of mismatch")
+        if any(item.factor != self.factor for item in self.observations):
+            raise ValueError("factor observation does not match governed batch factor")
+        if self.governance_order != GOVERNANCE_ORDER:
+            raise ValueError("unsupported governance order")
         if factor_dataset_hash(self.observations) != self.factor_dataset_hash:
             raise ValueError("factor dataset hash mismatch")
         expected_peer_hash = peer_assignment_hash(
@@ -156,10 +167,15 @@ def governed_factor_batch_identity(batch: GovernedFactorBatch | dict[str, Any]) 
         "peer_assignment_hash",
         "factor_dataset_hash",
         "runtime",
+        "governance_order_version",
+        "governance_order",
     )
+    identity_values = dict(values)
+    identity_values.setdefault("governance_order_version", GOVERNANCE_ORDER_VERSION)
+    identity_values.setdefault("governance_order", GOVERNANCE_ORDER)
     identity = {
         "schema_version": "governed-factor-batch-identity-v2",
-        **{key: values[key] for key in fields if key in values},
+        **{key: identity_values[key] for key in fields if key in identity_values},
     }
     return typed_hash(identity)
 

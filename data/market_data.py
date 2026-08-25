@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
@@ -151,29 +150,23 @@ class MarketDataDataset:
 
 
 def canonical_market_data_checksum(frame: pd.DataFrame) -> str:
-    """Hash semantic content, independent of input row order or dataframe index."""
+    """Typed/versioned semantic hash, independent of row order and dataframe index."""
+    # Local import avoids the governance package's integration re-export cycle.
+    from governance.canonical import typed_frame_hash
     missing = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
     if missing:
         raise MarketDataGovernanceError(
             f"market data missing required columns: {', '.join(missing)}"
         )
-    ordered_columns = [*REQUIRED_COLUMNS, *sorted(set(frame.columns) - set(REQUIRED_COLUMNS))]
-    canonical = frame.loc[:, ordered_columns].copy()
+    canonical = frame.copy(deep=True)
     canonical["symbol"] = canonical["symbol"].astype(str).str.strip().str.upper()
-    canonical["date"] = pd.to_datetime(canonical["date"], errors="raise").dt.date.astype(str)
-    available = pd.to_datetime(canonical["available_at"], errors="raise", utc=True)
-    canonical["available_at"] = available.map(lambda value: value.isoformat())
+    canonical["date"] = pd.to_datetime(canonical["date"], errors="raise").dt.date
+    canonical["available_at"] = pd.to_datetime(
+        canonical["available_at"], errors="raise", utc=True
+    )
     for column in ("raw_close", "adjusted_close", "adjustment_factor"):
-        canonical[column] = pd.to_numeric(canonical[column], errors="raise").map(
-            lambda value: format(float(value), ".17g")
-        )
-    for column in set(canonical.columns) - set(REQUIRED_COLUMNS):
-        canonical[column] = canonical[column].map(
-            lambda value: "" if pd.isna(value) else str(value)
-        )
-    canonical = canonical.fillna("").sort_values(["symbol", "date"], kind="stable")
-    payload = canonical.to_csv(index=False, lineterminator="\n").encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+        canonical[column] = pd.to_numeric(canonical[column], errors="raise").astype("float64")
+    return typed_frame_hash(canonical, ["symbol", "date"])
 
 
 def govern_market_data(

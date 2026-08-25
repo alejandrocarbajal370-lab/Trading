@@ -663,6 +663,35 @@ def test_pre_phase6_admission_emits_research_only_identity_artifact(tmp_path: Pa
     assert artifact.live_execution_enabled is False
 
 
+@pytest.mark.parametrize("batch_index,new_factor", [(0, "Value"), (1, "Momentum"), (2, "Quality")])
+def test_admission_rejects_observation_factor_mismatch(
+    tmp_path: Path, batch_index: int, new_factor: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = list(batches[batch_index].observations)
+    observations[0] = observations[0].model_copy(update={"factor": new_factor})
+    changed = tuple(observations)
+    # Deliberately recompute the inner dataset hash and outer identity: the semantic
+    # batch/observation mismatch must still fail closed at the consumer boundary.
+    batches[batch_index] = _reseal(
+        batches[batch_index], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises((ValueError, ValidationError), match="batch factor|mismatched observation"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_governance_order_is_versioned_hashed_and_revalidated(tmp_path: Path) -> None:
+    batches = list(_admission_batches(tmp_path))
+    original_hash = batches[0].batch_identity_hash
+    mutated = tuple(reversed(batches[0].governance_order))
+    stale = batches[0].model_copy(update={"governance_order": mutated})
+    batches[0] = stale
+    with pytest.raises((ValueError, ValidationError), match="governance order|identity"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+    values = {**stale.model_dump(mode="python"), "governance_order": mutated}
+    assert governed_factor_batch_identity(values) != original_hash
+
+
 @pytest.mark.parametrize(
     "field",
     [
@@ -727,7 +756,29 @@ def test_admission_rejects_low_confidence_nonfinite_and_unavailable_runtime(
     batches = list(_admission_batches(tmp_path / "runtime"))
     unavailable = batches[0].runtime.model_copy(update={"git_commit_sha": "UNAVAILABLE"})
     batches[0] = _reseal(batches[0], runtime=unavailable)
-    with pytest.raises(ValueError, match="UNAVAILABLE"):
+    with pytest.raises(ValueError, match="UNAVAILABLE|runtime fingerprint"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+@pytest.mark.parametrize(
+    "field,changed",
+    [
+        ("git_commit_sha", "b" * 40),
+        ("requirements_lock_sha256", "b" * 64),
+        ("python_version", "0.0-mutated"),
+        ("pandas_version", "0.0-mutated"),
+        ("numpy_version", "0.0-mutated"),
+        ("platform", "mutated-platform"),
+        ("implementation", "mutated-implementation"),
+    ],
+)
+def test_admission_rejects_stale_runtime_fingerprint_payload(
+    tmp_path: Path, field: str, changed: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    runtime = batches[0].runtime.model_copy(update={field: changed})
+    batches[0] = _reseal(batches[0], runtime=runtime)
+    with pytest.raises((ValueError, ValidationError), match="runtime fingerprint"):
         admit_sealed_for_phase6(batches=tuple(batches))
 
 

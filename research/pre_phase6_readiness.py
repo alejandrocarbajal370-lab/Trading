@@ -23,8 +23,8 @@ ADMISSION_CONTRACT_VERSION = "sealed-pre-phase6-admission-v2"
 
 
 class ReadinessState(StrEnum):
-    READY = "READY"
-    NOT_RUN = "NOT_RUN"
+    REAL_DATA_READY = "REAL_DATA_READY"
+    SYNTHETIC_CONTRACT_VALIDATED = "SYNTHETIC_CONTRACT_VALIDATED"
     INSUFFICIENT_REAL_DATA = "INSUFFICIENT_REAL_DATA"
 
 
@@ -73,6 +73,13 @@ def run_blind_coverage(
     started = time.perf_counter()
     tracemalloc.start()
     failures: list[str] = []
+    # Reparse at the consumer boundary; model_copy/model_construct cannot carry trust.
+    providers = tuple(
+        ProviderSnapshot.model_validate(item.model_dump(mode="python")) for item in providers
+    )
+    batches = tuple(
+        GovernedFactorBatch.model_validate(item.model_dump(mode="python")) for item in batches
+    )
     by_kind = {item.kind: item for item in providers}
     if len(by_kind) != len(providers):
         failures.append("provider kinds must be unique")
@@ -88,6 +95,13 @@ def run_blind_coverage(
             failures.append(f"{provider.kind.value} coverage identity mismatch")
         if not provider.history_sufficiency_verified:
             failures.append(f"{provider.kind.value} lacks verified history sufficiency")
+        observed_symbols = {symbol.strip().upper() for symbol in provider.observed_symbols}
+        if observed_symbols != expected_symbols:
+            failures.append(f"{provider.kind.value} effective symbol coverage mismatch")
+        if set(provider.history_rows_by_symbol) != observed_symbols:
+            failures.append(f"{provider.kind.value} history evidence is incomplete")
+        if set(provider.peer_membership_by_symbol) != observed_symbols:
+            failures.append(f"{provider.kind.value} peer evidence is incomplete")
     gaps = sorted(
         kind.value
         for kind in REQUIRED_REAL_PROVIDERS
@@ -124,13 +138,12 @@ def run_blind_coverage(
     )
     peak = tracemalloc.get_traced_memory()[1]
     tracemalloc.stop()
-    state = (
-        ReadinessState.READY
-        if not gaps and not failures and not synthetic_contract_test
-        else ReadinessState.INSUFFICIENT_REAL_DATA
-        if gaps
-        else ReadinessState.NOT_RUN
-    )
+    if synthetic_contract_test and not gaps and not failures:
+        state = ReadinessState.SYNTHETIC_CONTRACT_VALIDATED
+    elif not gaps and not failures:
+        state = ReadinessState.REAL_DATA_READY
+    else:
+        state = ReadinessState.INSUFFICIENT_REAL_DATA
     return BlindCoverageReport(
         state=state,
         as_of=as_of,
@@ -242,6 +255,8 @@ def admit_sealed_for_phase6(*, batches: tuple[GovernedFactorBatch, ...]) -> PreP
         raise ValueError("eligible_symbols_hash does not match expected symbols")
     admitted_hashes: list[str] = []
     for batch in validated:
+        if any(observation.factor != batch.factor for observation in batch.observations):
+            raise ValueError(f"{batch.factor} contains a mismatched observation factor")
         if factor_dataset_hash(batch.observations) != batch.factor_dataset_hash:
             raise ValueError(f"{batch.factor} factor_dataset_hash mismatch")
         if governed_factor_batch_identity(batch) != batch.batch_identity_hash:
@@ -250,6 +265,10 @@ def admit_sealed_for_phase6(*, batches: tuple[GovernedFactorBatch, ...]) -> PreP
             raise ValueError(f"{batch.factor} critical git runtime fingerprint is UNAVAILABLE")
         if batch.runtime.requirements_lock_sha256 == "UNAVAILABLE":
             raise ValueError(f"{batch.factor} critical lock runtime fingerprint is UNAVAILABLE")
+        # Re-validation above recomputes both runtime and batch identities. Keep this
+        # explicit consumer check to make the final boundary auditable.
+        if typed_hash(batch.runtime.model_dump(exclude={"fingerprint"})) != batch.runtime.fingerprint:
+            raise ValueError(f"{batch.factor} runtime fingerprint payload mismatch")
         if len({item.runtime.fingerprint for item in validated}) != 1:
             raise ValueError("admission runtime/code fingerprint mismatch")
         symbols = {item.symbol.strip().upper() for item in batch.observations}
