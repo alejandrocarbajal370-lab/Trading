@@ -55,13 +55,13 @@ def test_real_sec_ingestion_preserves_raw_and_acceptance_time(tmp_path):
     assert result.licensed_for_use is False
     assert result.readiness_state == "OPEN_EXTERNAL_LEGAL_APPROVAL"
     assert len(result.raw_manifests) == 2
-    for path in tmp_path.rglob("manifest.json"):
+    for path in tmp_path.rglob("acquisitions/*.json"):
         RawSnapshotStore.verify(path)
 
 
 def test_future_filing_is_not_visible_and_no_data_fails_closed(tmp_path):
     submissions, facts = _payloads(accepted="2027-02-01T16:00:00.000Z")
-    with pytest.raises(SecEdgarError, match="no PIT-eligible"):
+    with pytest.raises(SecEdgarError, match="only future acceptance"):
         _source(tmp_path, submissions, facts).fetch(cik_by_symbol={"ABC": "1"}, as_of=NOW)
 
 
@@ -105,7 +105,8 @@ def test_raw_snapshot_tampering_is_detected(tmp_path):
         fetched_at=NOW, content_type="application/json",
         licensing_status="PENDING_LEGAL_APPROVAL", retention_policy="retain",
     )
-    manifest_path = next(tmp_path.rglob("manifest.json"))
-    (manifest_path.parent / "payload.json").write_bytes(b"tampered")
+    manifest_path = next(tmp_path.rglob("acquisitions/*.json"))
+    manifest = RawSnapshotStore.verify(manifest_path)
+    (manifest_path.parent / manifest.payload_file).resolve().write_bytes(b"tampered")
     with pytest.raises(RawSnapshotError, match="mismatch"):
         store.verify(manifest_path)
