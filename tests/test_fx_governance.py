@@ -208,9 +208,7 @@ def test_direct_inverse_rates_within_configured_tolerance_are_accepted() -> None
         available_at=AS_OF,
         lineage=(FXLineageEntry(source="fixture", dataset="fx", dataset_version="v1"),),
         as_of=AS_OF,
-        staleness_policy=FXStalenessPolicy(
-            maximum_sessions=2, reciprocal_tolerance=1e-6
-        ),
+        staleness_policy=FXStalenessPolicy(maximum_sessions=2, reciprocal_tolerance=1e-6),
     )
     assert governed.metadata.staleness_policy.reciprocal_tolerance == 1e-6
 
@@ -250,9 +248,7 @@ def test_provider_contract_is_generic_and_runtime_checkable() -> None:
         name = "fixture"
         dataset_version = "v1"
 
-        def fetch_fx(
-            self, *, currency_pairs: set[str], as_of: datetime.datetime
-        ) -> FXDataset:
+        def fetch_fx(self, *, currency_pairs: set[str], as_of: datetime.datetime) -> FXDataset:
             assert currency_pairs == {"JPY/USD"}
             assert as_of == AS_OF
             return _govern()

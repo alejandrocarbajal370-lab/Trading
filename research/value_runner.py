@@ -118,7 +118,9 @@ def _fingerprint(
     return hashlib.sha256(_canonical_json(document).encode()).hexdigest()
 
 
-def _find_financial_dataset(datasets: list[VerifiedDataset]) -> tuple[VerifiedDataset, pd.DataFrame]:
+def _find_financial_dataset(
+    datasets: list[VerifiedDataset],
+) -> tuple[VerifiedDataset, pd.DataFrame]:
     matches: list[tuple[VerifiedDataset, pd.DataFrame]] = []
     required = set(VALUE_CONTRACT.required_dataset_columns)
     for dataset in datasets:
@@ -215,7 +217,10 @@ def run_value_experiment(
         "assumptions": list(assumptions),
         "health": health,
         "warnings": dataset_warnings,
-        "absolute_value": {"calculated": True, "metrics": list(VALUE_CONTRACT.absolute_value_metrics)},
+        "absolute_value": {
+            "calculated": True,
+            "metrics": list(VALUE_CONTRACT.absolute_value_metrics),
+        },
         "relative_value": {"calculated": False, "mode": "metadata_only"},
         "foundations": {
             "owner_earnings_yield": "metadata_only",
@@ -239,7 +244,10 @@ def run_value_experiment(
         "value_metrics.csv": evaluation.metrics.to_csv(index=False, lineterminator="\n"),
         "value_health.json": json.dumps(evaluation.health, indent=2, sort_keys=True) + "\n",
         "value_lineage.json": json.dumps(evaluation.lineage, indent=2, sort_keys=True) + "\n",
-        "value_validation_report.json": json.dumps(evaluation.validation_report, indent=2, sort_keys=True) + "\n",
+        "value_validation_report.json": json.dumps(
+            evaluation.validation_report, indent=2, sort_keys=True
+        )
+        + "\n",
         "value_research_run.json": json.dumps(run, indent=2, sort_keys=True) + "\n",
     }
     for name, payload in payloads.items():

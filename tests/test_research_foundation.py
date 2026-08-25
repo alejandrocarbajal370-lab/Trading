@@ -122,8 +122,11 @@ def test_registry_rejects_missing_fields_invalid_states_and_lineage(
 def test_dataset_registration_rejects_incomplete_lineage(tmp_path: Path) -> None:
     _, experiment, _ = _registered(tmp_path)
     incomplete = DatasetRegistration(
-        dataset_id="input", snapshot_id="snapshot", path="dataset.csv",
-        sha256=experiment.datasets[0].sha256, lineage=(),
+        dataset_id="input",
+        snapshot_id="snapshot",
+        path="dataset.csv",
+        sha256=experiment.datasets[0].sha256,
+        lineage=(),
     )
     with pytest.raises(RegistryValidationError, match="incomplete lineage"):
         _experiment(incomplete).validate(phase4=True)

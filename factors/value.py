@@ -91,13 +91,50 @@ class ValueFactorContract(ValueContractModel):
 
 VALUE_CONTRACT = ValueFactorContract(
     definitions=(
-        ValueMetricDefinition(name="fcf_yield", formula="free_cash_flow / market_cap", numerator="free_cash_flow", denominator="market_cap", unit="ratio"),
-        ValueMetricDefinition(name="earnings_yield", formula="earnings / market_cap", numerator="earnings", denominator="market_cap", unit="ratio"),
-        ValueMetricDefinition(name="ebit_yield", formula="ebit / enterprise_value", numerator="ebit", denominator="enterprise_value", unit="ratio"),
-        ValueMetricDefinition(name="ev_to_ebit", formula="enterprise_value / ebit", numerator="enterprise_value", denominator="ebit", unit="multiple"),
-        ValueMetricDefinition(name="ev_to_ebitda", formula="enterprise_value / ebitda", numerator="enterprise_value", denominator="ebitda", unit="multiple", primary=False),
+        ValueMetricDefinition(
+            name="fcf_yield",
+            formula="free_cash_flow / market_cap",
+            numerator="free_cash_flow",
+            denominator="market_cap",
+            unit="ratio",
+        ),
+        ValueMetricDefinition(
+            name="earnings_yield",
+            formula="earnings / market_cap",
+            numerator="earnings",
+            denominator="market_cap",
+            unit="ratio",
+        ),
+        ValueMetricDefinition(
+            name="ebit_yield",
+            formula="ebit / enterprise_value",
+            numerator="ebit",
+            denominator="enterprise_value",
+            unit="ratio",
+        ),
+        ValueMetricDefinition(
+            name="ev_to_ebit",
+            formula="enterprise_value / ebit",
+            numerator="enterprise_value",
+            denominator="ebit",
+            unit="multiple",
+        ),
+        ValueMetricDefinition(
+            name="ev_to_ebitda",
+            formula="enterprise_value / ebitda",
+            numerator="enterprise_value",
+            denominator="ebitda",
+            unit="multiple",
+            primary=False,
+        ),
     ),
-    absolute_value_metrics=("fcf_yield", "earnings_yield", "ebit_yield", "ev_to_ebit", "ev_to_ebitda"),
+    absolute_value_metrics=(
+        "fcf_yield",
+        "earnings_yield",
+        "ebit_yield",
+        "ev_to_ebit",
+        "ev_to_ebitda",
+    ),
 )
 
 
@@ -110,7 +147,9 @@ class ValueEvaluation:
 
 
 def _clean(value: Any) -> Any:
-    return None if value is None or (not isinstance(value, (dict, list)) and pd.isna(value)) else value
+    return (
+        None if value is None or (not isinstance(value, (dict, list)) and pd.isna(value)) else value
+    )
 
 
 def _fail(status: str, reason: str, *, warnings: list[str] | None = None) -> dict[str, Any]:
@@ -123,7 +162,11 @@ def _parse_lineage(row: pd.Series) -> tuple[list[dict[str, Any]], str | None]:
         parsed = json.loads(raw) if isinstance(raw, str) else raw
     except (json.JSONDecodeError, TypeError):
         return [], "input_lineage is not valid JSON"
-    if not isinstance(parsed, list) or not parsed or not all(isinstance(item, dict) and item for item in parsed):
+    if (
+        not isinstance(parsed, list)
+        or not parsed
+        or not all(isinstance(item, dict) and item for item in parsed)
+    ):
         return [], "input_lineage must be a non-empty list of objects"
     if any(not (item.get("source") or item.get("primary_source")) for item in parsed):
         return parsed, "primary source missing from lineage"
@@ -210,7 +253,9 @@ def _evaluate_definition(
     industry = str(_clean(numerator.get("industry")) or _clean(denominator.get("industry")) or "")
     base["industry"] = industry or None
     base["source_available_at"] = max(str(row["available_at"]) for row in rows)
-    statuses = [(str(row["status"]), _clean(row.get("reason"))) for row in rows if row["status"] != "PASS"]
+    statuses = [
+        (str(row["status"]), _clean(row.get("reason"))) for row in rows if row["status"] != "PASS"
+    ]
     if statuses:
         result = _fail(statuses[0][0], str(statuses[0][1] or "upstream input is not PASS"))
         return {**base, **result, "warnings": json.dumps(result["warnings"])}
@@ -239,7 +284,9 @@ def _evaluate_definition(
         if lineage_error:
             result = _fail("INVALID_LINEAGE", lineage_error)
             return {**base, **result, "warnings": json.dumps(result["warnings"])}
-    base["lineage"] = json.dumps({"dataset": dataset_lineage, "financial_inputs": lineage}, sort_keys=True)
+    base["lineage"] = json.dumps(
+        {"dataset": dataset_lineage, "financial_inputs": lineage}, sort_keys=True
+    )
     confidence, confidence_error = _confidence(rows)
     base["confidence"] = confidence
     if confidence_error:
@@ -249,7 +296,9 @@ def _evaluate_definition(
     if pit_error:
         result = _fail("PIT_VIOLATION", pit_error)
         return {**base, **result, "warnings": json.dumps(result["warnings"])}
-    uses_ev = definition.denominator == "enterprise_value" or definition.numerator == "enterprise_value"
+    uses_ev = (
+        definition.denominator == "enterprise_value" or definition.numerator == "enterprise_value"
+    )
     if uses_ev and any(term in industry.lower() for term in RESTRICTED_EV_INDUSTRIES):
         result = _fail("INDUSTRY_RESTRICTED", "EV metrics are not appropriate for this industry")
         return {**base, **result, "warnings": json.dumps(result["warnings"])}
@@ -275,7 +324,10 @@ def _evaluate_definition(
     warnings: list[str] = []
     status, reason = "PASS", None
     if definition.name == "fcf_yield" and numerator_value < 0:
-        status, reason = "WARNING", "negative FCF is financial stress context, not a normal value signal"
+        status, reason = (
+            "WARNING",
+            "negative FCF is financial stress context, not a normal value signal",
+        )
         warnings.append("reported FCF may differ from maintenance-capex-adjusted owner earnings")
     if definition.name == "earnings_yield" and numerator_value < 0:
         status, reason = (
@@ -290,15 +342,26 @@ def _evaluate_definition(
         )
         warnings.append("EBIT yield is not economically comparable while EBIT is negative")
     if definition.name == "ev_to_ebitda":
-        warnings.append("secondary metric: EBITDA ignores capital intensity and depreciation economics")
+        warnings.append(
+            "secondary metric: EBITDA ignores capital intensity and depreciation economics"
+        )
     extreme = abs(value) > (1 if definition.unit == "ratio" else 100)
     if extreme:
         status = "WARNING"
         reason = reason or "economically extreme valuation; verify source economics and denominator"
         warnings.append("economic sanity check flagged an extreme multiple")
     if confidence < low_confidence_threshold and status == "PASS":
-        status, reason = "LOW_CONFIDENCE", f"input confidence {confidence:.4f} below {low_confidence_threshold:.4f}"
-    return {**base, "value": value, "status": status, "reason": reason, "warnings": json.dumps(warnings, sort_keys=True)}
+        status, reason = (
+            "LOW_CONFIDENCE",
+            f"input confidence {confidence:.4f} below {low_confidence_threshold:.4f}",
+        )
+    return {
+        **base,
+        "value": value,
+        "status": status,
+        "reason": reason,
+        "warnings": json.dumps(warnings, sort_keys=True),
+    }
 
 
 def evaluate_value_metrics(
@@ -327,15 +390,29 @@ def evaluate_value_metrics(
         except (TypeError, ValueError) as error:
             raise ValueError(f"invalid valuation_as_of for {symbol}: {error}") from error
         for definition in VALUE_CONTRACT.definitions:
-            rows.append(_evaluate_definition(
-                definition, metrics=metrics, symbol=symbol, experiment_id=experiment_id,
-                as_of=as_of, dataset_lineage=dataset_lineage,
-                low_confidence_threshold=low_confidence_threshold,
-            ))
-    output = pd.DataFrame(rows, columns=OUTPUT_COLUMNS).sort_values(["symbol", "metric"]).reset_index(drop=True)
-    counts = {str(key): int(value) for key, value in output["status"].value_counts().sort_index().items()}
+            rows.append(
+                _evaluate_definition(
+                    definition,
+                    metrics=metrics,
+                    symbol=symbol,
+                    experiment_id=experiment_id,
+                    as_of=as_of,
+                    dataset_lineage=dataset_lineage,
+                    low_confidence_threshold=low_confidence_threshold,
+                )
+            )
+    output = (
+        pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
+        .sort_values(["symbol", "metric"])
+        .reset_index(drop=True)
+    )
+    counts = {
+        str(key): int(value) for key, value in output["status"].value_counts().sort_index().items()
+    }
     invalid = int((~output["status"].isin(["PASS", "WARNING"])).sum())
-    health_status = "FAIL" if invalid else ("WARNING" if (output["status"] == "WARNING").any() else "PASS")
+    health_status = (
+        "FAIL" if invalid else ("WARNING" if (output["status"] == "WARNING").any() else "PASS")
+    )
     health = {
         "schema_version": "value-health-v1",
         "status": health_status,
@@ -354,7 +431,11 @@ def evaluate_value_metrics(
         "schema_version": "value-lineage-v1",
         "dataset": dataset_lineage,
         "metrics": [
-            {"symbol": row["symbol"], "metric": row["metric"], "lineage": json.loads(row["lineage"])}
+            {
+                "symbol": row["symbol"],
+                "metric": row["metric"],
+                "lineage": json.loads(row["lineage"]),
+            }
             for row in rows
         ],
     }

@@ -15,13 +15,13 @@ QUALITY_HYPOTHESIS = (
     "and prudent leverage exhibit higher operating quality. Phase 4.1 measures these attributes "
     "individually and does not assert or calculate an investment score."
 )
-QUALITY_RULESET_VERSION = "quality-v1.1"
+QUALITY_RULESET_VERSION = "quality-v1.2"
 DIRECT_METRICS = {
     "roic_v1": "roic",
     "free_cash_flow_margin": "fcf_margin",
     "cfo_to_net_income": "cfo_conversion",
     "net_debt_to_ebitda": "net_debt_to_ebitda",
-    "accrual_ratio": "accrual_quality",
+    "accrual_ratio": "raw_accrual_ratio",
     "share_count_change": "share_count_change",
     "reinvestment_rate": "reinvestment_rate",
 }
@@ -120,7 +120,7 @@ QUALITY_CONTRACT = QualityFactorContract(
             required_inputs=("net_debt_to_ebitda",),
         ),
         QualityMetricDefinition(
-            name="accrual_quality",
+            name="raw_accrual_ratio",
             formula="(net_income - cash_from_operations) / total_assets",
             required_inputs=("accrual_ratio",),
         ),
@@ -129,13 +129,43 @@ QUALITY_CONTRACT = QualityFactorContract(
             formula="population standard deviation of comparable historical FCF margins",
             required_inputs=("free_cash_flow_margin history",),
         ),
-        QualityMetricDefinition(name="roic_consistency", formula="positive ROIC periods / valid periods", required_inputs=("roic_v1 history",)),
-        QualityMetricDefinition(name="roic_positive_years", formula="count of positive ROIC periods", required_inputs=("roic_v1 history",)),
-        QualityMetricDefinition(name="fcf_consistency", formula="positive FCF-margin periods / valid periods", required_inputs=("free_cash_flow_margin history",)),
-        QualityMetricDefinition(name="fcf_positive_years", formula="count of positive FCF-margin periods", required_inputs=("free_cash_flow_margin history",)),
-        QualityMetricDefinition(name="margin_persistence", formula="non-declining FCF-margin transitions / comparable transitions", required_inputs=("free_cash_flow_margin history",)),
-        QualityMetricDefinition(name="share_count_change", formula="reported share-count change; no score", required_inputs=(), optional_inputs=("share_count_change",)),
-        QualityMetricDefinition(name="reinvestment_rate", formula="reported reinvestment metadata; no score", required_inputs=(), optional_inputs=("reinvestment_rate",)),
+        QualityMetricDefinition(
+            name="roic_consistency",
+            formula="positive ROIC periods / valid periods",
+            required_inputs=("roic_v1 history",),
+        ),
+        QualityMetricDefinition(
+            name="roic_positive_years",
+            formula="count of positive ROIC periods",
+            required_inputs=("roic_v1 history",),
+        ),
+        QualityMetricDefinition(
+            name="fcf_consistency",
+            formula="positive FCF-margin periods / valid periods",
+            required_inputs=("free_cash_flow_margin history",),
+        ),
+        QualityMetricDefinition(
+            name="fcf_positive_years",
+            formula="count of positive FCF-margin periods",
+            required_inputs=("free_cash_flow_margin history",),
+        ),
+        QualityMetricDefinition(
+            name="margin_persistence",
+            formula="non-declining FCF-margin transitions / comparable transitions",
+            required_inputs=("free_cash_flow_margin history",),
+        ),
+        QualityMetricDefinition(
+            name="share_count_change",
+            formula="reported share-count change; no score",
+            required_inputs=(),
+            optional_inputs=("share_count_change",),
+        ),
+        QualityMetricDefinition(
+            name="reinvestment_rate",
+            formula="reported reinvestment metadata; no score",
+            required_inputs=(),
+            optional_inputs=("reinvestment_rate",),
+        ),
     )
 )
 
@@ -146,18 +176,40 @@ class QualityEvaluation:
     health: dict[str, Any]
 
 
-def _lineage(row: pd.Series, *, dataset_lineage: dict[str, Any]) -> tuple[str, str | None, dict[str, Any]]:
+def _lineage(
+    row: pd.Series, *, dataset_lineage: dict[str, Any]
+) -> tuple[str, str | None, dict[str, Any]]:
     raw = row.get("input_lineage")
     try:
         inputs = json.loads(raw) if isinstance(raw, str) else raw
     except (json.JSONDecodeError, TypeError):
-        return json.dumps({"dataset": dataset_lineage, "financial_inputs": []}, sort_keys=True), "invalid input_lineage JSON", {}
-    if not isinstance(inputs, list) or not inputs or not all(isinstance(item, dict) and item for item in inputs):
-        return json.dumps({"dataset": dataset_lineage, "financial_inputs": []}, sort_keys=True), "input_lineage must be a non-empty list of objects", {}
+        return (
+            json.dumps({"dataset": dataset_lineage, "financial_inputs": []}, sort_keys=True),
+            "invalid input_lineage JSON",
+            {},
+        )
+    if (
+        not isinstance(inputs, list)
+        or not inputs
+        or not all(isinstance(item, dict) and item for item in inputs)
+    ):
+        return (
+            json.dumps({"dataset": dataset_lineage, "financial_inputs": []}, sort_keys=True),
+            "input_lineage must be a non-empty list of objects",
+            {},
+        )
     source = inputs[0]
     if not (source.get("primary_source") or source.get("source")):
-        return json.dumps({"dataset": dataset_lineage, "financial_inputs": inputs}, sort_keys=True), "primary source missing from lineage", source
-    return json.dumps({"dataset": dataset_lineage, "financial_inputs": inputs}, sort_keys=True), None, source
+        return (
+            json.dumps({"dataset": dataset_lineage, "financial_inputs": inputs}, sort_keys=True),
+            "primary source missing from lineage",
+            source,
+        )
+    return (
+        json.dumps({"dataset": dataset_lineage, "financial_inputs": inputs}, sort_keys=True),
+        None,
+        source,
+    )
 
 
 def _confidence(row: pd.Series) -> tuple[float, float, float, float, str | None, str | None]:
@@ -177,9 +229,19 @@ def _confidence(row: pd.Series) -> tuple[float, float, float, float, str | None,
                 invalid, value = True, 0.0
         values.append(value)
     if invalid:
-        return min(values), *values, "LOW_CONFIDENCE", "invalid confidence; expected finite values between 0 and 1"
+        return (
+            min(values),
+            *values,
+            "LOW_CONFIDENCE",
+            "invalid confidence; expected finite values between 0 and 1",
+        )
     if missing:
-        return min(values), *values, "MISSING_CONFIDENCE", "confidence is required and was missing or null"
+        return (
+            min(values),
+            *values,
+            "MISSING_CONFIDENCE",
+            "confidence is required and was missing or null",
+        )
     return min(values), *values, None, None
 
 
@@ -198,7 +260,14 @@ def _quality_row(
     warnings: list[str] | None,
     low_confidence_threshold: float,
 ) -> dict[str, object]:
-    overall, data_confidence, calculation_confidence, economic_confidence, confidence_status, confidence_reason = confidence
+    (
+        overall,
+        data_confidence,
+        calculation_confidence,
+        economic_confidence,
+        confidence_status,
+        confidence_reason,
+    ) = confidence
     if value is not None and not math.isfinite(float(value)):
         value, status, reason = None, "NOT_COMPUTED", "non-finite metric value"
     if status == "PASS" and confidence_status:
@@ -230,7 +299,11 @@ def _quality_row(
 def _source_context(row: pd.Series, source: dict[str, Any]) -> dict[str, Any]:
     def clean(name: str) -> Any:
         value = row.get(name)
-        return None if value is None or (not isinstance(value, (dict, list)) and pd.isna(value)) else value
+        return (
+            None
+            if value is None or (not isinstance(value, (dict, list)) and pd.isna(value))
+            else value
+        )
 
     pit = clean("pit_metadata")
     if isinstance(pit, str):
@@ -250,7 +323,9 @@ def _source_context(row: pd.Series, source: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _evaluated_row(*, row: pd.Series, dataset_lineage: dict[str, Any], **kwargs: Any) -> dict[str, object]:
+def _evaluated_row(
+    *, row: pd.Series, dataset_lineage: dict[str, Any], **kwargs: Any
+) -> dict[str, object]:
     lineage, lineage_error, source = _lineage(row, dataset_lineage=dataset_lineage)
     if kwargs["status"] == "PASS" and lineage_error:
         kwargs["status"], kwargs["reason"] = "INVALID_LINEAGE", lineage_error
@@ -291,24 +366,36 @@ def _direct_rows(
                 if conflicting
                 else "duplicate metric for the same symbol, metric, and period"
             )
-            output.append(_evaluated_row(
-                row=latest.iloc[0], dataset_lineage=dataset_lineage,
-                experiment_id=experiment_id, symbol=str(symbol), as_of=latest_end,
-                metric=DIRECT_METRICS[str(source_metric)], value=None,
-                status="NOT_COMPUTED", reason=reason,
-                low_confidence_threshold=low_confidence_threshold,
-            ))
+            output.append(
+                _evaluated_row(
+                    row=latest.iloc[0],
+                    dataset_lineage=dataset_lineage,
+                    experiment_id=experiment_id,
+                    symbol=str(symbol),
+                    as_of=latest_end,
+                    metric=DIRECT_METRICS[str(source_metric)],
+                    value=None,
+                    status="NOT_COMPUTED",
+                    reason=reason,
+                    low_confidence_threshold=low_confidence_threshold,
+                )
+            )
             continue
         row = latest.iloc[0]
-        output.append(_evaluated_row(
-            row=row, dataset_lineage=dataset_lineage,
-            experiment_id=experiment_id, symbol=str(symbol), as_of=latest_end,
-            metric=DIRECT_METRICS[str(source_metric)],
-            value=None if pd.isna(row["value"]) else float(row["value"]),
-            status=str(row["status"]),
-            reason=None if pd.isna(row["reason"]) else str(row["reason"]),
-            low_confidence_threshold=low_confidence_threshold,
-        ))
+        output.append(
+            _evaluated_row(
+                row=row,
+                dataset_lineage=dataset_lineage,
+                experiment_id=experiment_id,
+                symbol=str(symbol),
+                as_of=latest_end,
+                metric=DIRECT_METRICS[str(source_metric)],
+                value=None if pd.isna(row["value"]) else float(row["value"]),
+                status=str(row["status"]),
+                reason=None if pd.isna(row["reason"]) else str(row["reason"]),
+                low_confidence_threshold=low_confidence_threshold,
+            )
+        )
     return output
 
 
@@ -321,8 +408,17 @@ def _stability_rows(
 ) -> list[dict[str, object]]:
     output: list[dict[str, object]] = []
     specifications = {
-        "roic_v1": (("roic_stability", "stdev"), ("roic_consistency", "positive_ratio"), ("roic_positive_years", "positive_count")),
-        "free_cash_flow_margin": (("margin_stability", "stdev"), ("fcf_consistency", "positive_ratio"), ("fcf_positive_years", "positive_count"), ("margin_persistence", "nondeclining_ratio")),
+        "roic_v1": (
+            ("roic_stability", "stdev"),
+            ("roic_consistency", "positive_ratio"),
+            ("roic_positive_years", "positive_count"),
+        ),
+        "free_cash_flow_margin": (
+            ("margin_stability", "stdev"),
+            ("fcf_consistency", "positive_ratio"),
+            ("fcf_positive_years", "positive_count"),
+            ("margin_persistence", "nondeclining_ratio"),
+        ),
     }
     for source_metric, calculations in specifications.items():
         selected = metrics[metrics["metric"] == source_metric]
@@ -338,8 +434,13 @@ def _stability_rows(
                 status, reason = "NOT_COMPUTED", "incompatible periods in metric history"
             elif history["fiscal_period_end"].duplicated().any():
                 status, reason = "NOT_COMPUTED", "duplicate or conflicting metric history"
-            elif any(_lineage(row, dataset_lineage=dataset_lineage)[1] for _, row in history.iterrows()):
-                status, reason = "INVALID_LINEAGE", "history contains corrupt, empty, or invalid lineage"
+            elif any(
+                _lineage(row, dataset_lineage=dataset_lineage)[1] for _, row in history.iterrows()
+            ):
+                status, reason = (
+                    "INVALID_LINEAGE",
+                    "history contains corrupt, empty, or invalid lineage",
+                )
             elif not history["status"].eq("PASS").all():
                 bad = history.loc[~history["status"].eq("PASS")].iloc[-1]
                 status = str(bad["status"])
@@ -381,9 +482,15 @@ def _stability_rows(
                     else:
                         value = sum(b >= a for a, b in pairwise(values)) / (len(values) - 1)
                 evaluated = _evaluated_row(
-                    row=anchor, dataset_lineage=dataset_lineage,
-                    experiment_id=experiment_id, symbol=str(symbol), as_of=as_of,
-                    metric=result_metric, value=value, status=metric_status, reason=metric_reason,
+                    row=anchor,
+                    dataset_lineage=dataset_lineage,
+                    experiment_id=experiment_id,
+                    symbol=str(symbol),
+                    as_of=as_of,
+                    metric=result_metric,
+                    value=value,
+                    status=metric_status,
+                    reason=metric_reason,
                     low_confidence_threshold=low_confidence_threshold,
                 )
                 evaluated["lineage"] = json.dumps(
@@ -424,18 +531,27 @@ def evaluate_quality_metrics(
             low_confidence_threshold=low_confidence_threshold,
         )
     )
-    expected = {definition.name for definition in QUALITY_CONTRACT.definitions if definition.required_inputs}
+    expected = {
+        definition.name for definition in QUALITY_CONTRACT.definitions if definition.required_inputs
+    }
     for symbol, symbol_rows in metrics.groupby("symbol", sort=True):
         emitted = {str(row["metric"]) for row in rows if row["symbol"] == str(symbol)}
         as_of = symbol_rows["fiscal_period_end"].max()
         for metric in sorted(expected - emitted):
-            rows.append(_evaluated_row(
-                row=symbol_rows.sort_values("fiscal_period_end").iloc[-1],
-                dataset_lineage=dataset_lineage, experiment_id=experiment_id,
-                symbol=str(symbol), as_of=as_of, metric=metric, value=None,
-                status="MISSING", reason="required validated metric history is absent",
-                low_confidence_threshold=low_confidence_threshold,
-            ))
+            rows.append(
+                _evaluated_row(
+                    row=symbol_rows.sort_values("fiscal_period_end").iloc[-1],
+                    dataset_lineage=dataset_lineage,
+                    experiment_id=experiment_id,
+                    symbol=str(symbol),
+                    as_of=as_of,
+                    metric=metric,
+                    value=None,
+                    status="MISSING",
+                    reason="required validated metric history is absent",
+                    low_confidence_threshold=low_confidence_threshold,
+                )
+            )
     by_symbol: dict[str, dict[str, dict[str, object]]] = {}
     for row in rows:
         by_symbol.setdefault(str(row["symbol"]), {})[str(row["metric"])] = row
@@ -444,9 +560,23 @@ def evaluate_quality_metrics(
         leverage = symbol_rows.get("net_debt_to_ebitda")
         persistence = symbol_rows.get("margin_persistence")
         warnings: list[str] = []
-        if roic and leverage and roic["value"] is not None and leverage["value"] is not None and float(roic["value"]) >= 0.20 and float(leverage["value"]) >= 4:
+        if (
+            roic
+            and leverage
+            and roic["value"] is not None
+            and leverage["value"] is not None
+            and float(roic["value"]) >= 0.20
+            and float(leverage["value"]) >= 4
+        ):
             warnings.append("high ROIC conflicts with elevated leverage")
-        if roic and persistence and roic["value"] is not None and persistence["value"] is not None and float(roic["value"]) >= 0.20 and float(persistence["value"]) < 0.5:
+        if (
+            roic
+            and persistence
+            and roic["value"] is not None
+            and persistence["value"] is not None
+            and float(roic["value"]) >= 0.20
+            and float(persistence["value"]) < 0.5
+        ):
             warnings.append("high ROIC conflicts with deteriorating margin persistence")
         if warnings:
             for row in symbol_rows.values():

@@ -41,12 +41,16 @@ def _counts(frame: pd.DataFrame, column: str) -> dict[str, int]:
 def _market_cap_buckets(frame: pd.DataFrame) -> dict[str, int]:
     labels = ["unknown", "micro_lt_300m", "small_300m_2b", "mid_2b_10b", "large_ge_10b"]
     cap = pd.to_numeric(frame["market_cap"], errors="coerce")
-    bucket = pd.cut(
-        cap,
-        bins=[-float("inf"), 300_000_000, 2_000_000_000, 10_000_000_000, float("inf")],
-        labels=labels[1:],
-        right=False,
-    ).astype("string").fillna(labels[0])
+    bucket = (
+        pd.cut(
+            cap,
+            bins=[-float("inf"), 300_000_000, 2_000_000_000, 10_000_000_000, float("inf")],
+            labels=labels[1:],
+            right=False,
+        )
+        .astype("string")
+        .fillna(labels[0])
+    )
     counts = bucket.value_counts()
     return {label: int(counts.get(label, 0)) for label in labels}
 
@@ -94,7 +98,9 @@ def compare_membership(
     current_status = current.set_index("symbol")["eligibility_status"].to_dict()
     previous_status = previous.set_index("symbol")["eligibility_status"].to_dict()
     current_eligible = {symbol for symbol, status in current_status.items() if status == "ELIGIBLE"}
-    previous_eligible = {symbol for symbol, status in previous_status.items() if status == "ELIGIBLE"}
+    previous_eligible = {
+        symbol for symbol, status in previous_status.items() if status == "ELIGIBLE"
+    }
     changes = []
     current_by_symbol = current.set_index("symbol")
     previous_by_symbol = previous.set_index("symbol")
@@ -102,7 +108,11 @@ def compare_membership(
         before = previous_status.get(symbol, "NOT_PRESENT")
         after = current_status.get(symbol, "NOT_PRESENT")
         if before != after:
-            row = current_by_symbol.loc[symbol] if symbol in current_by_symbol.index else previous_by_symbol.loc[symbol]
+            row = (
+                current_by_symbol.loc[symbol]
+                if symbol in current_by_symbol.index
+                else previous_by_symbol.loc[symbol]
+            )
             changes.append(
                 {
                     "symbol": symbol,
@@ -141,7 +151,9 @@ def stress_test_universe(
     for name, scenario_rules in scenarios:
         membership = validate_universe(records, rules=scenario_rules, as_of=as_of)
         eligible = int((membership["eligibility_status"] == "ELIGIBLE").sum())
-        loss = 0.0 if baseline_count == 0 else max(0.0, (baseline_count - eligible) / baseline_count)
+        loss = (
+            0.0 if baseline_count == 0 else max(0.0, (baseline_count - eligible) / baseline_count)
+        )
         results.append(
             {
                 "scenario": name,
@@ -192,14 +204,22 @@ def diagnose_universe(
         > health_rules.maximum_top_10_market_cap_concentration
     ):
         reasons.append({"severity": "WARNING", "code": "excessive_market_cap_concentration"})
-    if any(test["coverage_loss"] > health_rules.maximum_stress_coverage_loss for test in stress_tests):
+    if any(
+        test["coverage_loss"] > health_rules.maximum_stress_coverage_loss for test in stress_tests
+    ):
         reasons.append({"severity": "WARNING", "code": "threshold_sensitivity_excessive"})
-    status = "FAIL" if any(reason["severity"] == "FAIL" for reason in reasons) else (
-        "WARNING" if reasons else "PASS"
+    status = (
+        "FAIL"
+        if any(reason["severity"] == "FAIL" for reason in reasons)
+        else ("WARNING" if reasons else "PASS")
     )
     exclusion_reasons = (
         membership.loc[membership["exclusion_reason"] != "", "exclusion_reason"]
-        .str.split(";").explode().value_counts().sort_index().to_dict()
+        .str.split(";")
+        .explode()
+        .value_counts()
+        .sort_index()
+        .to_dict()
     )
     return {
         "status": status,

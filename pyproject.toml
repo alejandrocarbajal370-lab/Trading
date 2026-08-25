@@ -30,6 +30,7 @@ quality-validation-run = "research.quality_validation:main"
 value-research-run = "research.value_runner:main"
 momentum-research-run = "research.momentum_runner:main"
 qvm-research-run = "research.qvm_runner:main"
+pre-phase6-blind-coverage = "research.pre_phase6_readiness:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

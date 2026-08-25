@@ -125,6 +125,11 @@ def test_fetch_history_maps_adjusted_price_and_corporate_action_lineage() -> Non
         "TIME_SERIES_DAILY_ADJUSTED"
     )
     assert row["historical_access_tier"] == "premium_required"
+    assert row["confidence"] == 0.90
+    assert row["confidence"] < 1.0
+    assert row["confidence_policy_version"] == (
+        "alpha-vantage-adjusted-history-observable-fields-v1"
+    )
     assert source.metadata == {
         "provider": "alpha_vantage",
         "dataset": "TIME_SERIES_DAILY_ADJUSTED",

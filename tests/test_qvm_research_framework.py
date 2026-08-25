@@ -268,9 +268,9 @@ def test_ev_to_ebit_uses_economic_direction_not_numeric_sign() -> None:
     )
     conflict = result.health["diagnostics"]["factor_conflicts"]["conflicts"][0]
     ev_evidence = next(item for item in conflict["evidence"] if item["metric"] == "ev_to_ebit")
-    assert ev_evidence["economic_signal"] == "negative"
+    assert ev_evidence["economic_direction"] == "negative"
     assert ev_evidence["meaning"] == "EV/EBIT valuation multiple"
-    assert conflict["factor_signals"] == {
+    assert conflict["factor_diagnostics"] == {
         "Momentum": "positive",
         "Quality": "positive",
         "Value": "negative",

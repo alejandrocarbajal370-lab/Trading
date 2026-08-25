@@ -164,7 +164,9 @@ def run_phase36(
     )
 
 
-def _from_config(path: Path) -> tuple[UniverseRules, UniverseHealthRules, UniverseRebalanceSchedule]:
+def _from_config(
+    path: Path,
+) -> tuple[UniverseRules, UniverseHealthRules, UniverseRebalanceSchedule]:
     document = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     config = dict(document.get("investment_universe", {}))
     health = dict(config.pop("health", {}))
@@ -172,11 +174,17 @@ def _from_config(path: Path) -> tuple[UniverseRules, UniverseHealthRules, Univer
     for key in ("allowed_asset_types", "allowed_exchanges"):
         if key in config:
             config[key] = tuple(config[key])
-    return UniverseRules(**config), UniverseHealthRules(**health), UniverseRebalanceSchedule(**schedule)
+    return (
+        UniverseRules(**config),
+        UniverseHealthRules(**health),
+        UniverseRebalanceSchedule(**schedule),
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Generate an auditable point-in-time universe snapshot")
+    parser = argparse.ArgumentParser(
+        description="Generate an auditable point-in-time universe snapshot"
+    )
     parser.add_argument("--source", required=True, type=Path)
     parser.add_argument("--as-of", required=True, type=datetime.date.fromisoformat)
     parser.add_argument("--config", type=Path, default=Path("config/settings.example.yaml"))

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import hashlib
 import json
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
@@ -13,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from data.market_calendar import get_trading_calendar
 
 MARKET_DATA_CONTRACT_VERSION = "market-data-governance-v1"
+MARKET_DATA_CONFIDENCE_POLICY_VERSION = "market-data-confidence-min-input-lookback-v1"
 REQUIRED_COLUMNS = (
     "symbol",
     "date",
@@ -96,11 +96,36 @@ class MarketDataDataset:
                 f"market-data checksum mismatch: expected {self.metadata.checksum}, observed {observed}"
             )
         if self.metadata.canonical_id != f"market-data:{observed}":
-            raise MarketDataGovernanceError("market-data canonical identity does not match checksum")
+            raise MarketDataGovernanceError(
+                "market-data canonical identity does not match checksum"
+            )
 
     def momentum_frame(self) -> pd.DataFrame:
         """Return a defensive copy carrying the governed identity into Momentum."""
         result = self.frame.copy(deep=True)
+        vector_columns = (
+            "data_confidence",
+            "calculation_confidence",
+            "economic_confidence",
+        )
+        available_confidence = [
+            column for column in ("confidence", *vector_columns) if column in result
+        ]
+        if not available_confidence:
+            raise MarketDataGovernanceError(
+                "governed market-data confidence is required for Momentum; defaults are forbidden"
+            )
+        numeric = result.loc[:, available_confidence].apply(pd.to_numeric, errors="coerce")
+        if numeric.isna().any().any():
+            raise MarketDataGovernanceError("market-data confidence is missing or non-numeric")
+        values = numeric.to_numpy(dtype=float)
+        if (~np.isfinite(values)).any() or (values < 0).any() or (values > 1).any():
+            raise MarketDataGovernanceError(
+                "market-data confidence must be finite and between 0 and 1"
+            )
+        # The final confidence is the weakest declared provider/calculation/economic input.
+        # It is never promoted and reaches 1.0 only when every governed input is genuinely 1.0.
+        result["confidence"] = numeric.min(axis=1)
         lineage = {
             "source": self.metadata.source,
             "dataset": "governed_market_data",
@@ -108,6 +133,8 @@ class MarketDataDataset:
             "canonical_id": self.metadata.canonical_id,
             "checksum": self.metadata.checksum,
             "contract_version": self.metadata.contract_version,
+            "confidence_policy_version": MARKET_DATA_CONFIDENCE_POLICY_VERSION,
+            "confidence_inputs": available_confidence,
             "upstream": [item.model_dump(mode="json") for item in self.metadata.lineage],
         }
         result["input_lineage"] = json.dumps([lineage], sort_keys=True)
@@ -119,35 +146,27 @@ class MarketDataDataset:
         result["historical_dataset"] = "governed_market_data"
         result["historical_dataset_version"] = self.metadata.dataset_version
         result["historical_access_tier"] = "governed"
-        if "confidence" not in result:
-            result["confidence"] = 1.0
         return result
 
 
 def canonical_market_data_checksum(frame: pd.DataFrame) -> str:
-    """Hash semantic content, independent of input row order or dataframe index."""
+    """Typed/versioned semantic hash, independent of row order and dataframe index."""
+    # Local import avoids the governance package's integration re-export cycle.
+    from governance.canonical import typed_frame_hash
     missing = sorted(set(REQUIRED_COLUMNS) - set(frame.columns))
     if missing:
         raise MarketDataGovernanceError(
             f"market data missing required columns: {', '.join(missing)}"
         )
-    ordered_columns = [*REQUIRED_COLUMNS, *sorted(set(frame.columns) - set(REQUIRED_COLUMNS))]
-    canonical = frame.loc[:, ordered_columns].copy()
+    canonical = frame.copy(deep=True)
     canonical["symbol"] = canonical["symbol"].astype(str).str.strip().str.upper()
-    canonical["date"] = pd.to_datetime(canonical["date"], errors="raise").dt.date.astype(str)
-    available = pd.to_datetime(canonical["available_at"], errors="raise", utc=True)
-    canonical["available_at"] = available.map(lambda value: value.isoformat())
+    canonical["date"] = pd.to_datetime(canonical["date"], errors="raise").dt.date
+    canonical["available_at"] = pd.to_datetime(
+        canonical["available_at"], errors="raise", utc=True
+    )
     for column in ("raw_close", "adjusted_close", "adjustment_factor"):
-        canonical[column] = pd.to_numeric(canonical[column], errors="raise").map(
-            lambda value: format(float(value), ".17g")
-        )
-    for column in set(canonical.columns) - set(REQUIRED_COLUMNS):
-        canonical[column] = canonical[column].map(
-            lambda value: "" if pd.isna(value) else str(value)
-        )
-    canonical = canonical.fillna("").sort_values(["symbol", "date"], kind="stable")
-    payload = canonical.to_csv(index=False, lineterminator="\n").encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+        canonical[column] = pd.to_numeric(canonical[column], errors="raise").astype("float64")
+    return typed_frame_hash(canonical, ["symbol", "date"])
 
 
 def govern_market_data(
@@ -196,7 +215,9 @@ def govern_market_data(
         timestamp.to_pydatetime() > available_at.astimezone(datetime.UTC)
         for timestamp in timestamps
     ):
-        raise MarketDataGovernanceError("PIT violation: row available_at exceeds dataset availability")
+        raise MarketDataGovernanceError(
+            "PIT violation: row available_at exceeds dataset availability"
+        )
     if (data["date"] > as_of.date()).any():
         raise MarketDataGovernanceError("PIT violation: price date exceeds as_of")
     for column in ("raw_close", "adjusted_close", "adjustment_factor"):

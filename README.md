@@ -4,8 +4,14 @@ Systematic Equity Research & Portfolio Engine built with a capital-preservation-
 
 ## Current stage
 
-`phase-1-market-data` introduces a replaceable EOD price-source contract and a real provider
-adapter while preserving the Phase 0 validation bundle. No live trading logic is enabled.
+Phase 5.6 (cross-layer governance integration) is merged. Phase 6 remains an open design only;
+PRE-Phase 6 remediation is in progress and no Phase 6 scoring, ranking, portfolio, backtest,
+signal, broker, order, or execution capability exists. All current paths remain research-only,
+`NO_TRADE`, with live execution disabled.
+
+The PRE-Phase 6 boundary admits only sealed `GovernedFactorBatch` objects. The packages
+`execution/`, `portfolio/`, `backtesting/`, `risk/`, and `database/` are placeholders, not
+implemented capabilities.
 
 ## Core principles
 

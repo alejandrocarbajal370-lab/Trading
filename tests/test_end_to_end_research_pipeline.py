@@ -87,7 +87,7 @@ def test_golden_research_pipeline_is_auditable_and_non_trading(tmp_path: Path) -
         sample_end="2025-12-31",
         preregistered_at="2026-03-01T00:00:00+00:00",
         created_at="2026-03-01T00:00:00+00:00",
-        metrics_evaluated=("roic", "fcf_margin", "cfo_conversion", "accrual_quality"),
+        metrics_evaluated=("roic", "fcf_margin", "cfo_conversion", "raw_accrual_ratio"),
         expected_result="Integrated Quality metrics retain confidence and lineage.",
         observed_result="PENDING",
         decision="REVIEW",
@@ -108,7 +108,7 @@ def test_golden_research_pipeline_is_auditable_and_non_trading(tmp_path: Path) -
     quality_path = quality_run.output_dir / "quality_metrics.csv"
     quality = pd.read_csv(quality_path).set_index("metric")
     assert quality.loc["roic", "status"] == "PASS"
-    assert quality.loc["accrual_quality", "status"] == "PASS"
+    assert quality.loc["raw_accrual_ratio", "status"] == "PASS"
     assert quality.loc["roic", "confidence"] > 0
     assert quality_run.research_run["universe_governance"]["verified"] is True
     assert quality_run.research_run["trade_decision"] == "NO_TRADE"
@@ -125,7 +125,7 @@ def test_golden_research_pipeline_is_auditable_and_non_trading(tmp_path: Path) -
         minimum_pass_coverage=0.0,
     )
     coverage = {item["metric"]: item for item in validation.report["coverage"]}
-    assert coverage["accrual_quality"]["passing_symbols"] == 1
+    assert coverage["raw_accrual_ratio"]["passing_symbols"] == 1
     assert validation.report["pit_violations"] == 0
     assert validation.report["trade_decision"] == "NO_TRADE"
     assert validation.report["live_execution_enabled"] is False
@@ -166,8 +166,8 @@ def test_golden_governed_universe_to_financial_intelligence_to_value(tmp_path: P
     derived = financial_metrics.set_index("metric")
     source = financial_snapshot.set_index("metric")
     market_cap = float(membership.set_index("symbol").loc["TEST", "market_cap"])
-    enterprise_value = market_cap + float(source.loc["total_debt", "value"]) - float(
-        source.loc["cash", "value"]
+    enterprise_value = (
+        market_cap + float(source.loc["total_debt", "value"]) - float(source.loc["cash", "value"])
     )
     values = {
         "free_cash_flow": float(derived.loc["free_cash_flow", "value"]),
@@ -180,7 +180,9 @@ def test_golden_governed_universe_to_financial_intelligence_to_value(tmp_path: P
     rows = []
     for metric, value in values.items():
         instant = metric in {"market_cap", "enterprise_value"}
-        lineage_source = "Phase 3.6 governed universe" if instant else "Phase 3 financial intelligence"
+        lineage_source = (
+            "Phase 3.6 governed universe" if instant else "Phase 3 financial intelligence"
+        )
         rows.append(
             {
                 "symbol": "TEST",
@@ -191,7 +193,9 @@ def test_golden_governed_universe_to_financial_intelligence_to_value(tmp_path: P
                 "value": value,
                 "unit": "currency",
                 "currency": "USD",
-                "available_at": "2026-02-28T22:00:00+00:00" if instant else "2026-02-02T00:00:00+00:00",
+                "available_at": "2026-02-28T22:00:00+00:00"
+                if instant
+                else "2026-02-02T00:00:00+00:00",
                 "status": "PASS",
                 "reason": None,
                 "confidence": 1.0,

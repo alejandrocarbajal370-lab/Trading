@@ -85,9 +85,7 @@ class _FailingPriceSource:
         PriceSourceResponseError("provider returned malformed data"),
     ],
 )
-def test_phase0_writes_failure_bundle_before_source_error(
-    tmp_path: Path, error: Exception
-) -> None:
+def test_phase0_writes_failure_bundle_before_source_error(tmp_path: Path, error: Exception) -> None:
     output_root = tmp_path / "outputs"
 
     with pytest.raises(type(error), match=str(error)):

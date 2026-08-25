@@ -107,7 +107,10 @@ def verify_universe_snapshot(directory: Path) -> VerifiedUniverseSnapshot:
     ruleset_version = metadata.get("ruleset", {}).get("version")
     if not ruleset_version:
         raise DatasetVersionError("governed universe ruleset version is missing")
-    if metadata.get("trade_decision") != "NO_TRADE" or metadata.get("live_execution_enabled") is not False:
+    if (
+        metadata.get("trade_decision") != "NO_TRADE"
+        or metadata.get("live_execution_enabled") is not False
+    ):
         raise DatasetVersionError("governed universe snapshot violates research-only safety state")
     return VerifiedUniverseSnapshot(
         directory=resolved,

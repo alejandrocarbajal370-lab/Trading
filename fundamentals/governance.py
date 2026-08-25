@@ -125,9 +125,7 @@ class AccountingDataset:
                 f"observed {observed}"
             )
         if self.metadata.canonical_id != f"accounting:{observed}":
-            raise AccountingGovernanceError(
-                "accounting canonical identity does not match checksum"
-            )
+            raise AccountingGovernanceError("accounting canonical identity does not match checksum")
 
     def snapshot(
         self,
@@ -236,8 +234,7 @@ def _validate_revisions(data: pd.DataFrame) -> None:
             ordered.itertuples(index=False), ordered.iloc[1:].itertuples(index=False), strict=False
         ):
             invariants_changed = any(
-                getattr(current, field) != getattr(previous, field)
-                for field in invariants
+                getattr(current, field) != getattr(previous, field) for field in invariants
             )
             if (
                 current.revision_type != "RESTATEMENT"
