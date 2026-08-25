@@ -1,5 +1,19 @@
 # Phase 6 QVM Research Engine V1
 
+## Audit remediation identity closure
+
+The admission boundary fails closed against the canonical QVM metric-semantics registry for every
+observation, including exact factor/metric ownership and unit compatibility. Recomputed dataset
+and batch hashes do not authorize unknown semantics. Status, confidence, finite-value,
+applicability, uniqueness, and governed classification checks are repeated at the consumer
+boundary.
+
+The final research artifact binds canonical identities for the metric registry, normalization,
+within-factor/composite weights, capital-preservation overlay, research cohorts, governance order,
+and active metric set. Overlay and cohort policies are immutable versioned objects whose hashes
+include executed thresholds, mappings, eligibility rules, tie behavior, ordering conventions, and
+deferred-control state. Provider-dependent controls remain `NOT_EVALUATED`.
+
 This implementation is strictly `RESEARCH_ONLY`. Its sole public consumer boundary is
 `run_phase6_qvm_research(admission=..., batches=...)`, which accepts the exact
 `sealed-pre-phase6-admission-v2` artifact and exact `GovernedFactorBatch` contracts. The consumer

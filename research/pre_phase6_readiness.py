@@ -12,7 +12,12 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from data.provider_contracts import ProviderKind, ProviderSnapshot
-from factors.qvm import factor_dataset_hash, factor_observation_hash
+from factors.qvm import (
+    factor_dataset_hash,
+    factor_observation_hash,
+    metric_semantics_registry_identity,
+    validate_observation_semantics,
+)
 from governance.canonical import typed_hash
 from governance.integration import eligible_symbols_hash
 from governance.pre_phase6 import GovernedStatus, governed_status, metric_applicability
@@ -173,6 +178,7 @@ class PrePhase6Admission(BaseModel):
     expected_symbols: tuple[str, ...]
     factor_batch_hashes: dict[Literal["Quality", "Value", "Momentum"], str]
     admitted_observation_hashes: tuple[str, ...]
+    metric_registry_identity: str = Field(pattern=r"^[0-9a-f]{64}$")
     qvm_sealed_lineage_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     admission_artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     admitted: Literal[True] = True
@@ -278,8 +284,18 @@ def admit_sealed_for_phase6(*, batches: tuple[GovernedFactorBatch, ...]) -> PreP
         if len(keys) != len(set(keys)):
             raise ValueError(f"{batch.factor} has duplicate symbol/metric observations")
         admitted_symbols: set[str] = set()
+        classifications = {
+            item.symbol.strip().upper(): item for item in batch.classification_records
+        }
         for observation in batch.observations:
+            validate_observation_semantics(observation)
             status = governed_status(observation.status)
+            classification = classifications[observation.symbol.strip().upper()]
+            if (observation.sector, observation.industry) != (
+                classification.sector,
+                classification.industry,
+            ):
+                raise ValueError("observation classification does not match governed peers")
             applicability = metric_applicability(
                 observation.metric, observation.sector, observation.industry
             )
@@ -307,6 +323,7 @@ def admit_sealed_for_phase6(*, batches: tuple[GovernedFactorBatch, ...]) -> PreP
             item.factor: item.batch_identity_hash for item in sorted(validated, key=lambda x: x.factor)
         },
         "admitted_observation_hashes": tuple(sorted(admitted_hashes)),
+        "metric_registry_identity": metric_semantics_registry_identity(),
         "qvm_sealed_lineage_hash": typed_hash(
             {
                 "schema_version": "qvm-sealed-lineage-v2",

@@ -252,6 +252,43 @@ METRIC_SEMANTICS_REGISTRY: Mapping[tuple[str, str], MetricSemantics] = {
     )
 }
 
+METRIC_SEMANTICS_REGISTRY_VERSION = "qvm-metric-semantics-registry-v1"
+
+
+def metric_semantics_registry_identity() -> str:
+    """Identity of the single canonical QVM metric-semantics authority."""
+    return typed_hash(
+        {
+            "schema_version": METRIC_SEMANTICS_REGISTRY_VERSION,
+            "metrics": tuple(
+                METRIC_SEMANTICS_REGISTRY[key]
+                for key in sorted(METRIC_SEMANTICS_REGISTRY)
+            ),
+        }
+    )
+
+
+def validate_observation_semantics(observation: FactorObservation) -> MetricSemantics:
+    """Fail closed when a sealed observation is not registered exactly."""
+    semantics = METRIC_SEMANTICS_REGISTRY.get((observation.factor, observation.metric))
+    if semantics is None:
+        registered_factors = {
+            factor for factor, metric in METRIC_SEMANTICS_REGISTRY if metric == observation.metric
+        }
+        if registered_factors:
+            raise ValueError(
+                f"metric {observation.metric} is not registered for factor {observation.factor}"
+            )
+        raise ValueError(
+            f"unknown metric semantics: {observation.factor}.{observation.metric}"
+        )
+    if observation.unit != semantics.expected_unit:
+        raise ValueError(
+            f"unit mismatch for {observation.factor}.{observation.metric}: "
+            f"expected {semantics.expected_unit}, got {observation.unit}"
+        )
+    return semantics
+
 ECONOMIC_DIAGNOSTIC_ELIGIBLE_STATUSES = frozenset({"PASS"})
 
 

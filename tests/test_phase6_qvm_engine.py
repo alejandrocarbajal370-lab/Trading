@@ -6,9 +6,15 @@ import math
 import pytest
 from pydantic import ValidationError
 
-from factors.qvm import FactorObservation
-from governance.canonical import runtime_fingerprint
+from factors.qvm import FactorObservation, metric_semantics_registry_identity
+from governance.canonical import runtime_fingerprint, typed_hash
 from research.phase6_qvm import (
+    COHORT_POLICY,
+    NORMALIZATION_POLICY_IDENTITY,
+    OVERLAY_POLICY,
+    WEIGHT_POLICY_IDENTITY,
+    CohortPolicy,
+    OverlayPolicy,
     Phase6ResearchArtifact,
     QVMCompositeResult,
     _cohorts,
@@ -133,11 +139,27 @@ def test_normalized_result_hash_is_mutation_resistant() -> None:
 
 
 def test_artifact_lineage_fields_are_mutation_resistant() -> None:
+    governance_order = ("availability", "entity_resolution")
+    governance_identity = typed_hash({
+        "schema_version": "phase6-governance-order-identity-v1",
+        "version": "fixture-v1", "order": governance_order,
+    })
+    active_metric_set = ("Quality.roic",)
     artifact = _hashed(Phase6ResearchArtifact, {
         "admission_contract_version": "sealed-pre-phase6-admission-v2",
         "admission_artifact_hash": "a" * 64, "qvm_sealed_lineage_hash": "b" * 64,
         "factor_batch_hashes": {"Quality": "c" * 64},
-        "peer_assignment_hash": "d" * 64, "active_metric_set": ("Quality.roic",),
+        "metric_registry_identity": metric_semantics_registry_identity(),
+        "peer_assignment_hash": "d" * 64,
+        "normalization_policy_identity": NORMALIZATION_POLICY_IDENTITY,
+        "weight_policy_identity": WEIGHT_POLICY_IDENTITY,
+        "overlay_policy": OVERLAY_POLICY, "cohort_policy": COHORT_POLICY,
+        "governance_order_version": "fixture-v1", "governance_order": governance_order,
+        "governance_order_identity": governance_identity,
+        "active_metric_set": active_metric_set,
+        "active_metric_set_identity": typed_hash({
+            "schema_version": "phase6-active-metric-set-v1", "metrics": active_metric_set,
+        }),
         "runtime": runtime_fingerprint(), "metrics": (), "factors": (), "composites": (),
         "cohorts": (), "cohort_publication_status": "FAIL",
         "cohort_publication_reason": "fixture",
@@ -146,10 +168,13 @@ def test_artifact_lineage_fields_are_mutation_resistant() -> None:
         ("factor_batch_hashes", {"Quality": "e" * 64}),
         ("active_metric_set", ("Quality.fcf_margin",)),
         ("peer_assignment_hash", "f" * 64),
+        ("metric_registry_identity", "0" * 64),
+        ("normalization_policy_identity", "1" * 64),
+        ("weight_policy_identity", "2" * 64),
     ):
         payload = artifact.model_dump(mode="python")
         payload[field] = value
-        with pytest.raises(ValidationError, match="artifact hash mismatch"):
+        with pytest.raises(ValidationError, match="(artifact hash|identity) mismatch"):
             Phase6ResearchArtifact(**payload)
 
 
@@ -158,6 +183,17 @@ def test_reorder_determinism_and_canonical_result_hashes() -> None:
     first = _normalize_metric(rows, True)
     second = _normalize_metric(list(reversed(rows)), True)
     assert first == second
+
+
+def test_overlay_and_cohort_policy_stale_hashes_are_rejected() -> None:
+    overlay = OVERLAY_POLICY.model_dump(mode="python")
+    overlay["leverage_block_threshold"] = 5.5
+    with pytest.raises(ValidationError, match="overlay policy hash mismatch"):
+        OverlayPolicy(**overlay)
+    cohort = COHORT_POLICY.model_dump(mode="python")
+    cohort["minimum_eligible_count"] = 99
+    with pytest.raises(ValidationError, match="cohort policy hash mismatch"):
+        CohortPolicy(**cohort)
 
 
 def _composite(index: int, score: float, overlay: str = "PASS") -> QVMCompositeResult:

@@ -1,5 +1,6 @@
 import datetime
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -32,6 +33,7 @@ from governance.research_chain import (
     seal_factor_output,
 )
 from research.datasets import file_sha256
+from research.phase6_qvm import run_phase6_qvm_research
 from research.pre_phase6_readiness import admit_sealed_for_phase6
 from research.qvm_runner import run_qvm_research
 from universe.validation import UniverseRules
@@ -816,6 +818,68 @@ def test_unknown_status_fails_at_producer_sealing_and_admission(tmp_path: Path) 
     )
     with pytest.raises(ValidationError, match="observations.0.status"):
         admit_sealed_for_phase6(batches=tuple(batches))
+
+
+@pytest.mark.parametrize(
+    ("updates", "message"),
+    [
+        ({"metric": "unregistered_metric", "unit": "ratio"}, "unknown metric semantics"),
+        ({"unit": "unknown_unit"}, "unit mismatch"),
+        ({"unit": "ratio"}, "unit mismatch"),
+        ({"metric": "fcf_yield", "unit": "ratio"}, "not registered for factor"),
+    ],
+)
+def test_rehashed_semantic_mutations_fail_closed_at_real_admission(
+    tmp_path: Path, updates: dict[str, object], message: str
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update=updates)
+    changed = tuple(observations)
+    batches[0] = _reseal(
+        batches[0], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises((ValueError, ValidationError), match=message):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_rehashed_duplicate_metric_fails_closed_at_real_admission(tmp_path: Path) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = (*batches[0].observations, batches[0].observations[0])
+    batches[0] = _reseal(
+        batches[0], observations=observations, factor_dataset_hash=factor_dataset_hash(observations)
+    )
+    with pytest.raises(ValueError, match="duplicate symbol/metric"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf")])
+def test_rehashed_nonfinite_pass_fails_closed_at_real_admission(
+    tmp_path: Path, value: float
+) -> None:
+    batches = list(_admission_batches(tmp_path))
+    observations = list(batches[0].observations)
+    observations[0] = observations[0].model_copy(update={"value": value})
+    changed = tuple(observations)
+    if math.isinf(value):
+        with pytest.raises(ValueError, match="finite"):
+            factor_dataset_hash(changed)
+        return
+    batches[0] = _reseal(
+        batches[0], observations=changed, factor_dataset_hash=factor_dataset_hash(changed)
+    )
+    with pytest.raises((ValueError, ValidationError), match="finite"):
+        admit_sealed_for_phase6(batches=tuple(batches))
+
+
+def test_valid_registered_metric_unit_crosses_admission_and_phase6_consumer(
+    tmp_path: Path,
+) -> None:
+    batches = _admission_batches(tmp_path)
+    admission = admit_sealed_for_phase6(batches=batches)
+    artifact = run_phase6_qvm_research(admission=admission, batches=batches)
+    assert artifact.metric_registry_identity == admission.metric_registry_identity
+    assert artifact.trade_decision == "NO_TRADE"
 
 
 @pytest.mark.parametrize(

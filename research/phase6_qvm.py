@@ -8,7 +8,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
 
-from factors.qvm import METRIC_SEMANTICS_REGISTRY, FactorObservation, factor_observation_hash
+from factors.qvm import (
+    METRIC_SEMANTICS_REGISTRY,
+    FactorObservation,
+    factor_observation_hash,
+    metric_semantics_registry_identity,
+)
 from governance.canonical import RuntimeFingerprint, runtime_fingerprint, typed_hash
 from governance.research_chain import GovernedFactorBatch
 from research.pre_phase6_readiness import (
@@ -21,6 +26,7 @@ TRANSFORMATION_VERSION = "rank-gaussian-5mad-v1"
 WEIGHT_POLICY_VERSION = "phase6-frozen-baseline-weights-v1"
 OVERLAY_POLICY_VERSION = "capital-preservation-overlay-v1"
 COHORT_POLICY_VERSION = "phase6-research-cohorts-v1"
+GOVERNANCE_ORDER_IDENTITY_VERSION = "phase6-governance-order-identity-v1"
 
 PRIMARY_WEIGHTS: dict[str, dict[str, float]] = {
     "Quality": {
@@ -39,6 +45,65 @@ PRIMARY_WEIGHTS: dict[str, dict[str, float]] = {
 
 class ResearchModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class OverlayPolicy(ResearchModel):
+    policy_version: Literal["capital-preservation-overlay-v1"] = OVERLAY_POLICY_VERSION
+    leverage_review_threshold: float = 4.0
+    leverage_block_threshold: float = 6.0
+    cfo_conversion_review_threshold: float = 0.8
+    accrual_review_threshold: float = 0.10
+    leverage_block_flag: Literal["EXTREME_LEVERAGE_BLOCK"] = "EXTREME_LEVERAGE_BLOCK"
+    leverage_review_flag: Literal["EXTREME_LEVERAGE_REVIEW"] = "EXTREME_LEVERAGE_REVIEW"
+    cfo_review_flag: Literal["CFO_CONVERSION_REVIEW"] = "CFO_CONVERSION_REVIEW"
+    accrual_review_flag: Literal["ACCRUAL_REVIEW"] = "ACCRUAL_REVIEW"
+    missing_metric_semantics: Literal["NO_FLAG"] = "NO_FLAG"
+    deferred_controls: tuple[str, ...] = (
+        "provider-dependent-distress-controls",
+        "provider-dependent-liquidity-controls",
+    )
+    deferred_controls_state: Literal["NOT_EVALUATED"] = "NOT_EVALUATED"
+    outcome_mapping: tuple[str, ...] = ("PASS", "REVIEW", "BLOCK")
+    governance_position: Literal["AFTER_COMPOSITE_ELIGIBILITY"] = (
+        "AFTER_COMPOSITE_ELIGIBILITY"
+    )
+    policy_hash: str
+
+    @model_validator(mode="after")
+    def verify_policy_hash(self, info: ValidationInfo) -> OverlayPolicy:
+        if not (info.context and info.context.get("skip_hash")) and typed_hash(
+            self.model_dump(mode="python", exclude={"policy_hash"})
+        ) != self.policy_hash:
+            raise ValueError("overlay policy hash mismatch")
+        return self
+
+
+class CohortPolicy(ResearchModel):
+    policy_version: Literal["phase6-research-cohorts-v1"] = COHORT_POLICY_VERSION
+    bucket_count: Literal[10] = 10
+    top_fraction: float = 0.10
+    middle_lower_fraction: float = 0.40
+    middle_upper_fraction: float = 0.60
+    bottom_fraction: float = 0.10
+    cohort_definitions: tuple[str, ...] = ("TOP_10_PERCENT", "MIDDLE_40_60", "BOTTOM_10_PERCENT")
+    tie_boundary_policy: Literal["EXPAND_DO_NOT_SPLIT_EQUAL_COMPOSITES"] = (
+        "EXPAND_DO_NOT_SPLIT_EQUAL_COMPOSITES"
+    )
+    economic_order: tuple[str, ...] = ("composite", "quality", "value", "momentum")
+    display_tiebreaker: Literal["SYMBOL_ONLY"] = "SYMBOL_ONLY"
+    minimum_eligible_count: int = 100
+    minimum_complete_fraction: float = 0.60
+    top_review_semantics: Literal["EXCLUDE_FROM_TOP"] = "EXCLUDE_FROM_TOP"
+    research_only: Literal[True] = True
+    policy_hash: str
+
+    @model_validator(mode="after")
+    def verify_policy_hash(self, info: ValidationInfo) -> CohortPolicy:
+        if not (info.context and info.context.get("skip_hash")) and typed_hash(
+            self.model_dump(mode="python", exclude={"policy_hash"})
+        ) != self.policy_hash:
+            raise ValueError("cohort policy hash mismatch")
+        return self
 
 
 class MetricStatus(StrEnum):
@@ -170,8 +235,17 @@ class Phase6ResearchArtifact(ResearchModel):
     admission_artifact_hash: str
     qvm_sealed_lineage_hash: str
     factor_batch_hashes: dict[str, str]
+    metric_registry_identity: str
     peer_assignment_hash: str
+    normalization_policy_identity: str
+    weight_policy_identity: str
+    overlay_policy: OverlayPolicy
+    cohort_policy: CohortPolicy
+    governance_order_version: str
+    governance_order: tuple[str, ...]
+    governance_order_identity: str
     active_metric_set: tuple[str, ...]
+    active_metric_set_identity: str
     runtime: RuntimeFingerprint
     metrics: tuple[NormalizedMetricResult, ...]
     factors: tuple[FactorScoreResult, ...]
@@ -193,6 +267,30 @@ class Phase6ResearchArtifact(ResearchModel):
     def verify_hash(self, info: ValidationInfo) -> Phase6ResearchArtifact:
         if info.context and info.context.get("skip_hash"):
             return self
+        if self.metric_registry_identity != metric_semantics_registry_identity():
+            raise ValueError("metric registry identity mismatch")
+        if self.normalization_policy_identity != NORMALIZATION_POLICY_IDENTITY:
+            raise ValueError("normalization policy identity mismatch")
+        if self.weight_policy_identity != WEIGHT_POLICY_IDENTITY:
+            raise ValueError("weight policy identity mismatch")
+        if self.overlay_policy != OVERLAY_POLICY:
+            raise ValueError("overlay policy is not the executed policy")
+        if self.cohort_policy != COHORT_POLICY:
+            raise ValueError("cohort policy is not the executed policy")
+        expected_governance = typed_hash(
+            {
+                "schema_version": GOVERNANCE_ORDER_IDENTITY_VERSION,
+                "version": self.governance_order_version,
+                "order": self.governance_order,
+            }
+        )
+        if self.governance_order_identity != expected_governance:
+            raise ValueError("governance order identity mismatch")
+        expected_active = typed_hash(
+            {"schema_version": "phase6-active-metric-set-v1", "metrics": self.active_metric_set}
+        )
+        if self.active_metric_set_identity != expected_active:
+            raise ValueError("active metric set identity mismatch")
         if typed_hash(self.model_dump(mode="python", exclude={"artifact_hash"})) != self.artifact_hash:
             raise ValueError("Phase 6 artifact hash mismatch")
         return self
@@ -204,6 +302,30 @@ def _hashed(model: type[BaseModel], values: dict[str, Any], field: str = "result
     )
     values[field] = typed_hash(provisional.model_dump(mode="python", exclude={field}))
     return model(**values)
+
+
+OVERLAY_POLICY = _hashed(OverlayPolicy, {}, field="policy_hash")
+COHORT_POLICY = _hashed(CohortPolicy, {}, field="policy_hash")
+NORMALIZATION_POLICY_IDENTITY = typed_hash(
+    {
+        "policy_version": TRANSFORMATION_VERSION,
+        "clipping": "median-plus-minus-5-MAD",
+        "zero_scale": "INACTIVE",
+        "ranking": "MIDRANK",
+        "transform": "RANK_GAUSSIAN",
+        "score_bounds": (-3.0, 3.0),
+        "peer_minimums": {"industry": 20, "sector": 30, "market": 100},
+        "peer_fallback_order": ("industry", "sector", "market"),
+    }
+)
+WEIGHT_POLICY_IDENTITY = typed_hash(
+    {
+        "policy_version": WEIGHT_POLICY_VERSION,
+        "within_factor_weights": PRIMARY_WEIGHTS,
+        "composite_weights": {"Quality": 1 / 3, "Value": 1 / 3, "Momentum": 1 / 3},
+        "missingness": "ACTIVE_DENOMINATOR_NO_IMPUTATION",
+    }
+)
 
 
 def _missing_class(observation: FactorObservation) -> MissingClass:
@@ -374,19 +496,21 @@ def _factor_results(metrics: list[NormalizedMetricResult]) -> list[FactorScoreRe
     return output
 
 
-def _overlay(symbol_metrics: list[NormalizedMetricResult]) -> tuple[str, tuple[str, ...]]:
+def _overlay(
+    symbol_metrics: list[NormalizedMetricResult], policy: OverlayPolicy = OVERLAY_POLICY
+) -> tuple[str, tuple[str, ...]]:
     raw = {item.metric: item.raw_value for item in symbol_metrics if item.raw_value is not None}
     flags: list[str] = []
     outcome = "PASS"
     leverage = raw.get("net_debt_to_ebitda")
-    if leverage is not None and leverage >= 6:
-        return "BLOCK", ("EXTREME_LEVERAGE_BLOCK",)
-    if leverage is not None and leverage >= 4:
-        flags.append("EXTREME_LEVERAGE_REVIEW")
-    if raw.get("cfo_conversion", math.inf) < 0.8:
-        flags.append("CFO_CONVERSION_REVIEW")
-    if raw.get("raw_accrual_ratio", -math.inf) > 0.10:
-        flags.append("ACCRUAL_REVIEW")
+    if leverage is not None and leverage >= policy.leverage_block_threshold:
+        return "BLOCK", (policy.leverage_block_flag,)
+    if leverage is not None and leverage >= policy.leverage_review_threshold:
+        flags.append(policy.leverage_review_flag)
+    if raw.get("cfo_conversion", math.inf) < policy.cfo_conversion_review_threshold:
+        flags.append(policy.cfo_review_flag)
+    if raw.get("raw_accrual_ratio", -math.inf) > policy.accrual_review_threshold:
+        flags.append(policy.accrual_review_flag)
     if flags:
         outcome = "REVIEW"
     return outcome, tuple(sorted(flags))
@@ -422,10 +546,14 @@ def _composites(
     return output
 
 
-def _cohorts(composites: list[QVMCompositeResult]) -> tuple[list[ResearchCohortResult], str, str | None]:
+def _cohorts(
+    composites: list[QVMCompositeResult], policy: CohortPolicy = COHORT_POLICY
+) -> tuple[list[ResearchCohortResult], str, str | None]:
     eligible = [item for item in composites if item.model_status == "ELIGIBLE" and item.composite is not None]
     governed_count = len(composites)
-    if len(eligible) < 100 or len(eligible) / governed_count < 0.60:
+    if len(eligible) < policy.minimum_eligible_count or (
+        governed_count and len(eligible) / governed_count < policy.minimum_complete_fraction
+    ):
         return [], "FAIL", "requires at least 100 and 60% complete composite scores"
     ordered = sorted(eligible, key=lambda item: (
         -float(item.composite), -float(item.quality), -float(item.value),
@@ -435,13 +563,13 @@ def _cohorts(composites: list[QVMCompositeResult]) -> tuple[list[ResearchCohortR
     ranks = _midranks(economic_values)
     output = []
     n = len(ordered)
-    top_cutoff = float(ordered[math.ceil(n * 0.10) - 1].composite)
-    middle_high = float(ordered[math.floor(n * 0.40)].composite)
-    middle_low = float(ordered[math.ceil(n * 0.60) - 1].composite)
-    bottom_cutoff = float(ordered[math.floor(n * 0.90)].composite)
+    top_cutoff = float(ordered[math.ceil(n * policy.top_fraction) - 1].composite)
+    middle_high = float(ordered[math.floor(n * policy.middle_lower_fraction)].composite)
+    middle_low = float(ordered[math.ceil(n * policy.middle_upper_fraction) - 1].composite)
+    bottom_cutoff = float(ordered[math.floor(n * (1 - policy.bottom_fraction))].composite)
     for position, (item, rank) in enumerate(zip(ordered, ranks, strict=True), start=1):
         percentile = (rank - 0.5) / n
-        decile = min(10, int((rank - 1) * 10 / n) + 1)
+        decile = min(policy.bucket_count, int((rank - 1) * policy.bucket_count / n) + 1)
         composite = float(item.composite)
         cohort = (
             "TOP" if composite >= top_cutoff else
@@ -486,13 +614,34 @@ def run_phase6_qvm_research(
     composites = _composites(factors, metrics)
     cohorts, cohort_status, cohort_reason = _cohorts(composites)
     first = validated_batches[0]
+    governance_order_identity = typed_hash(
+        {
+            "schema_version": GOVERNANCE_ORDER_IDENTITY_VERSION,
+            "version": first.governance_order_version,
+            "order": first.governance_order,
+        }
+    )
+    active_metric_set = tuple(
+        sorted(f"{factor}.{metric}" for (factor, metric), state in active.items() if state)
+    )
     values = {
         "admission_contract_version": validated_admission.contract_version,
         "admission_artifact_hash": validated_admission.admission_artifact_hash,
         "qvm_sealed_lineage_hash": validated_admission.qvm_sealed_lineage_hash,
         "factor_batch_hashes": dict(sorted(validated_admission.factor_batch_hashes.items())),
+        "metric_registry_identity": validated_admission.metric_registry_identity,
         "peer_assignment_hash": first.peer_assignment_hash,
-        "active_metric_set": tuple(sorted(f"{factor}.{metric}" for (factor, metric), state in active.items() if state)),
+        "normalization_policy_identity": NORMALIZATION_POLICY_IDENTITY,
+        "weight_policy_identity": WEIGHT_POLICY_IDENTITY,
+        "overlay_policy": OVERLAY_POLICY,
+        "cohort_policy": COHORT_POLICY,
+        "governance_order_version": first.governance_order_version,
+        "governance_order": first.governance_order,
+        "governance_order_identity": governance_order_identity,
+        "active_metric_set": active_metric_set,
+        "active_metric_set_identity": typed_hash(
+            {"schema_version": "phase6-active-metric-set-v1", "metrics": active_metric_set}
+        ),
         "runtime": runtime_fingerprint(), "metrics": tuple(metrics), "factors": tuple(factors),
         "composites": tuple(composites), "cohorts": tuple(cohorts),
         "cohort_publication_status": cohort_status,
