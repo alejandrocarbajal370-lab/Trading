@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 import email.utils
-import gzip
 import json
 import re
 import threading
@@ -24,6 +23,9 @@ SEC_HTTP_POLICY_VERSION = "sec-fair-access-http-v2"
 SEC_RETENTION_POLICY = "immutable raw response retained indefinitely pending legal review"
 SUPPORTED_FORMS = frozenset({"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A", "40-F", "40-F/A", "6-K", "6-K/A"})
 MAX_RESPONSE_BYTES = 50 * 1024 * 1024
+REQUIRED_SUBMISSION_COLUMNS = (
+    "accessionNumber", "acceptanceDateTime", "filingDate", "form",
+)
 
 
 class SecEdgarError(RuntimeError):
@@ -67,24 +69,64 @@ def _validate_sec_url(url: str) -> None:
         raise SecEdgarError("unsafe SEC URL")
 
 
+def canonical_accession(value: object) -> str:
+    """Return the unique SEC 10-2-6 accession representation."""
+    if not isinstance(value, str):
+        raise SecEdgarError("invalid SEC accession")
+    text = value.strip()
+    if re.fullmatch(r"\d{18}", text):
+        digits = text
+    elif re.fullmatch(r"\d{10}-\d{2}-\d{6}", text):
+        digits = text.replace("-", "")
+    else:
+        raise SecEdgarError("invalid SEC accession")
+    if digits == "0" * 18:
+        raise SecEdgarError("placeholder SEC accession")
+    return f"{digits[:10]}-{digits[10:12]}-{digits[12:]}"
+
+
+def _valid_json_bytes(body: bytes) -> bool:
+    try:
+        return isinstance(json.loads(body), (dict, list))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return False
+
+
+def _bounded_decompress(body: bytes, window: int, label: str) -> bytes:
+    try:
+        decoder = zlib.decompressobj(window)
+        decoded = decoder.decompress(body, MAX_RESPONSE_BYTES + 1)
+        if decoder.unconsumed_tail or len(decoded) > MAX_RESPONSE_BYTES:
+            raise SecEdgarError("SEC response exceeds maximum size")
+        decoded += decoder.flush(MAX_RESPONSE_BYTES + 1 - len(decoded))
+    except zlib.error as error:
+        raise SecEdgarError(f"invalid {label} SEC response") from error
+    if len(decoded) > MAX_RESPONSE_BYTES or not decoder.eof:
+        raise SecEdgarError(
+            "SEC response exceeds maximum size" if len(decoded) > MAX_RESPONSE_BYTES
+            else f"invalid {label} SEC response"
+        )
+    return decoded
+
+
 def _decode_body(body: bytes, encoding: str) -> bytes:
     normalized = encoding.strip().lower()
     if normalized in ("", "identity"):
         return body
     if normalized == "gzip":
-        if not body.startswith(b"\x1f\x8b"):
-            return body
-        try:
-            return gzip.decompress(body)
-        except (EOFError, OSError) as error:
-            raise SecEdgarError("invalid gzip SEC response") from error
+        if body.startswith(b"\x1f\x8b"):
+            return _bounded_decompress(body, zlib.MAX_WBITS | 16, "gzip")
+        if _valid_json_bytes(body):
+            return body  # urllib/intermediary already decoded the declared wire encoding
+        raise SecEdgarError("invalid gzip SEC response")
     if normalized == "deflate":
         for window in (zlib.MAX_WBITS, -zlib.MAX_WBITS):
             try:
-                return zlib.decompress(body, window)
-            except zlib.error:
-                pass
-        if body.lstrip().startswith((b"{", b"[")):
+                return _bounded_decompress(body, window, "deflate")
+            except SecEdgarError as error:
+                if "maximum size" in str(error):
+                    raise
+        if _valid_json_bytes(body):
             return body
         raise SecEdgarError("invalid deflate SEC response")
     raise SecEdgarError(f"unsupported SEC Content-Encoding: {encoding}")
@@ -107,9 +149,13 @@ def _default_transport(url: str, headers: dict[str, str], timeout: float) -> Sec
             )
     except urllib.error.HTTPError as error:
         _validate_sec_url(error.geturl())
+        body = error.read(MAX_RESPONSE_BYTES + 1)
+        if len(body) > MAX_RESPONSE_BYTES:
+            raise SecEdgarError("SEC response exceeds maximum size")
+        encoding = error.headers.get("Content-Encoding", "identity")
         return SecEdgarResponse(
-            error.read(MAX_RESPONSE_BYTES + 1), error.headers.get_content_type().lower(),
-            error.code, error.geturl(), error.headers.get("Content-Encoding", "identity"),
+            _decode_body(body, encoding), error.headers.get_content_type().lower(),
+            error.code, error.geturl(), encoding,
             error.headers.get("Retry-After"),
         )
     except (urllib.error.URLError, TimeoutError) as error:
@@ -164,7 +210,11 @@ class SecEdgarFundamentalsSource:
             filings = submissions.get("filings")
             if not isinstance(filings, dict):
                 raise SecEdgarError(f"SEC submissions response lacks filings for {symbol}")
-            accepted = self._acceptance_by_accession(submissions)
+            recent = filings.get("recent")
+            recent_schema_valid = self._submission_columns_consistent(recent)
+            if not recent_schema_valid:
+                raise SecEdgarError(f"SEC recent submissions columns are inconsistent for {symbol}")
+            accepted = self._acceptance_by_accession(recent)
             historical_files = filings.get("files", [])
             if not isinstance(historical_files, list):
                 raise SecEdgarError(f"SEC historical submissions index is malformed for {symbol}")
@@ -175,8 +225,10 @@ class SecEdgarFundamentalsSource:
                     raise SecEdgarError(f"unsafe historical submissions reference for {symbol}")
                 history, history_manifest = self._json(
                     f"/submissions/{name}", f"submissions-history:{cik}:{name}", cutoff)
-                self._merge_accessions(accepted, self._acceptance_by_accession(history), symbol)
-                if not self._history_metadata_consistent(item, history):
+                schema_valid = self._submission_columns_consistent(history)
+                if schema_valid:
+                    self._merge_accessions(accepted, self._acceptance_by_accession(history), symbol)
+                if not schema_valid or not self._history_metadata_consistent(item, history):
                     completeness[symbol.upper()] = "GAPS_DETECTED"
                 manifests.append(history_manifest)
             facts, facts_manifest = self._json(
@@ -223,6 +275,8 @@ class SecEdgarFundamentalsSource:
                 "User-Agent": self.user_agent, "Accept": "application/json",
                 "Accept-Encoding": "gzip, deflate"}, self.timeout_seconds)
             _validate_sec_url(response.final_url or url)
+            if len(response.body) > MAX_RESPONSE_BYTES:
+                raise SecEdgarError("SEC response exceeds maximum size")
             if response.status_code == 429 or 500 <= response.status_code <= 599:
                 if attempt == self.max_retries:
                     raise SecEdgarError(f"SEC retry budget exhausted for {resource}")
@@ -230,20 +284,21 @@ class SecEdgarFundamentalsSource:
                 continue
             if response.status_code != 200:
                 raise SecEdgarError(f"unexpected SEC HTTP status {response.status_code} for {resource}")
+            body = _decode_body(response.body, response.content_encoding)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise SecEdgarError("SEC response exceeds maximum size")
             if response.content_type.lower() not in {"application/json", "application/geo+json"}:
                 raise SecEdgarError(f"unexpected SEC Content-Type for {resource}")
-            if len(response.body) > MAX_RESPONSE_BYTES:
-                raise SecEdgarError("SEC response exceeds maximum size")
             acquired_at = self.clock()
             if acquired_at.tzinfo is None or acquired_at.utcoffset() is None:
                 raise SecEdgarError("acquisition clock must be timezone-aware")
             manifest = self.raw_store.preserve(
-                provider="sec_edgar", resource=resource, request_url=url, payload=response.body,
+                provider="sec_edgar", resource=resource, request_url=url, payload=body,
                 as_of=as_of, acquired_at=acquired_at, content_type=response.content_type,
                 licensing_status="APPROVED" if self.licensing_approved else "PENDING_LEGAL_APPROVAL",
                 retention_policy=SEC_RETENTION_POLICY)
             try:
-                payload = json.loads(response.body)
+                payload = json.loads(body)
             except (UnicodeDecodeError, json.JSONDecodeError) as error:
                 raise SecEdgarError(f"SEC returned invalid JSON for {resource}") from error
             if not isinstance(payload, dict):
@@ -263,19 +318,17 @@ class SecEdgarFundamentalsSource:
                     pass
         return float(2**attempt)
 
-    def _acceptance_by_accession(self, payload: dict[str, object]) -> dict[str, datetime.datetime]:
+    def _acceptance_by_accession(self, payload: object) -> dict[str, datetime.datetime]:
         try:
-            filings = payload.get("filings")
-            recent = filings["recent"] if isinstance(filings, dict) else payload
-            accessions, timestamps = recent["accessionNumber"], recent["acceptanceDateTime"]
+            accessions, timestamps = payload["accessionNumber"], payload["acceptanceDateTime"]
         except (KeyError, TypeError) as error:
             raise SecEdgarError("SEC submissions response lacks acceptance chronology") from error
         if not isinstance(accessions, list) or not isinstance(timestamps, list) or len(accessions) != len(timestamps):
             raise SecEdgarError("SEC submissions columns are inconsistent")
         result: dict[str, datetime.datetime] = {}
         for accession, timestamp in zip(accessions, timestamps, strict=True):
-            accession_text = str(accession).strip()
-            if not accession_text or timestamp is None:
+            accession_text = canonical_accession(accession)
+            if timestamp is None:
                 raise SecEdgarError("invalid acceptance chronology")
             try:
                 parsed = pd.Timestamp(timestamp)
@@ -294,6 +347,13 @@ class SecEdgarFundamentalsSource:
         return result
 
     @staticmethod
+    def _submission_columns_consistent(payload: object) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        columns = [payload.get(name) for name in REQUIRED_SUBMISSION_COLUMNS]
+        return all(isinstance(column, list) for column in columns) and len({len(column) for column in columns}) == 1
+
+    @staticmethod
     def _merge_accessions(target: dict[str, datetime.datetime], incoming: dict[str, datetime.datetime], symbol: str) -> None:
         for accession, accepted_at in incoming.items():
             if accession in target and target[accession] != accepted_at:
@@ -302,18 +362,18 @@ class SecEdgarFundamentalsSource:
 
     @staticmethod
     def _history_metadata_consistent(metadata: object, history: dict[str, object]) -> bool:
-        if not isinstance(metadata, dict) or not isinstance(history.get("accessionNumber"), list):
+        if not isinstance(metadata, dict) or not SecEdgarFundamentalsSource._submission_columns_consistent(history):
             return False
         count = metadata.get("filingCount")
-        if count is not None and (not isinstance(count, int) or count != len(history["accessionNumber"])):
+        if not isinstance(count, int) or isinstance(count, bool) or count != len(history["accessionNumber"]):
             return False
         dates = history.get("filingDate")
-        if dates is None:
-            return metadata.get("filingFrom") is None and metadata.get("filingTo") is None
-        if not isinstance(dates, list) or not dates:
+        filing_from, filing_to = metadata.get("filingFrom"), metadata.get("filingTo")
+        if not dates:
+            return count == 0 and filing_from is None and filing_to is None
+        if not all(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) for value in dates):
             return False
-        return ((metadata.get("filingFrom") is None or metadata["filingFrom"] == min(dates))
-                and (metadata.get("filingTo") is None or metadata["filingTo"] == max(dates)))
+        return filing_from == min(dates) and filing_to == max(dates)
 
     @staticmethod
     def _facts(symbol: str, payload: dict[str, object], accepted: dict[str, datetime.datetime], as_of: datetime.datetime) -> list[dict[str, object]]:
@@ -336,7 +396,7 @@ class SecEdgarFundamentalsSource:
                     for observation in observations:
                         if not isinstance(observation, dict) or observation.get("form") not in SUPPORTED_FORMS:
                             continue
-                        accession = str(observation.get("accn", "")).strip()
+                        accession = canonical_accession(observation.get("accn"))
                         if accession not in accepted:
                             raise SecEdgarError(f"missing acceptance timestamp for {symbol}/{accession}")
                         available_at = accepted[accession]

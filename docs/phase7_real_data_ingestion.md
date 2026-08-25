@@ -18,20 +18,25 @@ timestamps, never `filed`, determine PIT availability. Missing/null/invalid/naiv
 fail closed by default. Observations after `as_of` are explicitly excluded; a future-only result is
 reported as such and fails closed. The exact cutoff boundary is inclusive.
 
-Accession joins and XBRL facts use semantic identities. Identical duplicates deduplicate;
+Accession joins and XBRL facts use one validated canonical 10-2-6 SEC identity, accepting the
+equivalent 18-digit wire form without inferring missing digits. Identical duplicates deduplicate;
 conflicting duplicates fail closed. Fact identity includes taxonomy, concept, unit, form, accession,
 start/end and frame, distinguishing duration from instant contexts. Taxonomy coverage remains
 explicit (`us-gaap`, `ifrs-full`, `dei`, `srt`, `custom/other`); `dei` is not eligible for automatic
 economic mapping. Units such as USD, CNY, SHARES, and PURE remain distinct.
 
-The local raw store separates immutable content identity (SHA-256) from acquisition events. Each
-event records both economic/PIT `as_of` and real `acquired_at`. Publication uses flushed temporary
+The local raw store separates immutable content identity (SHA-256) from acquisition events. Every
+fetch is intentionally a distinct acquisition event; identical bytes reuse the content SHA and
+blob. Each event records both economic/PIT `as_of` and real `acquired_at`. Publication uses flushed temporary
 files and conflict-safe atomic linking, so re-fetching identical bytes creates a new event while
 reusing content. Checksums detect mutation. This is logical local-FS immutability, **not WORM,
 object lock, legal hold, or production-grade distributed concurrency**.
 
-Historical SEC references are path-allowlisted and fetched individually without bursts. Their
-declared `filingCount` is checked when present. Status is
+Historical SEC references are path-allowlisted and fetched individually without bursts. Required
+parallel columns (`accessionNumber`, `acceptanceDateTime`, `filingDate`, `form`) must all exist and
+have identical lengths. Declared `filingCount`, `filingFrom`, and `filingTo` must match row bounds;
+missing, ambiguous, or inconsistent schema/metadata is conservatively `GAPS_DETECTED`, never
+complete. Status is
 `COMPLETE_WITHIN_SEC_REFERENCES`, `GAPS_DETECTED`, or unknown/failure; this never claims exhaustive
 issuer history beyond SEC's references. For broad coverage, evaluate SEC bulk archives
 `companyfacts.zip` and `submissions.zip`; this PR does not claim 5,000-security scale.

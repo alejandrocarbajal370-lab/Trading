@@ -14,7 +14,12 @@ NOW = datetime.datetime(2026, 8, 25, 20, 0, tzinfo=datetime.UTC)
 def _payloads(*, accepted="2026-02-01T16:00:00.000Z", files=None):
     submissions = {
         "filings": {
-            "recent": {"accessionNumber": ["0001-26-000001"], "acceptanceDateTime": [accepted]},
+            "recent": {
+                "accessionNumber": ["0000000001-26-000001"],
+                "acceptanceDateTime": [accepted],
+                "filingDate": ["2026-02-01"],
+                "form": ["10-K"],
+            },
             "files": [] if files is None else files,
         }
     }
@@ -22,7 +27,7 @@ def _payloads(*, accepted="2026-02-01T16:00:00.000Z", files=None):
         "cik": 1,
         "facts": {"us-gaap": {"Revenues": {"units": {"USD": [{
             "start": "2025-10-01", "end": "2025-12-31", "val": 100,
-            "accn": "0001-26-000001", "fy": 2025, "fp": "FY", "form": "10-K",
+            "accn": "0000000001-26-000001", "fy": 2025, "fp": "FY", "form": "10-K",
             "filed": "2026-02-01", "frame": "CY2025Q4",
         }]}}}},
     }
@@ -67,19 +72,61 @@ def test_future_filing_is_not_visible_and_no_data_fails_closed(tmp_path):
 
 def test_missing_acceptance_timestamp_fails_closed(tmp_path):
     submissions, facts = _payloads()
-    submissions["filings"]["recent"]["accessionNumber"] = []
-    submissions["filings"]["recent"]["acceptanceDateTime"] = []
+    for column in ("accessionNumber", "acceptanceDateTime", "filingDate", "form"):
+        submissions["filings"]["recent"][column] = []
     with pytest.raises(SecEdgarError, match="missing acceptance timestamp"):
         _source(tmp_path, submissions, facts).fetch(cik_by_symbol={"ABC": "1"}, as_of=NOW)
 
 
 def test_historical_submission_files_are_fetched_and_preserved(tmp_path):
     submissions, facts = _payloads(files=[{"name": "CIK0000000001-submissions-001.json"}])
-    history = {"accessionNumber": [], "acceptanceDateTime": []}
+    history = {column: [] for column in (
+        "accessionNumber", "acceptanceDateTime", "filingDate", "form"
+    )}
     result = _source(tmp_path, submissions, facts, history).fetch(
         cik_by_symbol={"ABC": "1"}, as_of=NOW
     )
     assert len(result.raw_manifests) == 3
+
+
+def test_recent_history_and_companyfacts_reconcile_canonical_accessions(tmp_path):
+    metadata = {
+        "name": "CIK0000000001-submissions-001.json", "filingCount": 1,
+        "filingFrom": "2025-01-01", "filingTo": "2025-01-01",
+    }
+    submissions, facts = _payloads(files=[metadata])
+    recent = submissions["filings"]["recent"]
+    recent["accessionNumber"] = ["000000000126000001"]
+    history = {
+        "accessionNumber": ["0000000001-26-000001"],
+        "acceptanceDateTime": recent["acceptanceDateTime"],
+        "filingDate": ["2025-01-01"], "form": ["10-K"],
+    }
+    facts["facts"]["us-gaap"]["Revenues"]["units"]["USD"][0]["accn"] = "000000000126000001"
+    result = _source(tmp_path, submissions, facts, history).fetch(
+        cik_by_symbol={"ABC": "1"}, as_of=NOW
+    )
+    assert result.facts.iloc[0]["accession"] == "0000000001-26-000001"
+    assert result.completeness_by_symbol == {"ABC": "COMPLETE_WITHIN_SEC_REFERENCES"}
+
+
+@pytest.mark.parametrize("column", ["filingDate", "acceptanceDateTime", "form"])
+def test_truncated_history_is_gaps_detected(tmp_path, column):
+    metadata = {
+        "name": "CIK0000000001-submissions-001.json", "filingCount": 1,
+        "filingFrom": "2025-01-01", "filingTo": "2025-01-01",
+    }
+    submissions, facts = _payloads(files=[metadata])
+    history = {
+        "accessionNumber": ["0000000001-25-000001"],
+        "acceptanceDateTime": ["2025-01-02T00:00:00Z"],
+        "filingDate": ["2025-01-01"], "form": ["10-K"],
+    }
+    history[column] = []
+    result = _source(tmp_path, submissions, facts, history).fetch(
+        cik_by_symbol={"ABC": "1"}, as_of=NOW
+    )
+    assert result.completeness_by_symbol == {"ABC": "GAPS_DETECTED"}
 
 
 def test_unsafe_historical_submission_reference_is_rejected(tmp_path):

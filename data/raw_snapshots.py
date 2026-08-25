@@ -119,13 +119,33 @@ class RawSnapshotStore:
         serialized = (json.dumps(manifest.model_dump(mode="json"), indent=2, sort_keys=True) + "\n").encode()
         event_path = event_dir / f"{acquisition_id}.json"
         with _STORE_LOCK:
-            if not _atomic_create(payload_path, payload) and payload_path.read_bytes() != payload:
-                raise RawSnapshotError("content-address collision or mutated raw snapshot")
-            if not _atomic_create(content_path, content_bytes) and content_path.read_bytes() != content_bytes:
-                raise RawSnapshotError("content manifest conflict")
-            if not _atomic_create(event_path, serialized):
-                raise RawSnapshotError("acquisition event collision")
-            self.verify(event_path)
+            payload_created = content_created = event_created = False
+            try:
+                payload_created = _atomic_create(payload_path, payload)
+                if not payload_created and payload_path.read_bytes() != payload:
+                    raise RawSnapshotError("content-address collision or mutated raw snapshot")
+                content_created = _atomic_create(content_path, content_bytes)
+                if not content_created and content_path.read_bytes() != content_bytes:
+                    raise RawSnapshotError("content manifest conflict")
+                event_created = _atomic_create(event_path, serialized)
+                if not event_created:
+                    raise RawSnapshotError("acquisition event collision")
+                self.verify(event_path)
+            except Exception:
+                # Best-effort rollback of files created by this local publication only.
+                for path, created in (
+                    (event_path, event_created),
+                    (content_path, content_created),
+                    (payload_path, payload_created),
+                ):
+                    if created:
+                        path.unlink(missing_ok=True)
+                for directory in (content_dir, content_dir.parent, event_dir):
+                    try:
+                        directory.rmdir()
+                    except OSError:
+                        pass
+                raise
         return manifest
 
     @staticmethod
