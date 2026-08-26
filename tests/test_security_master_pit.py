@@ -126,7 +126,9 @@ def test_ticker_reuse_and_same_ticker_different_security_do_not_merge():
 
 
 def test_outsider_exact_coverage_current_list_and_mutation_fail_closed():
-    result = reconstruct([security(), security(pid="outsider", record="s2", cik="0000000002")], [member()])
+    result = reconstruct([
+        security(), security(pid="outsider", symbol="OUT", record="s2", cik="0000000002")
+    ], [member()])
     assert result.artifact.permanent_identities == ("sec-1",)
     assert result.artifact.historical_completeness is False
     with pytest.raises(SecurityMasterPITError, match="exactly cover"):

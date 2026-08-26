@@ -5,6 +5,9 @@ Systematic Equity Research & Portfolio Engine built with a capital-preservation-
 Phase 7B security-master and historical-constituents PIT contracts are documented in
 [`docs/phase7b_security_master_constituents.md`](docs/phase7b_security_master_constituents.md).
 They remain research-only and `INSUFFICIENT_REAL_DATA`; no real historical provider is connected.
+The versioned Phase 7B -> Phase 7A SEC bridge is contract-closed with synthetic/adversarial tests, but
+provider coverage and licensed historical evidence remain `OPEN-EXTERNAL`; this is not real-data
+validation or permission to backtest.
 
 ## Current stage
 

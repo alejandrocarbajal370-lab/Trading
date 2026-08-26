@@ -1,49 +1,94 @@
 # Phase 7B — Security Master + Historical Constituents PIT Foundation
 
-This phase contract-closes the research-only boundary
-`historical constituents/security master PIT -> governed Universe -> permanent identity -> CIK -> SEC`.
-It does not map SEC facts into Accounting/QVM or authorize backtesting, signals, portfolios, or
-execution. The fixed state is `INSUFFICIENT_REAL_DATA`, `NO_TRADE`, execution disabled, and no signals.
+Phase 7B contract-closes the synthetic/research boundary
+`historical constituents + security master -> PIT reconstruction -> governed Universe -> sealed
+Phase 7B/7A bridge -> SEC issuer plan`. It does not establish real historical-data readiness, map SEC
+facts into Accounting/QVM, or authorize backtesting, signals, portfolios, orders, or execution.
 
-## Provider audit
+The fixed state remains `global_readiness=INSUFFICIENT_REAL_DATA`, `trade_decision=NO_TRADE`,
+`live_execution_enabled=false`, and `signals_generated=false`.
 
-No provider is connected. Existing repository connectors do not supply historical index membership
-plus stable security identity. SEC ticker/CIK files are periodically updated search associations whose
-accuracy and scope SEC does not guarantee. Nasdaq Trader symbol directories are current directories,
-not demonstrated historical constituent/security-master archives. Either could only become a
-raw-preserved `PARTIAL_REAL_PROVIDER`.
+## Contract inventory
 
-Official evidence reviewed: [SEC EDGAR data access](https://www.sec.gov/search-filings/edgar-search-assistance/accessing-edgar-data),
-[Nasdaq Trader symbol definitions](https://nasdaqtrader.com/Trader.aspx?id=SymbolDirDefs), and
-[S&P DJI data/index licensing](https://www.spglobal.com/spdji/en/about-us/data-index-licensing/).
-
-Historical S&P constituent data is licensed. Integration requires an approved agreement covering use,
-retention, derived artifacts, and redistribution. Current web constituent lists, including Wikipedia,
-are prohibited as PIT history because they are survivorship-biased and cannot prove `available_at`.
-
-| Capability | State | Remaining condition |
+| Contract or policy | Version | State |
 |---|---|---|
-| Security-master PIT contract | CLOSED | Implemented stable identity, temporal listing/ticker, CIK lineage, provider/legal metadata |
-| Historical-constituents PIT contract | CLOSED | Implemented entry/exit, record validity, availability and permanent-ID joins |
-| Reconstruction, validation and hashes | CONTRACT-CLOSED | Provider/source/runtime/membership/master/CIK are sealed fail-closed |
-| Governed Universe -> SEC integration | CONTRACT-CLOSED | E2E contract test; ticker lists are not accepted |
-| SEC ticker associations | PARTIAL | Current CIK association only; no proven permanent security ID or membership history |
-| Nasdaq symbol directories | PARTIAL | Current listing evidence; historical completeness unproven |
-| Real security master + historical constituents | OPEN-EXTERNAL | License provider, prove coverage/PIT semantics, preserve raw acquisitions |
-| Structural merger/spinoff relationships | CONTRACT-CLOSED | Identity lineage only; economics remain out of scope |
-| Global readiness | OPEN-EXTERNAL | Remains `INSUFFICIENT_REAL_DATA` |
+| Security Master PIT | `security-master-pit-v2` | CONTRACT-CLOSED with synthetic/adversarial evidence |
+| Historical Constituents PIT | `historical-constituents-pit-v2` | CONTRACT-CLOSED with synthetic/adversarial evidence |
+| Canonical artifact | `security-master-constituents-artifact-v2` | CONTRACT-CLOSED |
+| Phase 7B -> Phase 7A SEC bridge | `phase7b-sec-mapping-bridge-v1` | CONTRACT-CLOSED |
+| Listing state | `listing-state-half-open-v1` | CONTRACT-CLOSED |
+| Symbology | `symbology-ticker-venue-class-type-v1` | CONTRACT-CLOSED |
+| Structural relationships | `structural-lineage-dag-v1` | CONTRACT-CLOSED for the four supported structural types only |
+| Bitemporal semantics | `effective-knowledge-correction-v1` | CONTRACT-CLOSED |
+| Provider coverage manifest | `historical-provider-coverage-v1` | CONTRACT-CLOSED harness; real evidence OPEN-EXTERNAL |
+| Real provider and licensed history | n/a | OPEN-EXTERNAL |
+| Global real-data readiness | n/a | `INSUFFICIENT_REAL_DATA` |
 
-Reconstruction rejects placeholder lineage, malformed hashes, future evidence, inactive listings,
-outsiders, duplicates, overlaps/conflicts, ambiguous identities, required-but-missing CIKs, stale hashes,
-and observations that do not exactly cover membership. Tickers are attributes: change and reuse never
-create or merge permanent identities. `historical_completeness` is fixed to false, so a current list
-cannot promote itself to complete history.
+`CONTRACT-CLOSED` means the typed synthetic contract and its negative tests are implemented. It does
+not mean `REAL-DATA-VALIDATED`.
 
-A real provider must use the existing content-addressed `RawSnapshotStore` for every response and bind
-the acquisition event, content hash, licensing status, and retention policy. Before changing
-`OPEN_EXTERNAL`, independently verify legal rights; stable-ID semantics; listing/delisting, ticker/name,
-share-class, merger/spinoff and constituent entry/exit coverage; corrections; announcement/effective
-dates; `available_at`; rate limits; retention; replay; and adversarial dead/reused securities.
+## Identity, listing, and symbology
 
-An independent integral audit of code, legal rights, raw evidence, PIT chronology, hashes, and the
-Universe->SEC boundary is required before merge.
+`permanent_id` is security identity; `issuer_id` is issuer identity; ticker is only a temporal
+attribute. Windows are half-open `[start, end)`. `DELISTED` requires `listing_end`; `ACTIVE` forbids it;
+mapping validity cannot precede the listing or extend past a closed listing. Same-ID relisting is
+represented by disjoint windows. A new security remains a new permanent ID.
+
+The canonical symbology key is `(ticker, venue, share_class, security_type)`. Reuse by different IDs in
+disjoint windows is allowed. Identical overlapping symbology is rejected. Same ticker on a different
+venue or class is distinct under v1, but never becomes permanent identity.
+
+## Structural relationship policy
+
+Only `MERGER_PREDECESSOR`, `MERGER_SUCCESSOR`, `SPINOFF_PARENT`, and `SPINOFF_CHILD` are accepted.
+They are representational identity lineage only. A separate graph validator rejects self-links,
+unknown IDs, future knowledge, conflicting duplicate edges, cycles, and ambiguous multi-parent
+mappings. It never rewrites historical permanent identity and contains no prices, ratios, allocation,
+or other corporate-action economics. All other relation types are unsupported and fail Pydantic's
+closed enum.
+
+## Phase 7B -> SEC bridge and hashing
+
+The bridge is built only from the sealed `PITReconstruction.securities`. It retains every
+security-level `permanent_id`, `issuer_id`, CIK lineage, source record, availability, and validity
+window while Phase 7A deduplicates issuer fetches by canonical CIK. The bridge binds its records to the
+Phase 7B artifact hash, `as_of`, security-master hash, CIK mapping hash, and its own typed hash. The SEC
+plan carries both artifact and bridge hashes. A stale/mutated record, artifact, bridge, universe
+snapshot, plan, CIK, lineage, or `as_of` fails closed. Ticker inference and consumer-created mappings
+are not part of this path.
+
+All behavioral fields participate in the appropriate canonical `typed_hash`: security/issuer identity,
+symbology and windows, CIK and source lineage, listing state, constituent entry/exit and revision
+lineage, supported relationships, provider identity, coverage manifest, `as_of`, raw/source hashes,
+runtime fingerprint, and every policy version. Both input collections are canonicalized, so real input
+reordering preserves the artifact identity.
+
+## Bitemporal and provider coverage semantics
+
+Effective time is expressed by listing/member windows. Knowledge time is `available_at`; a fact cannot
+appear before it was available even if economically effective earlier. Corrections are append-only,
+carry revision/supersession lineage, and cannot rewrite an already reconstructed earlier snapshot.
+
+The coverage manifest separates `available_at` from `acquired_at` and binds provider, dataset/version,
+scope, temporal bounds, ordered snapshot/change sequence, raw hashes, evidence hashes, correction and
+revision semantics, licensing, retention, and a conservative completeness enum. A current-only
+snapshot, a sequence gap, missing evidence, or mutated raw hash cannot claim
+`VERIFIED_WITHIN_DECLARED_SCOPE`. Even that scoped state does not change Phase 7B's fixed
+`historical_completeness=false` or global readiness. An omitted exit is therefore never treated as
+proof of continuing membership unless a future gap-free evidence sequence supports the claimed scope.
+
+## Provider and legal gates
+
+No real provider is connected. SEC ticker/CIK associations and Nasdaq symbol directories are current
+or partial directories, not historical PIT membership/security-master completeness. Current web lists
+must not be used as historical proxies. S&P DJI or another licensed historical provider requires a
+separate approved agreement covering use, retention, derived artifacts, and redistribution, plus raw
+content-addressed acquisitions and independent validation of coverage, corrections, chronology, and
+stable identity.
+
+SEC->Accounting/QVM, real confidence, FX, restatement materiality, corporate-action economics, shares
+PIT, production WORM/object lock, provider scale/operations, and legal approval remain outside this
+foundation and OPEN-EXTERNAL where applicable.
+
+An independent integral audit of the new head is required before merge. The PR must remain DRAFT until
+that audit distinguishes contractual correctness from real-data validation.

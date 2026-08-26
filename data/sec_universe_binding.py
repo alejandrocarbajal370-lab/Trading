@@ -14,6 +14,7 @@ from data.connectors.sec_edgar import (
     SecEdgarFundamentalsSource,
     SecFundamentalsResult,
 )
+from data.security_master_pit import Phase7BSecMappingBridge
 from governance.canonical import typed_hash
 from research.datasets import DatasetVersionError, verify_universe_snapshot
 
@@ -86,6 +87,8 @@ class SecAcquisitionPlan(BaseModel):
     trade_decision: Literal["NO_TRADE"] = "NO_TRADE"
     live_execution_enabled: Literal[False] = False
     signals_generated: Literal[False] = False
+    phase7b_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    phase7b_bridge_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
     @field_validator("as_of")
     @classmethod
@@ -111,6 +114,8 @@ class SecAcquisitionPlan(BaseModel):
             "trade_decision": self.trade_decision,
             "live_execution_enabled": self.live_execution_enabled,
             "signals_generated": self.signals_generated,
+            "phase7b_artifact_hash": self.phase7b_artifact_hash,
+            "phase7b_bridge_hash": self.phase7b_bridge_hash,
         }
 
     @model_validator(mode="after")
@@ -132,6 +137,8 @@ class SecAcquisitionPlan(BaseModel):
             for issuer in self.issuers
         ):
             raise ValueError("issuer binding chronology is invalid at plan as_of")
+        if (self.phase7b_artifact_hash is None) != (self.phase7b_bridge_hash is None):
+            raise ValueError("Phase 7B artifact and bridge identity must be present together")
         if typed_hash(self.identity_payload()) != self.plan_hash:
             raise ValueError("SEC acquisition plan hash mismatch")
         return self
@@ -189,7 +196,7 @@ def _timestamp(value: object, name: str, *, nullable: bool = False) -> datetime.
 def build_sec_acquisition_plan(
     *,
     universe_snapshot_dir: Path,
-    security_master_records: pd.DataFrame,
+    security_master_records: pd.DataFrame | Phase7BSecMappingBridge,
     as_of: datetime.datetime,
 ) -> SecAcquisitionPlan:
     """Build an exact PIT issuer plan; this is a contract, not a real security-master provider."""
@@ -216,6 +223,22 @@ def build_sec_acquisition_plan(
         raise SecUniverseBindingError("eligible universe contains duplicate permanent identity")
     eligible_ids = tuple(sorted(identities.tolist()))
 
+    phase7b_artifact_hash = None
+    phase7b_bridge_hash = None
+    if isinstance(security_master_records, Phase7BSecMappingBridge):
+        try:
+            bridge = Phase7BSecMappingBridge.model_validate(
+                security_master_records.model_dump(mode="python")
+            )
+        except ValueError as error:
+            raise SecUniverseBindingError("Phase 7B SEC bridge is stale or malformed") from error
+        if bridge.artifact_as_of != cutoff:
+            raise SecUniverseBindingError("Phase 7B artifact as_of does not match acquisition as_of")
+        if bridge.eligible_permanent_ids != eligible_ids:
+            raise SecUniverseBindingError("Phase 7B bridge does not exactly cover governed universe")
+        security_master_records = bridge.to_phase7a_frame()
+        phase7b_artifact_hash = bridge.artifact_hash
+        phase7b_bridge_hash = bridge.bridge_hash
     missing = sorted(set(SECURITY_MASTER_REQUIRED_COLUMNS) - set(security_master_records.columns))
     if missing:
         raise SecUniverseBindingError(
@@ -289,6 +312,8 @@ def build_sec_acquisition_plan(
         "universe_validation_sha256": verified.validation_sha256,
         "eligible_permanent_ids": eligible_ids,
         "issuers": tuple(issuers),
+        "phase7b_artifact_hash": phase7b_artifact_hash,
+        "phase7b_bridge_hash": phase7b_bridge_hash,
     }
     draft = SecAcquisitionPlan.model_construct(plan_hash="0" * 64, **values)
     return SecAcquisitionPlan(**values, plan_hash=typed_hash(draft.identity_payload()))

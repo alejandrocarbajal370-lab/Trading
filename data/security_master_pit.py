@@ -3,6 +3,7 @@ from __future__ import annotations
 import datetime
 import re
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import Literal
 
 import pandas as pd
@@ -10,16 +11,30 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from governance.canonical import typed_hash
 
-SECURITY_MASTER_PIT_VERSION = "security-master-pit-v1"
-CONSTITUENTS_PIT_VERSION = "historical-constituents-pit-v1"
+SECURITY_MASTER_PIT_VERSION = "security-master-pit-v2"
+CONSTITUENTS_PIT_VERSION = "historical-constituents-pit-v2"
+ARTIFACT_VERSION = "security-master-constituents-artifact-v2"
+SEC_BRIDGE_VERSION = "phase7b-sec-mapping-bridge-v1"
+LISTING_POLICY_VERSION = "listing-state-half-open-v1"
+SYMBOL_IDENTITY_POLICY_VERSION = "symbology-ticker-venue-class-type-v1"
+RELATIONSHIP_POLICY_VERSION = "structural-lineage-dag-v1"
+BITEMPORAL_POLICY_VERSION = "effective-knowledge-correction-v1"
+COVERAGE_MANIFEST_VERSION = "historical-provider-coverage-v1"
 PLACEHOLDERS = frozenset({"", "nan", "none", "null", "n/a", "na", "unknown", "placeholder"})
+HASH_PATTERN = r"^[0-9a-f]{64}$"
 
 
 class SecurityMasterPITError(ValueError):
     """PIT identity or membership evidence is incomplete, ambiguous, or stale."""
 
 
-def _text(value: str, field: str) -> str:
+def _text(value: object, field: str) -> str:
+    try:
+        missing = bool(pd.isna(value))
+    except (TypeError, ValueError):
+        missing = False
+    if missing:
+        raise ValueError(f"{field} is missing")
     text = str(value).strip()
     if text.casefold() in PLACEHOLDERS:
         raise ValueError(f"{field} is missing or a placeholder")
@@ -34,6 +49,17 @@ def _aware(value: datetime.datetime | None, field: str) -> datetime.datetime | N
     return value.astimezone(datetime.UTC)
 
 
+def _overlap(start_a, end_a, start_b, end_b) -> bool:
+    ceiling = datetime.datetime.max.replace(tzinfo=datetime.UTC)
+    return start_a < (end_b or ceiling) and start_b < (end_a or ceiling)
+
+
+class CoverageCompleteness(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    PARTIAL = "PARTIAL"
+    VERIFIED_WITHIN_DECLARED_SCOPE = "VERIFIED_WITHIN_DECLARED_SCOPE"
+
+
 class ProviderIdentity(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     name: str
@@ -42,22 +68,94 @@ class ProviderIdentity(BaseModel):
     retention: str
     state: Literal["PARTIAL_REAL_PROVIDER", "OPEN_EXTERNAL"]
 
-    @field_validator("name", "version", "licensing", "retention")
+    @field_validator("name", "version", "licensing", "retention", mode="before")
     @classmethod
-    def complete(cls, value: str, info) -> str:
+    def complete(cls, value: object, info) -> str:
         return _text(value, info.field_name)
+
+
+class ProviderCoverageManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    contract_version: Literal["historical-provider-coverage-v1"] = COVERAGE_MANIFEST_VERSION
+    provider: str
+    dataset: str
+    dataset_version: str
+    universe_scope: str
+    temporal_coverage_from: datetime.datetime
+    temporal_coverage_to: datetime.datetime
+    sequence_numbers: tuple[int, ...] = Field(min_length=1)
+    snapshot_identities: tuple[str, ...] = Field(min_length=1)
+    raw_source_hashes: tuple[str, ...] = Field(min_length=1)
+    evidence_hashes: tuple[str, ...] = ()
+    completeness_state: CoverageCompleteness = CoverageCompleteness.UNKNOWN
+    correction_policy: str
+    revision_policy: str
+    licensing_state: str
+    retention_state: str
+    acquired_at: datetime.datetime
+    available_at: datetime.datetime
+    current_only: bool = True
+    manifest_hash: str = Field(pattern=HASH_PATTERN)
+
+    @field_validator(
+        "provider", "dataset", "dataset_version", "universe_scope", "correction_policy",
+        "revision_policy", "licensing_state", "retention_state", mode="before",
+    )
+    @classmethod
+    def text_fields(cls, value: object, info) -> str:
+        return _text(value, info.field_name)
+
+    @field_validator(
+        "temporal_coverage_from", "temporal_coverage_to", "acquired_at", "available_at"
+    )
+    @classmethod
+    def time_fields(cls, value: datetime.datetime, info) -> datetime.datetime:
+        result = _aware(value, info.field_name)
+        assert result is not None
+        return result
+
+    def identity_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="python", exclude={"manifest_hash"})
+
+    @model_validator(mode="after")
+    def evidence_bound(self) -> ProviderCoverageManifest:
+        if self.temporal_coverage_to <= self.temporal_coverage_from:
+            raise ValueError("coverage window is invalid")
+        if self.available_at > self.acquired_at:
+            raise ValueError("available_at cannot follow acquired_at")
+        for name, hashes in (
+            ("raw", self.raw_source_hashes), ("evidence", self.evidence_hashes)
+        ):
+            if tuple(sorted(hashes)) != hashes or any(
+                re.fullmatch(HASH_PATTERN, item) is None for item in hashes
+            ):
+                raise ValueError(f"{name} hashes are malformed or non-canonical")
+        expected = tuple(range(self.sequence_numbers[0], self.sequence_numbers[-1] + 1))
+        verified = self.completeness_state == CoverageCompleteness.VERIFIED_WITHIN_DECLARED_SCOPE
+        if verified and (
+            self.current_only or not self.evidence_hashes or self.sequence_numbers != expected
+            or len(self.snapshot_identities) != len(self.sequence_numbers)
+        ):
+            raise ValueError("verified coverage requires evidence and a gap-free historical sequence")
+        if typed_hash(self.identity_payload()) != self.manifest_hash:
+            raise ValueError("coverage manifest hash mismatch")
+        return self
+
+    @property
+    def ready_within_declared_scope(self) -> bool:
+        return self.completeness_state == CoverageCompleteness.VERIFIED_WITHIN_DECLARED_SCOPE
 
 
 class SecurityIdentityRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contract_version: Literal["security-master-pit-v1"] = SECURITY_MASTER_PIT_VERSION
+    contract_version: Literal["security-master-pit-v2"] = SECURITY_MASTER_PIT_VERSION
     permanent_id: str
-    issuer_id: str | None = None
+    issuer_id: str
     symbol: str
     exchange: str
     listing_start: datetime.datetime
     listing_end: datetime.datetime | None = None
-    delisting_status: Literal["ACTIVE", "DELISTED", "UNKNOWN"]
+    delisting_status: Literal["ACTIVE", "DELISTED"]
     delisting_reason: str | None = None
     share_class: str
     security_type: str
@@ -69,25 +167,34 @@ class SecurityIdentityRecord(BaseModel):
     valid_from: datetime.datetime
     valid_to: datetime.datetime | None = None
     relationship_type: Literal[
-        "SAME_SECURITY", "MERGER_PREDECESSOR", "MERGER_SUCCESSOR", "SPINOFF_PARENT", "SPINOFF_CHILD"
+        "MERGER_PREDECESSOR", "MERGER_SUCCESSOR", "SPINOFF_PARENT", "SPINOFF_CHILD"
     ] | None = None
     related_permanent_id: str | None = None
+    relationship_available_at: datetime.datetime | None = None
+    revision_id: str = "ORIGINAL"
+    supersedes_source_record_id: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
 
     @field_validator(
-        "permanent_id", "symbol", "exchange", "share_class", "security_type", "source",
-        "source_record_id",
+        "permanent_id", "issuer_id", "symbol", "exchange", "share_class", "security_type",
+        "source", "source_record_id", "revision_id", mode="before",
     )
     @classmethod
-    def required_text(cls, value: str, info) -> str:
+    def required_text(cls, value: object, info) -> str:
         return _text(value, info.field_name)
 
-    @field_validator("issuer_id", "cik_lineage", "delisting_reason", "related_permanent_id")
+    @field_validator(
+        "cik_lineage", "delisting_reason", "related_permanent_id", "supersedes_source_record_id",
+        mode="before",
+    )
     @classmethod
-    def optional_text(cls, value: str | None, info) -> str | None:
+    def optional_text(cls, value: object | None, info) -> str | None:
         return None if value is None else _text(value, info.field_name)
 
-    @field_validator("listing_start", "listing_end", "available_at", "valid_from", "valid_to")
+    @field_validator(
+        "listing_start", "listing_end", "available_at", "valid_from", "valid_to",
+        "relationship_available_at",
+    )
     @classmethod
     def timestamps(cls, value: datetime.datetime | None, info) -> datetime.datetime | None:
         return _aware(value, info.field_name)
@@ -98,18 +205,35 @@ class SecurityIdentityRecord(BaseModel):
             raise ValueError("listing validity window is invalid")
         if self.valid_to is not None and self.valid_to <= self.valid_from:
             raise ValueError("record validity window is invalid")
+        if self.valid_from < self.listing_start:
+            raise ValueError("mapping validity cannot precede listing window")
+        if self.valid_to is not None and self.listing_end is not None and self.valid_to > self.listing_end:
+            raise ValueError("mapping validity cannot extend beyond listing window")
+        if self.delisting_status == "DELISTED" and self.listing_end is None:
+            raise ValueError("DELISTED requires listing_end")
+        if self.delisting_status == "ACTIVE" and self.listing_end is not None:
+            raise ValueError("ACTIVE cannot have listing_end")
         if (self.canonical_cik is None) != (self.cik_lineage is None):
             raise ValueError("CIK and CIK lineage must be present together")
         if self.canonical_cik == "0000000000":
             raise ValueError("CIK is a placeholder")
-        if (self.relationship_type is None) != (self.related_permanent_id is None):
+        relationship = (self.relationship_type, self.related_permanent_id, self.relationship_available_at)
+        if any(item is None for item in relationship) != all(item is None for item in relationship):
             raise ValueError("structural relationship is incomplete")
+        if self.related_permanent_id == self.permanent_id:
+            raise ValueError("structural relationship self-link is forbidden")
+        if self.relationship_available_at is not None and self.relationship_available_at < self.available_at:
+            raise ValueError("relationship cannot be known before its source record")
         return self
+
+    @property
+    def symbology_key(self) -> tuple[str, str, str, str]:
+        return (self.symbol, self.exchange, self.share_class, self.security_type)
 
 
 class ConstituentRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contract_version: Literal["historical-constituents-pit-v1"] = CONSTITUENTS_PIT_VERSION
+    contract_version: Literal["historical-constituents-pit-v2"] = CONSTITUENTS_PIT_VERSION
     universe_id: str
     permanent_id: str
     entry_at: datetime.datetime
@@ -119,12 +243,21 @@ class ConstituentRecord(BaseModel):
     available_at: datetime.datetime
     valid_from: datetime.datetime
     valid_to: datetime.datetime | None = None
+    revision_id: str = "ORIGINAL"
+    supersedes_source_record_id: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
 
-    @field_validator("universe_id", "permanent_id", "source", "source_record_id")
+    @field_validator(
+        "universe_id", "permanent_id", "source", "source_record_id", "revision_id", mode="before"
+    )
     @classmethod
-    def required_text(cls, value: str, info) -> str:
+    def required_text(cls, value: object, info) -> str:
         return _text(value, info.field_name)
+
+    @field_validator("supersedes_source_record_id", mode="before")
+    @classmethod
+    def optional_text(cls, value: object | None, info) -> str | None:
+        return None if value is None else _text(value, info.field_name)
 
     @field_validator("entry_at", "exit_at", "available_at", "valid_from", "valid_to")
     @classmethod
@@ -137,29 +270,44 @@ class ConstituentRecord(BaseModel):
             raise ValueError("membership validity window is invalid")
         if self.valid_to is not None and self.valid_to <= self.valid_from:
             raise ValueError("membership record validity window is invalid")
+        if self.valid_from < self.entry_at:
+            raise ValueError("membership record validity cannot precede entry")
         return self
 
 
 class PITUniverseArtifact(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    artifact_version: Literal["security-master-constituents-artifact-v1"] = (
-        "security-master-constituents-artifact-v1"
-    )
+    artifact_version: Literal["security-master-constituents-artifact-v2"] = ARTIFACT_VERSION
+    security_master_version: Literal["security-master-pit-v2"] = SECURITY_MASTER_PIT_VERSION
+    constituents_version: Literal["historical-constituents-pit-v2"] = CONSTITUENTS_PIT_VERSION
+    listing_policy_version: Literal["listing-state-half-open-v1"] = LISTING_POLICY_VERSION
+    symbol_identity_policy_version: Literal["symbology-ticker-venue-class-type-v1"] = SYMBOL_IDENTITY_POLICY_VERSION
+    relationship_policy_version: Literal["structural-lineage-dag-v1"] = RELATIONSHIP_POLICY_VERSION
+    bitemporal_policy_version: Literal["effective-knowledge-correction-v1"] = BITEMPORAL_POLICY_VERSION
     as_of: datetime.datetime
     universe_id: str
     provider: ProviderIdentity
+    coverage_manifest_hash: str | None = Field(default=None, pattern=HASH_PATTERN)
     source_hashes: tuple[str, ...]
     permanent_identities: tuple[str, ...]
-    membership_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    security_master_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    cik_mapping_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    membership_hash: str = Field(pattern=HASH_PATTERN)
+    security_master_hash: str = Field(pattern=HASH_PATTERN)
+    cik_mapping_hash: str = Field(pattern=HASH_PATTERN)
+    relationship_hash: str = Field(pattern=HASH_PATTERN)
     runtime_code_fingerprint: str
     historical_completeness: Literal[False] = False
     global_readiness: Literal["INSUFFICIENT_REAL_DATA"] = "INSUFFICIENT_REAL_DATA"
     trade_decision: Literal["NO_TRADE"] = "NO_TRADE"
     live_execution_enabled: Literal[False] = False
     signals_generated: Literal[False] = False
-    artifact_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    artifact_hash: str = Field(pattern=HASH_PATTERN)
+
+    @field_validator("as_of")
+    @classmethod
+    def aware_as_of(cls, value: datetime.datetime) -> datetime.datetime:
+        result = _aware(value, "as_of")
+        assert result is not None
+        return result
 
     def identity_payload(self) -> dict[str, object]:
         return self.model_dump(mode="python", exclude={"artifact_hash"})
@@ -175,6 +323,56 @@ class PITUniverseArtifact(BaseModel):
         return self
 
 
+class Phase7BSecMappingRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    permanent_id: str
+    issuer_id: str
+    canonical_cik: str = Field(pattern=r"^[0-9]{10}$")
+    cik_lineage: str
+    source: str
+    source_record_id: str
+    available_at: datetime.datetime
+    valid_from: datetime.datetime
+    valid_to: datetime.datetime | None = None
+
+
+class Phase7BSecMappingBridge(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    bridge_version: Literal["phase7b-sec-mapping-bridge-v1"] = SEC_BRIDGE_VERSION
+    artifact_version: Literal["security-master-constituents-artifact-v2"] = ARTIFACT_VERSION
+    artifact_hash: str = Field(pattern=HASH_PATTERN)
+    artifact_as_of: datetime.datetime
+    security_master_hash: str = Field(pattern=HASH_PATTERN)
+    cik_mapping_hash: str = Field(pattern=HASH_PATTERN)
+    eligible_permanent_ids: tuple[str, ...]
+    records: tuple[Phase7BSecMappingRecord, ...]
+    bridge_hash: str = Field(pattern=HASH_PATTERN)
+
+    def identity_payload(self) -> dict[str, object]:
+        return self.model_dump(mode="python", exclude={"bridge_hash"})
+
+    @model_validator(mode="after")
+    def sealed(self) -> Phase7BSecMappingBridge:
+        record_ids = tuple(row.permanent_id for row in self.records)
+        if tuple(sorted(record_ids)) != record_ids or record_ids != self.eligible_permanent_ids:
+            raise ValueError("bridge records do not exactly and canonically cover Phase 7B identities")
+        if len(record_ids) != len(set(record_ids)):
+            raise ValueError("bridge contains duplicate permanent identity")
+        if typed_hash(self.identity_payload()) != self.bridge_hash:
+            raise ValueError("Phase 7B SEC bridge hash mismatch")
+        return self
+
+    def to_phase7a_frame(self) -> pd.DataFrame:
+        return pd.DataFrame([{
+            "permanent_id": row.permanent_id, "cik": row.canonical_cik,
+            "valid_from": row.valid_from, "valid_to": row.valid_to,
+            "available_at": row.available_at, "source": row.source,
+            # Phase 7A binds issuer-level CIK lineage. The bridge itself retains each
+            # security-level source_record_id without collapsing it.
+            "source_record_id": row.cik_lineage,
+        } for row in self.records])
+
+
 @dataclass(frozen=True)
 class PITReconstruction:
     securities: tuple[SecurityIdentityRecord, ...]
@@ -182,78 +380,156 @@ class PITReconstruction:
     artifact: PITUniverseArtifact
 
 
-def _overlap(start_a, end_a, start_b, end_b) -> bool:
-    ceiling = datetime.datetime.max.replace(tzinfo=datetime.UTC)
-    return start_a < (end_b or ceiling) and start_b < (end_a or ceiling)
+def _canonical_rows(rows: list[BaseModel]) -> list[BaseModel]:
+    unique = {typed_hash(row.model_dump(mode="python")): row for row in rows}
+    return [unique[key] for key in sorted(unique)]
+
+
+def _validate_security_graph(records: list[SecurityIdentityRecord], cutoff: datetime.datetime) -> None:
+    known_ids = {row.permanent_id for row in records}
+    edges: dict[tuple[str, str], str] = {}
+    graph: dict[str, set[str]] = {item: set() for item in known_ids}
+    for row in records:
+        if row.relationship_type is None:
+            continue
+        assert row.related_permanent_id is not None
+        assert row.relationship_available_at is not None
+        if row.related_permanent_id not in known_ids:
+            raise SecurityMasterPITError("structural relationship references unknown permanent ID")
+        if row.relationship_available_at > cutoff:
+            raise SecurityMasterPITError("future structural relationship relative to as_of")
+        edge = (row.permanent_id, row.related_permanent_id)
+        previous = edges.get(edge)
+        if previous is not None and previous != row.relationship_type:
+            raise SecurityMasterPITError("duplicate conflicting structural relationship")
+        edges[edge] = row.relationship_type
+        graph[row.permanent_id].add(row.related_permanent_id)
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node: str) -> None:
+        if node in visiting:
+            raise SecurityMasterPITError("structural relationship cycle is forbidden")
+        if node in visited:
+            return
+        visiting.add(node)
+        for child in graph[node]:
+            visit(child)
+        visiting.remove(node)
+        visited.add(node)
+
+    for node in sorted(graph):
+        visit(node)
+    incoming: dict[tuple[str, str], set[str]] = {}
+    for (source, target), relation_type in edges.items():
+        family = "MERGER" if relation_type.startswith("MERGER") else "SPINOFF"
+        incoming.setdefault((target, family), set()).add(source)
+    if any(len(sources) > 1 for sources in incoming.values()):
+        raise SecurityMasterPITError("ambiguous structural parent/child mapping")
+
+
+def _validate_record_sets(records: list[SecurityIdentityRecord]) -> None:
+    for index, left in enumerate(records):
+        for right in records[index + 1:]:
+            effective = _overlap(left.listing_start, left.listing_end, right.listing_start, right.listing_end)
+            knowledge = _overlap(left.valid_from, left.valid_to, right.valid_from, right.valid_to)
+            if left.permanent_id == right.permanent_id and effective and knowledge:
+                newer, older = sorted((left, right), key=lambda row: row.available_at, reverse=True)
+                if newer.supersedes_source_record_id != older.source_record_id:
+                    raise SecurityMasterPITError(
+                        "overlapping conflicting windows for one permanent identity"
+                    )
+            if left.source == right.source and left.source_record_id == right.source_record_id and left != right:
+                raise SecurityMasterPITError("duplicate source record identity")
+            if left.permanent_id != right.permanent_id and left.symbology_key == right.symbology_key and effective:
+                raise SecurityMasterPITError("overlapping identical symbology is ambiguous")
 
 
 def reconstruct_pit_universe(
     *, security_records: list[SecurityIdentityRecord], constituent_records: list[ConstituentRecord],
     universe_id: str, as_of: datetime.datetime, provider: ProviderIdentity,
     source_hashes: tuple[str, ...], runtime_code_fingerprint: str, require_cik: bool = True,
+    coverage_manifest: ProviderCoverageManifest | None = None,
 ) -> PITReconstruction:
     cutoff = _aware(as_of, "as_of")
     assert cutoff is not None
     universe_id = _text(universe_id, "universe_id")
-    _text(runtime_code_fingerprint, "runtime_code_fingerprint")
-    if not source_hashes or any(re.fullmatch(r"[0-9a-f]{64}", item) is None for item in source_hashes):
+    runtime_code_fingerprint = _text(runtime_code_fingerprint, "runtime_code_fingerprint")
+    if not source_hashes or any(re.fullmatch(HASH_PATTERN, item) is None for item in source_hashes):
         raise SecurityMasterPITError("source hashes are missing or malformed")
-
-    # Reject ambiguous source histories, not merely ambiguity among currently active rows.
-    for left_index, left in enumerate(security_records):
-        for right in security_records[left_index + 1 :]:
-            if left.permanent_id == right.permanent_id and _overlap(
-                left.valid_from, left.valid_to, right.valid_from, right.valid_to
-            ) and (left.symbol, left.exchange, left.canonical_cik) != (
-                right.symbol, right.exchange, right.canonical_cik
-            ):
-                raise SecurityMasterPITError("overlapping conflicting security mappings")
-            if left.source == right.source and left.source_record_id == right.source_record_id:
-                raise SecurityMasterPITError("duplicate source record identity")
-
+    source_hashes = tuple(sorted(source_hashes))
+    if coverage_manifest is not None:
+        ProviderCoverageManifest.model_validate(coverage_manifest.model_dump(mode="python"))
+    security_rows = list(_canonical_rows(security_records))
+    constituent_rows = list(_canonical_rows(constituent_records))
+    _validate_record_sets(security_rows)
+    _validate_security_graph(security_rows, cutoff)
     memberships = [
-        row for row in constituent_records
-        if row.universe_id == universe_id and row.entry_at <= cutoff
-        and (row.exit_at is None or cutoff < row.exit_at)
+        row for row in constituent_rows if row.available_at <= cutoff and row.universe_id == universe_id
+        and row.entry_at <= cutoff and (row.exit_at is None or cutoff < row.exit_at)
         and row.valid_from <= cutoff and (row.valid_to is None or cutoff < row.valid_to)
     ]
-    if any(row.available_at > cutoff or row.valid_from > cutoff for row in memberships):
-        raise SecurityMasterPITError("future membership evidence relative to as_of")
     member_ids = [row.permanent_id for row in memberships]
     if len(member_ids) != len(set(member_ids)):
         raise SecurityMasterPITError("duplicate or conflicting membership identity")
     if not member_ids:
+        if any(
+            row.available_at > cutoff and row.universe_id == universe_id
+            and row.entry_at <= cutoff and (row.exit_at is None or cutoff < row.exit_at)
+            and row.valid_from <= cutoff and (row.valid_to is None or cutoff < row.valid_to)
+            for row in constituent_rows
+        ):
+            raise SecurityMasterPITError("future membership evidence relative to as_of")
         raise SecurityMasterPITError("membership cannot be demonstrated at as_of")
-
     active = [
-        row for row in security_records if row.permanent_id in set(member_ids)
+        row for row in security_rows if row.available_at <= cutoff and row.permanent_id in set(member_ids)
         and row.listing_start <= cutoff and (row.listing_end is None or cutoff < row.listing_end)
         and row.valid_from <= cutoff and (row.valid_to is None or cutoff < row.valid_to)
     ]
-    if any(row.available_at > cutoff or row.valid_from > cutoff for row in active):
+    future_security = [
+        row for row in security_rows if row.available_at > cutoff
+        and row.permanent_id in set(member_ids) and row.listing_start <= cutoff
+        and (row.listing_end is None or cutoff < row.listing_end)
+        and row.valid_from <= cutoff and (row.valid_to is None or cutoff < row.valid_to)
+    ]
+    if future_security and not active:
         raise SecurityMasterPITError("future security mapping relative to as_of")
     by_id: dict[str, list[SecurityIdentityRecord]] = {}
     for row in active:
         by_id.setdefault(row.permanent_id, []).append(row)
-    if set(by_id) != set(member_ids) or any(len(rows) != 1 for rows in by_id.values()):
+    if set(by_id) != set(member_ids):
         raise SecurityMasterPITError("membership identity cannot be uniquely demonstrated")
-    securities = tuple(sorted((rows[0] for rows in by_id.values()), key=lambda row: row.permanent_id))
+    selected: list[SecurityIdentityRecord] = []
+    for rows in by_id.values():
+        rows.sort(key=lambda row: row.available_at, reverse=True)
+        if len(rows) > 1 and rows[0].supersedes_source_record_id != rows[1].source_record_id:
+            raise SecurityMasterPITError("membership identity cannot be uniquely demonstrated")
+        selected.append(rows[0])
+    securities = tuple(sorted(selected, key=lambda row: row.permanent_id))
     if require_cik and any(row.canonical_cik is None for row in securities):
         raise SecurityMasterPITError("canonical CIK is required but missing")
-
     memberships_tuple = tuple(sorted(memberships, key=lambda row: row.permanent_id))
     membership_hash = typed_hash([row.model_dump(mode="python") for row in memberships_tuple])
     master_hash = typed_hash([row.model_dump(mode="python") for row in securities])
-    cik_hash = typed_hash([(row.permanent_id, row.canonical_cik) for row in securities])
+    cik_payload = [{
+        "permanent_id": row.permanent_id, "issuer_id": row.issuer_id,
+        "canonical_cik": row.canonical_cik, "cik_lineage": row.cik_lineage,
+        "source": row.source, "source_record_id": row.source_record_id,
+        "available_at": row.available_at, "valid_from": row.valid_from, "valid_to": row.valid_to,
+    } for row in securities]
+    relationship_payload = [{
+        "permanent_id": row.permanent_id, "type": row.relationship_type,
+        "related_permanent_id": row.related_permanent_id,
+        "available_at": row.relationship_available_at, "policy": RELATIONSHIP_POLICY_VERSION,
+    } for row in securities if row.relationship_type is not None]
     values = {
-        "as_of": cutoff,
-        "universe_id": universe_id,
-        "provider": provider,
-        "source_hashes": tuple(sorted(source_hashes)),
+        "as_of": cutoff, "universe_id": universe_id, "provider": provider,
+        "coverage_manifest_hash": coverage_manifest.manifest_hash if coverage_manifest else None,
+        "source_hashes": source_hashes,
         "permanent_identities": tuple(row.permanent_id for row in securities),
-        "membership_hash": membership_hash,
-        "security_master_hash": master_hash,
-        "cik_mapping_hash": cik_hash,
+        "membership_hash": membership_hash, "security_master_hash": master_hash,
+        "cik_mapping_hash": typed_hash(cik_payload),
+        "relationship_hash": typed_hash(relationship_payload),
         "runtime_code_fingerprint": runtime_code_fingerprint,
     }
     draft = PITUniverseArtifact.model_construct(**values, artifact_hash="0" * 64)
@@ -261,10 +537,34 @@ def reconstruct_pit_universe(
     return PITReconstruction(securities, memberships_tuple, artifact)
 
 
-def universe_source_records(
-    reconstruction: PITReconstruction, observations: pd.DataFrame
-) -> pd.DataFrame:
-    """Bind PIT identities to existing Universe inputs; symbols always come from the master."""
+def phase7b_sec_mapping_bridge(reconstruction: PITReconstruction) -> Phase7BSecMappingBridge:
+    artifact = PITUniverseArtifact.model_validate(reconstruction.artifact.model_dump(mode="python"))
+    securities = tuple(sorted(reconstruction.securities, key=lambda row: row.permanent_id))
+    memberships = tuple(sorted(reconstruction.memberships, key=lambda row: row.permanent_id))
+    if typed_hash([row.model_dump(mode="python") for row in securities]) != artifact.security_master_hash:
+        raise SecurityMasterPITError("security reconstruction is stale relative to artifact")
+    if typed_hash([row.model_dump(mode="python") for row in memberships]) != artifact.membership_hash:
+        raise SecurityMasterPITError("membership reconstruction is stale relative to artifact")
+    if any(row.canonical_cik is None or row.cik_lineage is None for row in securities):
+        raise SecurityMasterPITError("Phase 7B SEC bridge requires complete CIK lineage")
+    records = tuple(Phase7BSecMappingRecord(
+        permanent_id=row.permanent_id, issuer_id=row.issuer_id,
+        canonical_cik=row.canonical_cik, cik_lineage=row.cik_lineage,
+        source=row.source, source_record_id=row.source_record_id,
+        available_at=row.available_at, valid_from=row.valid_from, valid_to=row.valid_to,
+    ) for row in securities)
+    values = {
+        "artifact_hash": artifact.artifact_hash, "artifact_as_of": artifact.as_of,
+        "security_master_hash": artifact.security_master_hash,
+        "cik_mapping_hash": artifact.cik_mapping_hash,
+        "eligible_permanent_ids": artifact.permanent_identities, "records": records,
+    }
+    draft = Phase7BSecMappingBridge.model_construct(**values, bridge_hash="0" * 64)
+    return Phase7BSecMappingBridge(**values, bridge_hash=typed_hash(draft.identity_payload()))
+
+
+def universe_source_records(reconstruction: PITReconstruction, observations: pd.DataFrame) -> pd.DataFrame:
+    phase7b_sec_mapping_bridge(reconstruction)
     required = {
         "permanent_id", "asset_type", "country", "region", "sector", "industry", "market_cap",
         "market_cap_currency", "average_volume", "average_dollar_volume", "source_timestamp",
@@ -278,9 +578,11 @@ def universe_source_records(
     expected = set(reconstruction.artifact.permanent_identities)
     if set(frame["permanent_id"]) != expected:
         raise SecurityMasterPITError("universe observations do not exactly cover PIT membership")
-    identity = pd.DataFrame(
-        [{"permanent_id": row.permanent_id, "symbol": row.symbol, "exchange": row.exchange,
-          "listing_date": row.listing_start, "source": row.source} for row in reconstruction.securities]
+    identity = pd.DataFrame([{
+        "permanent_id": row.permanent_id, "symbol": row.symbol, "exchange": row.exchange,
+        "listing_date": row.listing_start, "source": row.source,
+    } for row in reconstruction.securities])
+    frame = frame.drop(
+        columns=[column for column in ("symbol", "exchange", "listing_date", "source") if column in frame]
     )
-    frame = frame.drop(columns=[column for column in ("symbol", "exchange", "listing_date", "source") if column in frame])
     return identity.merge(frame, on="permanent_id", validate="one_to_one")
