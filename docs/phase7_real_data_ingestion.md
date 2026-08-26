@@ -72,6 +72,13 @@ fail closed. Rows in the security-master input that are not in the eligible univ
 cannot enter the SEC request plan. Multiple ticker labels across time therefore do not create a new
 issuer identity.
 
+The Phase 7B integration path requires `phase7b-sec-mapping-bridge-v2`, whose proof envelope contains
+the sealed Phase 7B artifact and the canonical content needed to recompute every relevant inner
+commitment. Phase 7A revalidates that envelope before planning. Binding
+`universe-security-master-sec-binding-v2` groups by canonical CIK for exactly one SEC fetch while
+retaining a canonical `security_mapping_proofs` collection for every share class/security. Mapping
+windows are half-open: `valid_to == as_of` is stale and rejected everywhere in this boundary.
+
 The canonical plan binds the universe membership and validation hashes, exact `as_of`, sorted
 permanent identities and CIKs, security-master record lineage, SEC HTTP policy, research-only safety
 state, and the explicit `INSUFFICIENT_REAL_DATA` / not-Accounting-or-QVM-bound gates. Execution

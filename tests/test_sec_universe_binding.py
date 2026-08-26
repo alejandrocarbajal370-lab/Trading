@@ -14,6 +14,7 @@ from data.sec_universe_binding import (
     SecAcquisitionPlan,
     SecUniverseBindingError,
     build_sec_acquisition_plan,
+    build_sec_acquisition_plan_from_unproved_records_for_testing,
     ingest_governed_universe,
 )
 from governance.canonical import typed_hash
@@ -53,7 +54,9 @@ def _universe(
                 "available_at": "2026-08-25T19:00:00Z",
             }
         )
-    membership = validate_universe(pd.DataFrame(rows), rules=UniverseRules(), as_of=pd.Timestamp(AS_OF))
+    membership = validate_universe(
+        pd.DataFrame(rows), rules=UniverseRules(), as_of=pd.Timestamp(AS_OF)
+    )
     return UniverseSnapshotStore(tmp_path / "universe").save(
         membership,
         as_of=pd.Timestamp(AS_OF),
@@ -82,7 +85,7 @@ def _mappings(ids=("issuer-aaa", "issuer-bbb")) -> pd.DataFrame:
 
 
 def _plan(tmp_path: Path, members=("issuer-aaa", "issuer-bbb"), mappings=None):
-    return build_sec_acquisition_plan(
+    return build_sec_acquisition_plan_from_unproved_records_for_testing(
         universe_snapshot_dir=_universe(tmp_path, members),
         security_master_records=_mappings(members) if mappings is None else mappings,
         as_of=AS_OF,
@@ -121,7 +124,7 @@ def test_future_mapping_and_mutated_universe_or_plan_fail_closed(tmp_path):
     path = universe_dir / "universe_membership.csv"
     path.write_text(path.read_text().replace("issuer-aaa", "issuer-mutated"))
     with pytest.raises(SecUniverseBindingError, match="checksum mismatch"):
-        build_sec_acquisition_plan(
+        build_sec_acquisition_plan_from_unproved_records_for_testing(
             universe_snapshot_dir=universe_dir,
             security_master_records=_mappings(),
             as_of=AS_OF,
@@ -134,7 +137,9 @@ def test_future_mapping_and_mutated_universe_or_plan_fail_closed(tmp_path):
 
 
 @pytest.mark.parametrize("field", ["source", "source_record_id"])
-@pytest.mark.parametrize("invalid", [None, np.nan, "nan", "none", "null", "n/a", "na", "unknown", "   "])
+@pytest.mark.parametrize(
+    "invalid", [None, np.nan, "nan", "none", "null", "n/a", "na", "unknown", "   "]
+)
 def test_null_and_placeholder_lineage_fail_closed(tmp_path, field, invalid):
     mappings = _mappings()
     mappings.loc[0, field] = invalid
@@ -144,23 +149,30 @@ def test_null_and_placeholder_lineage_fail_closed(tmp_path, field, invalid):
 
 def test_valid_lineage_is_accepted_and_stale_mapping_is_rejected(tmp_path):
     plan = _plan(tmp_path / "valid")
-    assert plan.issuers[0].security_master_source == "security-master-contract-fixture"
+    assert plan.issuers[0].security_mapping_proofs[0].source == "security-master-contract-fixture"
     stale = _mappings()
     stale.loc[0, "valid_to"] = "2026-08-24T23:59:59Z"
     with pytest.raises(SecUniverseBindingError, match="stale"):
         _plan(tmp_path / "stale", mappings=stale)
+    boundary = _mappings(("issuer-aaa",))
+    boundary.loc[0, "valid_to"] = AS_OF.isoformat()
+    with pytest.raises(SecUniverseBindingError, match="stale"):
+        _plan(tmp_path / "half-open-boundary", ("issuer-aaa",), boundary)
+    boundary.loc[0, "valid_to"] = (AS_OF + datetime.timedelta(seconds=1)).isoformat()
+    assert _plan(tmp_path / "inside-half-open", ("issuer-aaa",), boundary).issuers
 
 
 def test_rehashed_semantically_invalid_lineage_is_rejected_by_consumer(tmp_path):
     plan = _plan(tmp_path, ("issuer-aaa",))
-    bad_issuer = plan.issuers[0].model_copy(update={"security_master_source": "null"})
+    bad_proof = plan.issuers[0].security_mapping_proofs[0].model_copy(update={"source": "null"})
+    bad_issuer = plan.issuers[0].model_copy(update={"security_mapping_proofs": (bad_proof,)})
     mutated = plan.model_copy(update={"issuers": (bad_issuer,)})
     forged = mutated.model_copy(update={"plan_hash": typed_hash(mutated.identity_payload())})
     with pytest.raises(ValueError, match="lineage.*placeholder"):
         ingest_governed_universe(plan=forged, source=object())
 
 
-def test_two_permanent_ids_one_cik_require_compatible_lineage_and_chronology(tmp_path):
+def test_two_permanent_ids_one_cik_retain_distinct_security_lineage(tmp_path):
     compatible = _mappings()
     compatible["cik"] = "1"
     compatible["source_record_id"] = "shared-record"
@@ -170,20 +182,22 @@ def test_two_permanent_ids_one_cik_require_compatible_lineage_and_chronology(tmp
 
     conflicting = compatible.copy()
     conflicting.loc[1, "source_record_id"] = "conflicting-record"
-    with pytest.raises(SecUniverseBindingError, match="conflicting mappings"):
-        _plan(tmp_path / "conflicting", mappings=conflicting)
+    distinct = _plan(tmp_path / "distinct", mappings=conflicting)
+    assert tuple(item.source_record_id for item in distinct.issuers[0].security_mapping_proofs) == (
+        "shared-record",
+        "conflicting-record",
+    )
 
     chronology_conflict = compatible.copy()
     chronology_conflict.loc[1, "valid_from"] = "2021-01-01T00:00:00Z"
-    with pytest.raises(SecUniverseBindingError, match="conflicting mappings"):
-        _plan(tmp_path / "chronology-conflict", mappings=chronology_conflict)
+    chronology = _plan(tmp_path / "chronology", mappings=chronology_conflict)
+    assert len(chronology.issuers[0].security_mapping_proofs) == 2
 
 
 def test_rehashed_stale_issuer_is_rejected_by_consumer(tmp_path):
     plan = _plan(tmp_path, ("issuer-aaa",))
-    stale_issuer = plan.issuers[0].model_copy(
-        update={"mapping_valid_to": AS_OF - datetime.timedelta(seconds=1)}
-    )
+    stale_proof = plan.issuers[0].security_mapping_proofs[0].model_copy(update={"valid_to": AS_OF})
+    stale_issuer = plan.issuers[0].model_copy(update={"security_mapping_proofs": (stale_proof,)})
     mutated = plan.model_copy(update={"issuers": (stale_issuer,)})
     forged = mutated.model_copy(update={"plan_hash": typed_hash(mutated.identity_payload())})
     with pytest.raises(ValueError, match="chronology"):
@@ -201,7 +215,7 @@ def test_reorder_is_deterministic_and_ticker_change_does_not_duplicate_issuer(tm
     original = membership.read_text()
     assert "OLD" in original
     mapping = _mappings(("issuer-aaa",))
-    plan = build_sec_acquisition_plan(
+    plan = build_sec_acquisition_plan_from_unproved_records_for_testing(
         universe_snapshot_dir=changed, security_master_records=mapping, as_of=AS_OF
     )
     assert len(plan.issuers) == 1
@@ -209,15 +223,24 @@ def test_reorder_is_deterministic_and_ticker_change_does_not_duplicate_issuer(tm
 
     old_snapshot = _universe(tmp_path / "old-snapshot", ("issuer-aaa",), ("OLD",))
     new_snapshot = _universe(tmp_path / "new-snapshot", ("issuer-aaa",), ("NEW",))
-    old_plan = build_sec_acquisition_plan(
+    old_plan = build_sec_acquisition_plan_from_unproved_records_for_testing(
         universe_snapshot_dir=old_snapshot, security_master_records=mapping, as_of=AS_OF
     )
-    new_plan = build_sec_acquisition_plan(
+    new_plan = build_sec_acquisition_plan_from_unproved_records_for_testing(
         universe_snapshot_dir=new_snapshot, security_master_records=mapping, as_of=AS_OF
     )
     assert old_plan.issuers == new_plan.issuers
     assert old_plan.eligible_permanent_ids == new_plan.eligible_permanent_ids
     assert len(old_plan.issuers) == len(new_plan.issuers) == 1
+
+
+def test_governed_builder_rejects_manual_mapping_bypass(tmp_path):
+    with pytest.raises(SecUniverseBindingError, match="verified Phase 7B bridge"):
+        build_sec_acquisition_plan(
+            universe_snapshot_dir=_universe(tmp_path),
+            security_master_records=_mappings(),
+            as_of=AS_OF,
+        )
 
 
 def test_execution_requests_only_planned_ciks_and_preserves_raw_lineage(tmp_path):
@@ -271,12 +294,9 @@ def test_execution_requests_only_planned_ciks_and_preserves_raw_lineage(tmp_path
         transport=transport,
         sleeper=lambda _: None,
     )
-    result = ingest_governed_universe(plan=plan, source=source)
-    assert len(requested) == 2
-    assert all("0000000001" in url for url in requested)
-    assert result.raw_acquisition_ids
-    assert result.global_readiness == "INSUFFICIENT_REAL_DATA"
-    assert result.qvm_binding_state == "INGESTION_ONLY_NOT_ACCOUNTING_OR_QVM_BOUND"
+    with pytest.raises(SecUniverseBindingError, match="embedded Phase 7B proof"):
+        ingest_governed_universe(plan=plan, source=source)
+    assert requested == []
 
 
 def test_connector_probes_are_not_production_universe_inputs(tmp_path):

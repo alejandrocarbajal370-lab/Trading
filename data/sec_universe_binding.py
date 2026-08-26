@@ -14,10 +14,11 @@ from data.connectors.sec_edgar import (
     SecEdgarFundamentalsSource,
     SecFundamentalsResult,
 )
+from data.security_master_pit import Phase7BSecMappingBridge
 from governance.canonical import typed_hash
 from research.datasets import DatasetVersionError, verify_universe_snapshot
 
-SEC_UNIVERSE_BINDING_VERSION = "universe-security-master-sec-binding-v1"
+SEC_UNIVERSE_BINDING_VERSION = "universe-security-master-sec-binding-v2"
 SECURITY_MASTER_REQUIRED_COLUMNS = (
     "permanent_id",
     "cik",
@@ -34,29 +35,35 @@ class SecUniverseBindingError(ValueError):
     """The Universe -> permanent identity -> CIK boundary is not trustworthy."""
 
 
-class SecIssuerBinding(BaseModel):
+class SecurityMappingProof(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    permanent_ids: tuple[str, ...] = Field(min_length=1)
+    permanent_id: str
+    issuer_id: str
     canonical_cik: str = Field(pattern=r"^[0-9]{10}$")
-    security_master_source: str = Field(min_length=1)
+    cik_lineage: str
+    source: str = Field(min_length=1)
     source_record_id: str = Field(min_length=1)
-    mapping_available_at: datetime.datetime
-    mapping_valid_from: datetime.datetime
-    mapping_valid_to: datetime.datetime | None = None
+    available_at: datetime.datetime
+    valid_from: datetime.datetime
+    valid_to: datetime.datetime | None = None
+    share_class: str
+    security_type: str
 
-    @field_validator("security_master_source", "source_record_id", mode="before")
+    @field_validator(
+        "permanent_id",
+        "issuer_id",
+        "cik_lineage",
+        "source",
+        "source_record_id",
+        "share_class",
+        "security_type",
+        mode="before",
+    )
     @classmethod
     def valid_lineage_text(cls, value: object) -> str:
         return _canonical_text(value, "security-master lineage")
 
-    @field_validator("permanent_ids", mode="before")
-    @classmethod
-    def valid_permanent_ids(cls, value: object) -> tuple[str, ...]:
-        if not isinstance(value, (list, tuple)):
-            raise TypeError("permanent identities must be a sequence")
-        return tuple(_canonical_text(item, "permanent identity") for item in value)
-
-    @field_validator("mapping_available_at", "mapping_valid_from", "mapping_valid_to")
+    @field_validator("available_at", "valid_from", "valid_to")
     @classmethod
     def aware(cls, value: datetime.datetime | None) -> datetime.datetime | None:
         if value is not None and (value.tzinfo is None or value.utcoffset() is None):
@@ -64,9 +71,37 @@ class SecIssuerBinding(BaseModel):
         return value.astimezone(datetime.UTC) if value is not None else None
 
 
+class SecIssuerBinding(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    issuer_id: str
+    canonical_cik: str = Field(pattern=r"^[0-9]{10}$")
+    security_mapping_proofs: tuple[SecurityMappingProof, ...] = Field(min_length=1)
+
+    @field_validator("issuer_id", mode="before")
+    @classmethod
+    def valid_issuer(cls, value: object) -> str:
+        return _canonical_text(value, "issuer identity")
+
+    @model_validator(mode="after")
+    def coherent(self) -> SecIssuerBinding:
+        ids = tuple(item.permanent_id for item in self.security_mapping_proofs)
+        if ids != tuple(sorted(ids)) or len(ids) != len(set(ids)):
+            raise ValueError("security mapping proofs are not unique and canonical")
+        if any(
+            item.issuer_id != self.issuer_id or item.canonical_cik != self.canonical_cik
+            for item in self.security_mapping_proofs
+        ):
+            raise ValueError("security mapping proof conflicts with issuer binding")
+        return self
+
+    @property
+    def permanent_ids(self) -> tuple[str, ...]:
+        return tuple(item.permanent_id for item in self.security_mapping_proofs)
+
+
 class SecAcquisitionPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contract_version: Literal["universe-security-master-sec-binding-v1"] = (
+    contract_version: Literal["universe-security-master-sec-binding-v2"] = (
         SEC_UNIVERSE_BINDING_VERSION
     )
     as_of: datetime.datetime
@@ -86,6 +121,9 @@ class SecAcquisitionPlan(BaseModel):
     trade_decision: Literal["NO_TRADE"] = "NO_TRADE"
     live_execution_enabled: Literal[False] = False
     signals_generated: Literal[False] = False
+    phase7b_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    phase7b_bridge_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    phase7b_bridge: Phase7BSecMappingBridge | None = None
 
     @field_validator("as_of")
     @classmethod
@@ -111,6 +149,11 @@ class SecAcquisitionPlan(BaseModel):
             "trade_decision": self.trade_decision,
             "live_execution_enabled": self.live_execution_enabled,
             "signals_generated": self.signals_generated,
+            "phase7b_artifact_hash": self.phase7b_artifact_hash,
+            "phase7b_bridge_hash": self.phase7b_bridge_hash,
+            "phase7b_bridge": (
+                self.phase7b_bridge.model_dump(mode="python") if self.phase7b_bridge else None
+            ),
         }
 
     @model_validator(mode="after")
@@ -123,15 +166,47 @@ class SecAcquisitionPlan(BaseModel):
         if tuple(sorted(self.issuers, key=lambda item: item.canonical_cik)) != self.issuers:
             raise ValueError("issuer bindings are not canonical")
         if any(
-            issuer.mapping_available_at > self.as_of
-            or issuer.mapping_valid_from > self.as_of
-            or (
-                issuer.mapping_valid_to is not None
-                and issuer.mapping_valid_to < self.as_of
-            )
+            proof.available_at > self.as_of
+            or proof.valid_from > self.as_of
+            or (proof.valid_to is not None and proof.valid_to <= self.as_of)
             for issuer in self.issuers
+            for proof in issuer.security_mapping_proofs
         ):
             raise ValueError("issuer binding chronology is invalid at plan as_of")
+        if (self.phase7b_artifact_hash is None) != (self.phase7b_bridge_hash is None):
+            raise ValueError("Phase 7B artifact and bridge identity must be present together")
+        if self.phase7b_bridge is not None:
+            bridge = Phase7BSecMappingBridge.model_validate(
+                self.phase7b_bridge.model_dump(mode="python")
+            )
+            if (
+                self.phase7b_artifact_hash != bridge.artifact_hash
+                or self.phase7b_bridge_hash != bridge.bridge_hash
+            ):
+                raise ValueError("Phase 7B plan commitments differ from embedded proof")
+            derived = tuple(
+                SecurityMappingProof(
+                    permanent_id=row.permanent_id,
+                    issuer_id=row.issuer_id,
+                    canonical_cik=row.canonical_cik,
+                    cik_lineage=row.cik_lineage,
+                    source=row.source,
+                    source_record_id=row.source_record_id,
+                    available_at=row.available_at,
+                    valid_from=row.valid_from,
+                    valid_to=row.valid_to,
+                    share_class=row.share_class,
+                    security_type=row.security_type,
+                )
+                for row in bridge.records
+            )
+            planned = tuple(proof for issuer in self.issuers for proof in issuer.security_mapping_proofs)
+            if tuple(sorted(derived, key=lambda item: item.permanent_id)) != tuple(
+                sorted(planned, key=lambda item: item.permanent_id)
+            ):
+                raise ValueError("SEC plan mappings differ from embedded Phase 7B proof")
+        elif self.phase7b_artifact_hash is not None:
+            raise ValueError("Phase 7B hashes without an embedded recomputable proof are forbidden")
         if typed_hash(self.identity_payload()) != self.plan_hash:
             raise ValueError("SEC acquisition plan hash mismatch")
         return self
@@ -186,10 +261,10 @@ def _timestamp(value: object, name: str, *, nullable: bool = False) -> datetime.
     return parsed.tz_convert("UTC").to_pydatetime()
 
 
-def build_sec_acquisition_plan(
+def _build_sec_acquisition_plan(
     *,
     universe_snapshot_dir: Path,
-    security_master_records: pd.DataFrame,
+    security_master_records: pd.DataFrame | Phase7BSecMappingBridge,
     as_of: datetime.datetime,
 ) -> SecAcquisitionPlan:
     """Build an exact PIT issuer plan; this is a contract, not a real security-master provider."""
@@ -216,12 +291,36 @@ def build_sec_acquisition_plan(
         raise SecUniverseBindingError("eligible universe contains duplicate permanent identity")
     eligible_ids = tuple(sorted(identities.tolist()))
 
+    phase7b_artifact_hash = None
+    phase7b_bridge_hash = None
+    from_phase7b = isinstance(security_master_records, Phase7BSecMappingBridge)
+    if isinstance(security_master_records, Phase7BSecMappingBridge):
+        try:
+            bridge = Phase7BSecMappingBridge.model_validate(
+                security_master_records.model_dump(mode="python")
+            )
+        except ValueError as error:
+            raise SecUniverseBindingError("Phase 7B SEC bridge is stale or malformed") from error
+        if bridge.artifact_as_of != cutoff:
+            raise SecUniverseBindingError(
+                "Phase 7B artifact as_of does not match acquisition as_of"
+            )
+        if bridge.eligible_permanent_ids != eligible_ids:
+            raise SecUniverseBindingError(
+                "Phase 7B bridge does not exactly cover governed universe"
+            )
+        security_master_records = bridge.to_phase7a_frame()
+        phase7b_artifact_hash = bridge.artifact_hash
+        phase7b_bridge_hash = bridge.bridge_hash
     missing = sorted(set(SECURITY_MASTER_REQUIRED_COLUMNS) - set(security_master_records.columns))
     if missing:
         raise SecUniverseBindingError(
             f"security-master mapping lacks required fields: {', '.join(missing)}"
         )
-    records = security_master_records.loc[:, SECURITY_MASTER_REQUIRED_COLUMNS].copy()
+    columns = list(SECURITY_MASTER_REQUIRED_COLUMNS)
+    if from_phase7b:
+        columns.extend(["issuer_id", "cik_lineage", "share_class", "security_type"])
+    records = security_master_records.loc[:, columns].copy()
     records["permanent_id"] = records["permanent_id"].astype("string").str.strip()
     relevant = records.loc[records["permanent_id"].isin(eligible_ids)].copy()
     unknown = set(eligible_ids) - set(relevant["permanent_id"])
@@ -232,54 +331,72 @@ def build_sec_acquisition_plan(
 
     normalized: list[dict[str, object]] = []
     for row in relevant.to_dict("records"):
+        canonical_cik = _canonical_cik(row["cik"])
         available = _timestamp(row["available_at"], "mapping available_at")
         valid_from = _timestamp(row["valid_from"], "mapping valid_from")
         valid_to = _timestamp(row["valid_to"], "mapping valid_to", nullable=True)
         if available > cutoff or valid_from > cutoff:
             raise SecUniverseBindingError("future security-master mapping relative to as_of")
-        if valid_to is not None and valid_to < cutoff:
+        if valid_to is not None and valid_to <= cutoff:
             raise SecUniverseBindingError("stale security-master mapping relative to as_of")
         try:
             source = _canonical_text(row["source"], "security-master source")
-            record_id = _canonical_text(
-                row["source_record_id"], "security-master source_record_id"
-            )
+            record_id = _canonical_text(row["source_record_id"], "security-master source_record_id")
         except ValueError as error:
             raise SecUniverseBindingError("security-master lineage is incomplete") from error
         normalized.append(
             {
                 "permanent_id": str(row["permanent_id"]),
-                "canonical_cik": _canonical_cik(row["cik"]),
+                "canonical_cik": canonical_cik,
                 "security_master_source": source,
                 "source_record_id": record_id,
                 "mapping_available_at": available,
                 "mapping_valid_from": valid_from,
                 "mapping_valid_to": valid_to,
+                "issuer_id": _canonical_text(
+                    row.get("issuer_id", f"sec-issuer-{canonical_cik}"), "issuer identity"
+                ),
+                "cik_lineage": _canonical_text(
+                    row.get("cik_lineage", f"direct-cik-{canonical_cik}"), "CIK lineage"
+                ),
+                "share_class": _canonical_text(
+                    row.get("share_class", "UNSPECIFIED"), "share class"
+                ),
+                "security_type": _canonical_text(
+                    row.get("security_type", "UNSPECIFIED"), "security type"
+                ),
             }
         )
 
     issuers: list[SecIssuerBinding] = []
     for cik in sorted({str(row["canonical_cik"]) for row in normalized}):
         rows = [row for row in normalized if row["canonical_cik"] == cik]
-        lineage = {
-            (str(row["security_master_source"]), str(row["source_record_id"])) for row in rows
-        }
-        chronology = {
-            (row["mapping_available_at"], row["mapping_valid_from"], row["mapping_valid_to"])
-            for row in rows
-        }
-        if len(lineage) != 1 or len(chronology) != 1:
-            raise SecUniverseBindingError("conflicting mappings for one SEC issuer")
-        row = rows[0]
+        issuer_ids = {str(row["issuer_id"]) for row in rows}
+        cik_lineages = {str(row["cik_lineage"]) for row in rows}
+        if len(issuer_ids) != 1 or len(cik_lineages) != 1:
+            raise SecUniverseBindingError("conflicting CIK proofs for one SEC issuer")
+        (issuer_id,) = tuple(sorted(issuer_ids))
+        proofs = tuple(
+            SecurityMappingProof(
+                permanent_id=str(row["permanent_id"]),
+                issuer_id=str(row["issuer_id"]),
+                canonical_cik=cik,
+                cik_lineage=str(row["cik_lineage"]),
+                source=str(row["security_master_source"]),
+                source_record_id=str(row["source_record_id"]),
+                available_at=row["mapping_available_at"],
+                valid_from=row["mapping_valid_from"],
+                valid_to=row["mapping_valid_to"],
+                share_class=str(row["share_class"]),
+                security_type=str(row["security_type"]),
+            )
+            for row in sorted(rows, key=lambda item: str(item["permanent_id"]))
+        )
         issuers.append(
             SecIssuerBinding(
-                permanent_ids=tuple(sorted(str(item["permanent_id"]) for item in rows)),
+                issuer_id=issuer_id,
                 canonical_cik=cik,
-                security_master_source=str(row["security_master_source"]),
-                source_record_id=str(row["source_record_id"]),
-                mapping_available_at=row["mapping_available_at"],
-                mapping_valid_from=row["mapping_valid_from"],
-                mapping_valid_to=row["mapping_valid_to"],
+                security_mapping_proofs=proofs,
             )
         )
     values = {
@@ -289,9 +406,43 @@ def build_sec_acquisition_plan(
         "universe_validation_sha256": verified.validation_sha256,
         "eligible_permanent_ids": eligible_ids,
         "issuers": tuple(issuers),
+        "phase7b_artifact_hash": phase7b_artifact_hash,
+        "phase7b_bridge_hash": phase7b_bridge_hash,
+        "phase7b_bridge": bridge if from_phase7b else None,
     }
     draft = SecAcquisitionPlan.model_construct(plan_hash="0" * 64, **values)
     return SecAcquisitionPlan(**values, plan_hash=typed_hash(draft.identity_payload()))
+
+
+def build_sec_acquisition_plan(
+    *,
+    universe_snapshot_dir: Path,
+    security_master_records: Phase7BSecMappingBridge,
+    as_of: datetime.datetime,
+) -> SecAcquisitionPlan:
+    """Build the governed plan only from a content-verifiable Phase 7B bridge."""
+    if not isinstance(security_master_records, Phase7BSecMappingBridge):
+        raise SecUniverseBindingError(
+            "governed SEC planning requires a verified Phase 7B bridge; manual mappings are forbidden"
+        )
+    return _build_sec_acquisition_plan(
+        universe_snapshot_dir=universe_snapshot_dir,
+        security_master_records=security_master_records,
+        as_of=as_of,
+    )
+
+
+def build_sec_acquisition_plan_from_unproved_records_for_testing(
+    *, universe_snapshot_dir: Path, security_master_records: pd.DataFrame, as_of: datetime.datetime
+) -> SecAcquisitionPlan:
+    """Exercise Phase 7A validation in isolation; never use this fixture helper in production."""
+    if not isinstance(security_master_records, pd.DataFrame):
+        raise SecUniverseBindingError("test fixture mapping must be a DataFrame")
+    return _build_sec_acquisition_plan(
+        universe_snapshot_dir=universe_snapshot_dir,
+        security_master_records=security_master_records,
+        as_of=as_of,
+    )
 
 
 def ingest_governed_universe(
@@ -299,8 +450,11 @@ def ingest_governed_universe(
 ) -> GovernedSecIngestionResult:
     """Execute only the sealed issuer set. Tickers are never accepted at this boundary."""
     verified = SecAcquisitionPlan.model_validate(plan.model_dump(mode="python"))
+    if verified.phase7b_bridge is None:
+        raise SecUniverseBindingError("governed SEC ingestion requires embedded Phase 7B proof")
     cik_by_identity = {
-        issuer.permanent_ids[0]: issuer.canonical_cik for issuer in verified.issuers
+        f"issuer:{issuer.issuer_id}:{issuer.canonical_cik}": issuer.canonical_cik
+        for issuer in verified.issuers
     }
     sec = source.fetch(cik_by_symbol=cik_by_identity, as_of=verified.as_of)
     raw_ids = tuple(sorted(manifest.acquisition_id for manifest in sec.raw_manifests))
@@ -310,6 +464,17 @@ def ingest_governed_universe(
             "plan_hash": verified.plan_hash,
             "raw_acquisition_ids": raw_ids,
             "raw_content_sha256": tuple(sorted(item.sha256 for item in sec.raw_manifests)),
+            "issuer_security_lineage": tuple(
+                {
+                    "issuer_id": issuer.issuer_id,
+                    "canonical_cik": issuer.canonical_cik,
+                    "security_mapping_proofs": tuple(
+                        proof.model_dump(mode="python")
+                        for proof in issuer.security_mapping_proofs
+                    ),
+                }
+                for issuer in verified.issuers
+            ),
         }
     )
     return GovernedSecIngestionResult(verified, sec, raw_ids, lineage_hash)
