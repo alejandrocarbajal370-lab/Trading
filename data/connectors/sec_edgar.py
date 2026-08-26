@@ -234,7 +234,19 @@ class SecEdgarFundamentalsSource:
             facts, facts_manifest = self._json(
                 f"/api/xbrl/companyfacts/CIK{cik}.json", f"companyfacts:{cik}", cutoff)
             manifests.extend((submission_manifest, facts_manifest))
-            rows.extend(self._facts(symbol.strip().upper(), facts, accepted, cutoff))
+            fact_rows = self._facts(symbol.strip().upper(), facts, accepted, cutoff)
+            submission_hashes = tuple(
+                sorted(
+                    manifest.sha256
+                    for manifest in manifests
+                    if manifest.resource.startswith("submissions")
+                    and cik in manifest.resource
+                )
+            )
+            for row in fact_rows:
+                row["raw_snapshot_sha256"] = facts_manifest.sha256
+                row["submission_snapshot_sha256"] = json.dumps(submission_hashes)
+            rows.extend(fact_rows)
         if not rows:
             raise SecEdgarError("SEC returned no PIT-eligible supported fundamentals")
         return SecFundamentalsResult(
