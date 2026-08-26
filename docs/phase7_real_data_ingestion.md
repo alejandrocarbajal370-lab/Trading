@@ -57,6 +57,34 @@ Legal approval is project-specific and remains `PENDING_LEGAL_APPROVAL` with
 
 ## OPEN-EXTERNAL and aggregate readiness
 
+## Governed Universe -> SEC boundary
+
+Production issuer selection is now contractually separated from connector probes. The only
+permitted chain is:
+
+`historical/PIT investment universe -> security master/permanent identity -> canonical CIK -> SEC raw ingestion -> future governed fundamentals mapping -> Accounting -> QVM`
+
+`data.sec_universe_binding.build_sec_acquisition_plan` verifies the immutable universe snapshot,
+requires a non-placeholder permanent identity for every eligible security, and joins only on that
+identity to an explicit PIT CIK record. It never accepts a ticker list and never infers a CIK from a
+ticker. Missing, duplicate, conflicting, malformed, future, stale, or incomplete identity records
+fail closed. Rows in the security-master input that are not in the eligible universe are ignored and
+cannot enter the SEC request plan. Multiple ticker labels across time therefore do not create a new
+issuer identity.
+
+The canonical plan binds the universe membership and validation hashes, exact `as_of`, sorted
+permanent identities and CIKs, security-master record lineage, SEC HTTP policy, research-only safety
+state, and the explicit `INSUFFICIENT_REAL_DATA` / not-Accounting-or-QVM-bound gates. Execution
+revalidates the plan hash and binds the resulting raw acquisition IDs and content hashes into a
+lineage hash.
+
+This closes only the binding contract. There is no historical security-master provider in this
+repository, so `SECURITY_MASTER` remains `OPEN-EXTERNAL`; snapshots created without permanent
+identity remain valid for their earlier research contracts but are deliberately inadmissible at the
+SEC production boundary. AAPL, TSLA, and BABA are connector-test probes only. They are not defaults,
+production constituents, or evidence of a production universe. The earlier real SEC probe result
+was HTTP 403 and must not be represented as current successful evidence.
+
 - Fundamentals PIT → Accounting/QVM: economic mapping, governed confidence, coverage and sealed
   binding remain open.
 - FX, security master/historical constituents, authoritative restatement resolution, corporate

@@ -25,6 +25,7 @@ REQUIRED_COLUMNS = (
 )
 OUTPUT_COLUMNS = (
     *REQUIRED_COLUMNS,
+    "permanent_id",
     "eligibility_status",
     "exclusion_reason",
     "universe_confidence",
@@ -73,6 +74,11 @@ def _normalize(records: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise UniverseValidationError(f"missing required fields: {', '.join(missing)}")
     frame = records.loc[:, REQUIRED_COLUMNS].copy()
+    frame["permanent_id"] = (
+        records["permanent_id"].astype("string").str.strip()
+        if "permanent_id" in records
+        else pd.Series(pd.NA, index=records.index, dtype="string")
+    )
     frame["symbol"] = frame["symbol"].astype("string").str.strip().str.upper()
     frame["exchange"] = frame["exchange"].astype("string").str.strip().str.upper()
     frame["asset_type"] = frame["asset_type"].astype("string").str.strip().str.upper()
