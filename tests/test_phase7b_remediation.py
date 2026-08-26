@@ -286,3 +286,27 @@ def test_policy_inventory_is_frozen_and_reorder_of_both_inputs_is_stable():
     mutated = replace(one, securities=(security(symbol="MUTATED"), one.securities[1]))
     with pytest.raises(SecurityMasterPITError, match="stale"):
         phase7b_sec_mapping_bridge(mutated)
+
+
+def test_recomputed_inner_hash_with_stale_outer_seal_rejects():
+    result = reconstruct([security()], [member()])
+    mutated_security = security(issuer_id="mutated-issuer")
+    payload = result.artifact.model_dump(mode="python")
+    payload["security_master_hash"] = typed_hash(
+        [mutated_security.model_dump(mode="python")]
+    )
+    payload["cik_mapping_hash"] = typed_hash([
+        {
+            "permanent_id": mutated_security.permanent_id,
+            "issuer_id": mutated_security.issuer_id,
+            "canonical_cik": mutated_security.canonical_cik,
+            "cik_lineage": mutated_security.cik_lineage,
+            "source": mutated_security.source,
+            "source_record_id": mutated_security.source_record_id,
+            "available_at": mutated_security.available_at,
+            "valid_from": mutated_security.valid_from,
+            "valid_to": mutated_security.valid_to,
+        }
+    ])
+    with pytest.raises(ValidationError, match="artifact hash mismatch"):
+        PITUniverseArtifact.model_validate(payload)
