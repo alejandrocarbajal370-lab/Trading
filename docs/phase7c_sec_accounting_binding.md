@@ -10,15 +10,33 @@ backtesting, portfolio construction, orders, or live execution. Global readiness
 submissions + Company Facts snapshots → hashed exact-concept mapping registry →
 issuer-level canonical facts → governed AccountingDataset`
 
-Canonical facts commit to the acquisition-plan hash, Company Facts hash, submissions
-hashes, mapping-registry hash, accession, form, SEC acceptance time, fiscal period,
-currency, issuer identity, applicable permanent security IDs, and runtime fingerprint.
+The Accounting consumer requires a `RawSnapshotStore`; a DataFrame and declarative
+manifests are never evidence. Every acquisition event is reopened, its payload bytes
+are length/SHA verified, and its manifest must exactly equal the declared manifest.
+Company Facts are reparsed and compared field-for-field with the incoming canonical
+rows. Accession, form, and `acceptanceDateTime` are independently rejoined from verified
+recent/historical Submissions. Missing bytes, a wrong CIK/resource, duplicate chronology,
+or any locally resealed mutation fails closed.
+
+The resulting `phase7c-raw-proof-v1` envelope commits to the acquisition-plan hash,
+physical raw-manifest identities, canonical selection hash, Company Facts and Submissions
+content, mapping and unit registries, form-period policy, as-of cutoff, issuer identity,
+accession/revision chain, and runtime fingerprint. Its hash is embedded in every
+Accounting row and Accounting lineage. A coherent new raw acquisition produces a new
+proof and Accounting identity; old commitments cannot be reused.
 Issuer facts are stored once. Multiple share classes appear only in the applicability
 lineage and never cause duplicated economics.
 
-## Registry v1 scope
+## Versioned contracts and minimal metric scope
 
-Registry version: `sec-canonical-fundamentals-v1`.
+- mapping registry: `sec-canonical-fundamentals-v2`
+- raw proof: `phase7c-raw-proof-v1`
+- unit/currency registry: `sec-unit-currency-registry-v1`
+- form-period policy: `sec-form-period-policy-v1`
+- Accounting adapter: `sec-accounting-binding-v2`
+
+Legacy Phase 7C v1 registries/adapters are incompatible and fail validation; they are
+not silently reinterpreted.
 
 Exact `us-gaap` mappings:
 
@@ -32,6 +50,9 @@ Exact `us-gaap` mappings:
 - `Revenues → revenue` (duration, currency)
 - `StockholdersEquity → total_equity` (instant, currency)
 
+`operating_income` remains a distinct reported metric and is **not** asserted to equal
+EBIT. `total_equity` is retained but is not presently consumed by QVM.
+
 Everything else is explicitly `UNMAPPED`, including custom concepts, `dei` metadata,
 IFRS concepts without a registered equivalence, EBITDA, tax rate, shares, total debt,
 market cap, enterprise value, and debt tags with different economic scope. No label, substring,
@@ -41,8 +62,12 @@ statement-role, ticker, or unit heuristic creates a mapping.
 
 - Knowledge time is SEC `acceptanceDateTime`; missing, naive, or future acceptance fails.
 - Instant and duration semantics must exactly match the registry.
-- Duration start/end are mandatory. FY and quarter labels must have compatible bounded
-  duration, while non-calendar fiscal years are preserved unchanged.
+- Duration start/end are mandatory; instant facts forbid a start. `10-K`/`10-K/A` and
+  supported `20-F` forms require `FY` and 330–400 days. `10-Q`/`10-Q/A` forbid `FY`;
+  Q1 allows 60–120 days, Q2 60–210, and Q3 60–300 so both discrete-quarter and SEC YTD
+  presentations remain explicit. `6-K` and `40-F` receive no automatic fiscal semantics.
+  Non-calendar fiscal years are preserved unchanged. Form and acceptance are revalidated
+  from Submissions, never trusted from the canonical row.
 - Exact duplicate observations may collapse only when all sealed semantics are equal.
   Different frames/contexts, same-time conflicts, or ambiguous revisions fail closed.
 - Amendments form a chronological revision chain. A later amendment remains invisible
@@ -51,7 +76,10 @@ statement-role, ticker, or unit heuristic creates a mapping.
 
 ## Units, confidence, and QVM
 
-Currency is preserved exactly; no FX conversion occurs. `SHARES`, `PURE`, ratios,
+Currency uses a closed, hashed Phase 7C allowlist: `CNY`, `EUR`, `GBP`, `JPY`, and `USD`.
+The SEC connector canonicalizes raw unit keys to uppercase; surrounding whitespace is
+not stripped. `ABC` and custom tokens are rejected. Currency is preserved exactly; no
+FX conversion occurs. `SHARES`, `PURE`, ratios,
 percentages, and currency are distinct unit families. Cross-currency Value remains
 blocked until governed real FX exists.
 
