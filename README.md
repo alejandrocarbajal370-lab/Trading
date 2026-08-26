@@ -218,6 +218,12 @@ and validation artifacts. The initial schedule is monthly configuration, not har
 logic. Universe completeness is named `universe_confidence`; financial data confidence remains a
 separate contract and cannot determine universe eligibility.
 
+Phase 7 SEC ingestion does not use manually supplied ticker examples as its production universe.
+Its governed boundary requires the immutable PIT universe snapshot to carry permanent identities,
+then resolves those identities through explicit PIT security-master records to canonical CIKs. The
+security-master provider remains external/open, so this is a fail-closed contract rather than a
+claim of real-data readiness. See `docs/phase7_real_data_ingestion.md`.
+
 Run a reproducible universe validation for a specific point in time with:
 
 ```bash
