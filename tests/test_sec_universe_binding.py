@@ -4,6 +4,7 @@ import datetime
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -15,6 +16,7 @@ from data.sec_universe_binding import (
     build_sec_acquisition_plan,
     ingest_governed_universe,
 )
+from governance.canonical import typed_hash
 from universe.schedule import UniverseRebalanceSchedule
 from universe.snapshots import UniverseSnapshotStore
 from universe.validation import UniverseRules, validate_universe
@@ -22,12 +24,18 @@ from universe.validation import UniverseRules, validate_universe
 AS_OF = datetime.datetime(2026, 8, 25, 20, 0, tzinfo=datetime.UTC)
 
 
-def _universe(tmp_path: Path, members=("issuer-aaa", "issuer-bbb")) -> Path:
+def _universe(
+    tmp_path: Path, members=("issuer-aaa", "issuer-bbb"), symbols: tuple[str, ...] | None = None
+) -> Path:
     rows = []
     for index, permanent_id in enumerate(members):
         rows.append(
             {
-                "symbol": ("OLD" if permanent_id == "issuer-aaa" and index == 0 else f"T{index}"),
+                "symbol": (
+                    symbols[index]
+                    if symbols is not None
+                    else ("OLD" if permanent_id == "issuer-aaa" and index == 0 else f"T{index}")
+                ),
                 "permanent_id": permanent_id,
                 "exchange": "NYSE",
                 "asset_type": "COMMON_STOCK",
@@ -125,6 +133,63 @@ def test_future_mapping_and_mutated_universe_or_plan_fail_closed(tmp_path):
         SecAcquisitionPlan.model_validate(payload)
 
 
+@pytest.mark.parametrize("field", ["source", "source_record_id"])
+@pytest.mark.parametrize("invalid", [None, np.nan, "nan", "none", "null", "n/a", "na", "unknown", "   "])
+def test_null_and_placeholder_lineage_fail_closed(tmp_path, field, invalid):
+    mappings = _mappings()
+    mappings.loc[0, field] = invalid
+    with pytest.raises(SecUniverseBindingError, match="lineage is incomplete"):
+        _plan(tmp_path, mappings=mappings)
+
+
+def test_valid_lineage_is_accepted_and_stale_mapping_is_rejected(tmp_path):
+    plan = _plan(tmp_path / "valid")
+    assert plan.issuers[0].security_master_source == "security-master-contract-fixture"
+    stale = _mappings()
+    stale.loc[0, "valid_to"] = "2026-08-24T23:59:59Z"
+    with pytest.raises(SecUniverseBindingError, match="stale"):
+        _plan(tmp_path / "stale", mappings=stale)
+
+
+def test_rehashed_semantically_invalid_lineage_is_rejected_by_consumer(tmp_path):
+    plan = _plan(tmp_path, ("issuer-aaa",))
+    bad_issuer = plan.issuers[0].model_copy(update={"security_master_source": "null"})
+    mutated = plan.model_copy(update={"issuers": (bad_issuer,)})
+    forged = mutated.model_copy(update={"plan_hash": typed_hash(mutated.identity_payload())})
+    with pytest.raises(ValueError, match="lineage.*placeholder"):
+        ingest_governed_universe(plan=forged, source=object())
+
+
+def test_two_permanent_ids_one_cik_require_compatible_lineage_and_chronology(tmp_path):
+    compatible = _mappings()
+    compatible["cik"] = "1"
+    compatible["source_record_id"] = "shared-record"
+    plan = _plan(tmp_path / "compatible", mappings=compatible)
+    assert len(plan.issuers) == 1
+    assert plan.issuers[0].permanent_ids == ("issuer-aaa", "issuer-bbb")
+
+    conflicting = compatible.copy()
+    conflicting.loc[1, "source_record_id"] = "conflicting-record"
+    with pytest.raises(SecUniverseBindingError, match="conflicting mappings"):
+        _plan(tmp_path / "conflicting", mappings=conflicting)
+
+    chronology_conflict = compatible.copy()
+    chronology_conflict.loc[1, "valid_from"] = "2021-01-01T00:00:00Z"
+    with pytest.raises(SecUniverseBindingError, match="conflicting mappings"):
+        _plan(tmp_path / "chronology-conflict", mappings=chronology_conflict)
+
+
+def test_rehashed_stale_issuer_is_rejected_by_consumer(tmp_path):
+    plan = _plan(tmp_path, ("issuer-aaa",))
+    stale_issuer = plan.issuers[0].model_copy(
+        update={"mapping_valid_to": AS_OF - datetime.timedelta(seconds=1)}
+    )
+    mutated = plan.model_copy(update={"issuers": (stale_issuer,)})
+    forged = mutated.model_copy(update={"plan_hash": typed_hash(mutated.identity_payload())})
+    with pytest.raises(ValueError, match="chronology"):
+        ingest_governed_universe(plan=forged, source=object())
+
+
 def test_reorder_is_deterministic_and_ticker_change_does_not_duplicate_issuer(tmp_path):
     mappings = _mappings().iloc[::-1].reset_index(drop=True)
     first = _plan(tmp_path / "first", mappings=mappings)
@@ -141,6 +206,18 @@ def test_reorder_is_deterministic_and_ticker_change_does_not_duplicate_issuer(tm
     )
     assert len(plan.issuers) == 1
     assert plan.issuers[0].permanent_ids == ("issuer-aaa",)
+
+    old_snapshot = _universe(tmp_path / "old-snapshot", ("issuer-aaa",), ("OLD",))
+    new_snapshot = _universe(tmp_path / "new-snapshot", ("issuer-aaa",), ("NEW",))
+    old_plan = build_sec_acquisition_plan(
+        universe_snapshot_dir=old_snapshot, security_master_records=mapping, as_of=AS_OF
+    )
+    new_plan = build_sec_acquisition_plan(
+        universe_snapshot_dir=new_snapshot, security_master_records=mapping, as_of=AS_OF
+    )
+    assert old_plan.issuers == new_plan.issuers
+    assert old_plan.eligible_permanent_ids == new_plan.eligible_permanent_ids
+    assert len(old_plan.issuers) == len(new_plan.issuers) == 1
 
 
 def test_execution_requests_only_planned_ciks_and_preserves_raw_lineage(tmp_path):

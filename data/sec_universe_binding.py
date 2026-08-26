@@ -27,6 +27,7 @@ SECURITY_MASTER_REQUIRED_COLUMNS = (
     "source",
     "source_record_id",
 )
+TEXT_PLACEHOLDERS = frozenset({"nan", "none", "null", "n/a", "na", "unknown"})
 
 
 class SecUniverseBindingError(ValueError):
@@ -42,6 +43,18 @@ class SecIssuerBinding(BaseModel):
     mapping_available_at: datetime.datetime
     mapping_valid_from: datetime.datetime
     mapping_valid_to: datetime.datetime | None = None
+
+    @field_validator("security_master_source", "source_record_id", mode="before")
+    @classmethod
+    def valid_lineage_text(cls, value: object) -> str:
+        return _canonical_text(value, "security-master lineage")
+
+    @field_validator("permanent_ids", mode="before")
+    @classmethod
+    def valid_permanent_ids(cls, value: object) -> tuple[str, ...]:
+        if not isinstance(value, (list, tuple)):
+            raise TypeError("permanent identities must be a sequence")
+        return tuple(_canonical_text(item, "permanent identity") for item in value)
 
     @field_validator("mapping_available_at", "mapping_valid_from", "mapping_valid_to")
     @classmethod
@@ -109,6 +122,16 @@ class SecAcquisitionPlan(BaseModel):
             raise ValueError("issuer bindings do not exactly cover the eligible universe")
         if tuple(sorted(self.issuers, key=lambda item: item.canonical_cik)) != self.issuers:
             raise ValueError("issuer bindings are not canonical")
+        if any(
+            issuer.mapping_available_at > self.as_of
+            or issuer.mapping_valid_from > self.as_of
+            or (
+                issuer.mapping_valid_to is not None
+                and issuer.mapping_valid_to < self.as_of
+            )
+            for issuer in self.issuers
+        ):
+            raise ValueError("issuer binding chronology is invalid at plan as_of")
         if typed_hash(self.identity_payload()) != self.plan_hash:
             raise ValueError("SEC acquisition plan hash mismatch")
         return self
@@ -135,6 +158,20 @@ def _canonical_cik(value: object) -> str:
     if cik == "0000000000":
         raise SecUniverseBindingError("security-master CIK is a placeholder")
     return cik
+
+
+def _canonical_text(value: object, name: str) -> str:
+    """Validate governed textual identity/lineage before any string coercion."""
+    try:
+        missing = bool(pd.isna(value))
+    except (TypeError, ValueError):
+        missing = False
+    if missing:
+        raise ValueError(f"{name} is null")
+    text = str(value).strip()
+    if not text or text.casefold() in TEXT_PLACEHOLDERS:
+        raise ValueError(f"{name} is empty or a placeholder")
+    return text
 
 
 def _timestamp(value: object, name: str, *, nullable: bool = False) -> datetime.datetime | None:
@@ -202,10 +239,13 @@ def build_sec_acquisition_plan(
             raise SecUniverseBindingError("future security-master mapping relative to as_of")
         if valid_to is not None and valid_to < cutoff:
             raise SecUniverseBindingError("stale security-master mapping relative to as_of")
-        source = str(row["source"]).strip()
-        record_id = str(row["source_record_id"]).strip()
-        if not source or not record_id:
-            raise SecUniverseBindingError("security-master lineage is incomplete")
+        try:
+            source = _canonical_text(row["source"], "security-master source")
+            record_id = _canonical_text(
+                row["source_record_id"], "security-master source_record_id"
+            )
+        except ValueError as error:
+            raise SecUniverseBindingError("security-master lineage is incomplete") from error
         normalized.append(
             {
                 "permanent_id": str(row["permanent_id"]),
