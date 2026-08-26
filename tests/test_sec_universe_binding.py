@@ -294,12 +294,9 @@ def test_execution_requests_only_planned_ciks_and_preserves_raw_lineage(tmp_path
         transport=transport,
         sleeper=lambda _: None,
     )
-    result = ingest_governed_universe(plan=plan, source=source)
-    assert len(requested) == 2
-    assert all("0000000001" in url for url in requested)
-    assert result.raw_acquisition_ids
-    assert result.global_readiness == "INSUFFICIENT_REAL_DATA"
-    assert result.qvm_binding_state == "INGESTION_ONLY_NOT_ACCOUNTING_OR_QVM_BOUND"
+    with pytest.raises(SecUniverseBindingError, match="embedded Phase 7B proof"):
+        ingest_governed_universe(plan=plan, source=source)
+    assert requested == []
 
 
 def test_connector_probes_are_not_production_universe_inputs(tmp_path):

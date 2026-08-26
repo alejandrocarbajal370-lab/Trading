@@ -30,6 +30,7 @@ from data.security_master_pit import (
     ProviderIdentity,
     SecurityIdentityRecord,
     SecurityMasterPITError,
+    SourceEvidence,
     phase7b_sec_mapping_bridge,
     reconstruct_pit_universe,
     universe_source_records,
@@ -89,13 +90,25 @@ def member(pid="sec-1", **updates):
 
 
 def reconstruct(securities, memberships, as_of=AS_OF, coverage_manifest=None):
+    sources = (
+        SourceEvidence(
+            source_identity="constituents-fixture",
+            material={"dataset": "constituents", "fixture": "v1"},
+            source_hash=typed_hash({"dataset": "constituents", "fixture": "v1"}),
+        ),
+        SourceEvidence(
+            source_identity="security-master-fixture",
+            material={"dataset": "security-master", "fixture": "v1"},
+            source_hash=typed_hash({"dataset": "security-master", "fixture": "v1"}),
+        ),
+    )
     return reconstruct_pit_universe(
         security_records=securities,
         constituent_records=memberships,
         universe_id="IDX",
         as_of=as_of,
         provider=PROVIDER,
-        source_hashes=("a" * 64, "b" * 64),
+        source_evidence=sources,
         runtime_code_fingerprint="git:test",
         coverage_manifest=coverage_manifest,
     )
@@ -243,12 +256,28 @@ def test_paired_structural_relationship_cycle_rejects():
 
 
 def _coverage(**updates):
+    raw_one = {"snapshot": "snap-1", "members": ["sec-1"]}
+    evidence_one = {
+        "raw_source_hash": typed_hash(raw_one),
+        "snapshot_identity": "snap-1",
+        "observed_at": END,
+        "provider": "synthetic:v1",
+    }
+    raw_two = {"snapshot": "snap-2", "members": ["sec-1", "sec-2"]}
+    evidence_two = {
+        "raw_source_hash": typed_hash(raw_two),
+        "snapshot_identity": "snap-2",
+        "observed_at": END,
+        "provider": "synthetic:v1",
+    }
     entries = (
         CoverageEvidenceEntry(
             sequence_number=1,
             snapshot_identity="snap-1",
-            raw_source_hash="a" * 64,
-            evidence_hash="b" * 64,
+            raw_evidence=raw_one,
+            evidence_material=evidence_one,
+            raw_source_hash=typed_hash(raw_one),
+            evidence_hash=typed_hash(evidence_one),
             effective_from=START,
             effective_to=datetime.datetime(2015, 1, 1, tzinfo=UTC),
             available_at=END,
@@ -259,8 +288,10 @@ def _coverage(**updates):
         CoverageEvidenceEntry(
             sequence_number=2,
             snapshot_identity="snap-2",
-            raw_source_hash="c" * 64,
-            evidence_hash="d" * 64,
+            raw_evidence=raw_two,
+            evidence_material=evidence_two,
+            raw_source_hash=typed_hash(raw_two),
+            evidence_hash=typed_hash(evidence_two),
             effective_from=datetime.datetime(2015, 1, 1, tzinfo=UTC),
             effective_to=END,
             available_at=END,
@@ -308,8 +339,28 @@ def test_coverage_manifest_requires_evidence_gap_free_history_and_hash_integrity
     manifest = _coverage(completeness_state=CoverageCompleteness.PARTIAL, entries=())
     assert not manifest.ready_within_declared_scope
     payload = _coverage().model_dump(mode="python")
-    payload["entries"][0]["raw_source_hash"] = "f" * 64
-    with pytest.raises(ValidationError, match="hash mismatch"):
+    payload["entries"][0]["raw_evidence"]["members"] = ["forged"]
+    with pytest.raises(ValidationError, match="commitments|hash mismatch"):
+        ProviderCoverageManifest.model_validate(payload)
+
+
+def test_coverage_rejects_temporal_gaps_and_resealed_forged_evidence():
+    entries = list(_coverage().entries)
+    entries[1] = entries[1].model_copy(
+        update={"effective_from": datetime.datetime(2016, 1, 1, tzinfo=UTC)}
+    )
+    with pytest.raises(ValidationError, match="temporal gap"):
+        _coverage(entries=tuple(entries))
+    payload = _coverage().model_dump(mode="python")
+    payload["entries"][0]["raw_evidence"]["members"] = ["forged"]
+    payload["entries"][0]["raw_source_hash"] = typed_hash(
+        payload["entries"][0]["raw_evidence"]
+    )
+    payload["manifest_hash"] = typed_hash(
+        {key: value for key, value in payload.items() if key != "manifest_hash"}
+    )
+    # The independent evidence material still commits to the original raw payload.
+    with pytest.raises(ValidationError, match="evidence material|hash mismatch"):
         ProviderCoverageManifest.model_validate(payload)
 
 
@@ -461,7 +512,7 @@ def test_real_phase7b_bridge_e2e_multi_class_one_fetch_and_mutations(tmp_path):
     source = MockSource()
     ingested = ingest_governed_universe(plan=plan, source=source)
     assert len(source.calls) == 1
-    assert source.calls[0][0] == {"sec-1": "0000000001"}
+    assert source.calls[0][0] == {"issuer:issuer-1:0000000001": "0000000001"}
     assert ingested.plan.issuers[0].permanent_ids == ("sec-1", "sec-2")
     forged_artifact = bridge.proof.artifact.model_copy(
         update={"as_of": AS_OF + datetime.timedelta(days=1)}
@@ -477,7 +528,7 @@ def test_real_phase7b_bridge_e2e_multi_class_one_fetch_and_mutations(tmp_path):
         )
     payload = plan.model_dump(mode="python")
     payload["phase7b_bridge_hash"] = "f" * 64
-    with pytest.raises(ValidationError, match="hash mismatch"):
+    with pytest.raises(ValidationError, match="commitments|hash mismatch"):
         SecAcquisitionPlan.model_validate(payload)
 
 
@@ -508,6 +559,66 @@ def test_fully_resealed_forged_cik_with_stale_artifact_commitment_rejects(tmp_pa
     assert coherent_bridge.bridge_hash != bridge.bridge_hash
 
 
+@pytest.mark.parametrize("field", ["issuer_id", "source", "source_record_id", "share_class", "security_type"])
+def test_phase7a_rejects_partially_resealed_mapping_mutations(tmp_path, field):
+    result = reconstruct([security()], [member()])
+    bridge = phase7b_sec_mapping_bridge(result)
+    payload = bridge.model_dump(mode="python")
+    payload["records"][0][field] = f"forged-{field}"
+    payload["proof"]["security_records"][0][field] = f"forged-{field}"
+    payload["bridge_hash"] = typed_hash(
+        {key: value for key, value in payload.items() if key != "bridge_hash"}
+    )
+    with pytest.raises(ValidationError, match="proof|commitment|differ"):
+        type(bridge).model_validate(payload)
+
+
+def test_plan_rejects_naked_arbitrary_phase7b_hashes_and_forged_local_seal(tmp_path):
+    result = reconstruct([security()], [member()])
+    bridge = phase7b_sec_mapping_bridge(result)
+    plan = build_sec_acquisition_plan(
+        universe_snapshot_dir=snapshot(tmp_path / "universe", result),
+        security_master_records=bridge,
+        as_of=AS_OF,
+    )
+    payload = plan.model_dump(mode="python")
+    payload["phase7b_artifact_hash"] = "a" * 64
+    payload["phase7b_bridge_hash"] = "b" * 64
+    payload["phase7b_bridge"] = None
+    payload["plan_hash"] = typed_hash(
+        {key: value for key, value in payload.items() if key != "plan_hash"}
+    )
+    with pytest.raises(ValidationError, match="proof|forbidden"):
+        SecAcquisitionPlan.model_validate(payload)
+
+
+def test_three_share_classes_reorder_to_one_deterministic_issuer_fetch(tmp_path):
+    securities = [
+        security("sec-3", symbol="AAC", share_class="C", source_record_id="s-sec-3"),
+        security("sec-1", symbol="AAA", share_class="A", source_record_id="s-sec-1"),
+        security("sec-2", symbol="AAB", share_class="B", source_record_id="s-sec-2"),
+    ]
+    result = reconstruct(securities, [member("sec-3"), member("sec-1"), member("sec-2")])
+    plan = build_sec_acquisition_plan(
+        universe_snapshot_dir=snapshot(tmp_path / "universe", result),
+        security_master_records=phase7b_sec_mapping_bridge(result),
+        as_of=AS_OF,
+    )
+
+    class MockSource:
+        def __init__(self):
+            self.request = None
+
+        def fetch(self, *, cik_by_symbol, as_of):
+            self.request = cik_by_symbol
+            return SecFundamentalsResult(pd.DataFrame(), (), {})
+
+    source = MockSource()
+    ingested = ingest_governed_universe(plan=plan, source=source)
+    assert source.request == {"issuer:issuer-1:0000000001": "0000000001"}
+    assert ingested.plan.issuers[0].permanent_ids == ("sec-1", "sec-2", "sec-3")
+
+
 def test_policy_inventory_is_frozen_and_reorder_of_both_inputs_is_stable():
     assert (
         ARTIFACT_VERSION,
@@ -524,7 +635,7 @@ def test_policy_inventory_is_frozen_and_reorder_of_both_inputs_is_stable():
         "us-symbology-nfkc-uppercase-ascii-v2",
         "structural-lineage-paired-semantics-v2",
         "effective-knowledge-supersession-v2",
-        "historical-provider-coverage-v2",
+        "historical-provider-coverage-v3",
     )
     securities = [security(), security("sec-2", symbol="BBB", canonical_cik="0000000002")]
     members = [member(), member("sec-2")]

@@ -123,6 +123,7 @@ class SecAcquisitionPlan(BaseModel):
     signals_generated: Literal[False] = False
     phase7b_artifact_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     phase7b_bridge_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    phase7b_bridge: Phase7BSecMappingBridge | None = None
 
     @field_validator("as_of")
     @classmethod
@@ -150,6 +151,9 @@ class SecAcquisitionPlan(BaseModel):
             "signals_generated": self.signals_generated,
             "phase7b_artifact_hash": self.phase7b_artifact_hash,
             "phase7b_bridge_hash": self.phase7b_bridge_hash,
+            "phase7b_bridge": (
+                self.phase7b_bridge.model_dump(mode="python") if self.phase7b_bridge else None
+            ),
         }
 
     @model_validator(mode="after")
@@ -171,6 +175,38 @@ class SecAcquisitionPlan(BaseModel):
             raise ValueError("issuer binding chronology is invalid at plan as_of")
         if (self.phase7b_artifact_hash is None) != (self.phase7b_bridge_hash is None):
             raise ValueError("Phase 7B artifact and bridge identity must be present together")
+        if self.phase7b_bridge is not None:
+            bridge = Phase7BSecMappingBridge.model_validate(
+                self.phase7b_bridge.model_dump(mode="python")
+            )
+            if (
+                self.phase7b_artifact_hash != bridge.artifact_hash
+                or self.phase7b_bridge_hash != bridge.bridge_hash
+            ):
+                raise ValueError("Phase 7B plan commitments differ from embedded proof")
+            derived = tuple(
+                SecurityMappingProof(
+                    permanent_id=row.permanent_id,
+                    issuer_id=row.issuer_id,
+                    canonical_cik=row.canonical_cik,
+                    cik_lineage=row.cik_lineage,
+                    source=row.source,
+                    source_record_id=row.source_record_id,
+                    available_at=row.available_at,
+                    valid_from=row.valid_from,
+                    valid_to=row.valid_to,
+                    share_class=row.share_class,
+                    security_type=row.security_type,
+                )
+                for row in bridge.records
+            )
+            planned = tuple(proof for issuer in self.issuers for proof in issuer.security_mapping_proofs)
+            if tuple(sorted(derived, key=lambda item: item.permanent_id)) != tuple(
+                sorted(planned, key=lambda item: item.permanent_id)
+            ):
+                raise ValueError("SEC plan mappings differ from embedded Phase 7B proof")
+        elif self.phase7b_artifact_hash is not None:
+            raise ValueError("Phase 7B hashes without an embedded recomputable proof are forbidden")
         if typed_hash(self.identity_payload()) != self.plan_hash:
             raise ValueError("SEC acquisition plan hash mismatch")
         return self
@@ -339,6 +375,7 @@ def _build_sec_acquisition_plan(
         cik_lineages = {str(row["cik_lineage"]) for row in rows}
         if len(issuer_ids) != 1 or len(cik_lineages) != 1:
             raise SecUniverseBindingError("conflicting CIK proofs for one SEC issuer")
+        (issuer_id,) = tuple(sorted(issuer_ids))
         proofs = tuple(
             SecurityMappingProof(
                 permanent_id=str(row["permanent_id"]),
@@ -357,7 +394,7 @@ def _build_sec_acquisition_plan(
         )
         issuers.append(
             SecIssuerBinding(
-                issuer_id=next(iter(issuer_ids)),
+                issuer_id=issuer_id,
                 canonical_cik=cik,
                 security_mapping_proofs=proofs,
             )
@@ -371,6 +408,7 @@ def _build_sec_acquisition_plan(
         "issuers": tuple(issuers),
         "phase7b_artifact_hash": phase7b_artifact_hash,
         "phase7b_bridge_hash": phase7b_bridge_hash,
+        "phase7b_bridge": bridge if from_phase7b else None,
     }
     draft = SecAcquisitionPlan.model_construct(plan_hash="0" * 64, **values)
     return SecAcquisitionPlan(**values, plan_hash=typed_hash(draft.identity_payload()))
@@ -412,7 +450,12 @@ def ingest_governed_universe(
 ) -> GovernedSecIngestionResult:
     """Execute only the sealed issuer set. Tickers are never accepted at this boundary."""
     verified = SecAcquisitionPlan.model_validate(plan.model_dump(mode="python"))
-    cik_by_identity = {issuer.permanent_ids[0]: issuer.canonical_cik for issuer in verified.issuers}
+    if verified.phase7b_bridge is None:
+        raise SecUniverseBindingError("governed SEC ingestion requires embedded Phase 7B proof")
+    cik_by_identity = {
+        f"issuer:{issuer.issuer_id}:{issuer.canonical_cik}": issuer.canonical_cik
+        for issuer in verified.issuers
+    }
     sec = source.fetch(cik_by_symbol=cik_by_identity, as_of=verified.as_of)
     raw_ids = tuple(sorted(manifest.acquisition_id for manifest in sec.raw_manifests))
     lineage_hash = typed_hash(
@@ -421,6 +464,17 @@ def ingest_governed_universe(
             "plan_hash": verified.plan_hash,
             "raw_acquisition_ids": raw_ids,
             "raw_content_sha256": tuple(sorted(item.sha256 for item in sec.raw_manifests)),
+            "issuer_security_lineage": tuple(
+                {
+                    "issuer_id": issuer.issuer_id,
+                    "canonical_cik": issuer.canonical_cik,
+                    "security_mapping_proofs": tuple(
+                        proof.model_dump(mode="python")
+                        for proof in issuer.security_mapping_proofs
+                    ),
+                }
+                for issuer in verified.issuers
+            ),
         }
     )
     return GovernedSecIngestionResult(verified, sec, raw_ids, lineage_hash)

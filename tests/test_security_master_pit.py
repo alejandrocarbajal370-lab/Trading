@@ -13,10 +13,12 @@ from data.security_master_pit import (
     ProviderIdentity,
     SecurityIdentityRecord,
     SecurityMasterPITError,
+    SourceEvidence,
     phase7b_sec_mapping_bridge,
     reconstruct_pit_universe,
     universe_source_records,
 )
+from governance.canonical import typed_hash
 from universe.schedule import UniverseRebalanceSchedule
 from universe.snapshots import UniverseSnapshotStore
 from universe.validation import UniverseRules, universe_health, validate_universe
@@ -31,7 +33,14 @@ PROVIDER = ProviderIdentity(
     retention="raw snapshots required before connection",
     state="OPEN_EXTERNAL",
 )
-HASHES = ("a" * 64,)
+SOURCE_MATERIAL = {"dataset": "phase7b-test", "fixture": "v1"}
+SOURCE_EVIDENCE = (
+    SourceEvidence(
+        source_identity="phase7b-test-source",
+        material=SOURCE_MATERIAL,
+        source_hash=typed_hash(SOURCE_MATERIAL),
+    ),
+)
 
 
 def security(
@@ -93,7 +102,7 @@ def reconstruct(securities, memberships, as_of=OLD_DATE):
         universe_id="IDX",
         as_of=as_of,
         provider=PROVIDER,
-        source_hashes=HASHES,
+        source_evidence=SOURCE_EVIDENCE,
         runtime_code_fingerprint="git:test-runtime",
         require_cik=True,
     )

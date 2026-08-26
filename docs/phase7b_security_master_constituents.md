@@ -21,7 +21,7 @@ The fixed state remains `global_readiness=INSUFFICIENT_REAL_DATA`, `trade_decisi
 | Symbology | `us-symbology-nfkc-uppercase-ascii-v2` | CONTRACT-CLOSED |
 | Structural relationships | `structural-lineage-paired-semantics-v2` | CONTRACT-CLOSED for the four supported structural roles only |
 | Bitemporal semantics | `effective-knowledge-supersession-v2` | CONTRACT-CLOSED |
-| Provider coverage manifest | `historical-provider-coverage-v2` | CONTRACT-CLOSED harness; real evidence OPEN-EXTERNAL |
+| Provider coverage manifest | `historical-provider-coverage-v3` | CONTRACT-CLOSED harness; real evidence OPEN-EXTERNAL |
 | Real provider and licensed history | n/a | OPEN-EXTERNAL |
 | Global real-data readiness | n/a | `INSUFFICIENT_REAL_DATA` |
 
@@ -61,13 +61,15 @@ bridge commitments. Declared hash strings without verifiable content are insuffi
 every security-level `permanent_id`, `issuer_id`, CIK lineage, source record, availability, validity,
 share class, and security type while Phase 7A performs one fetch per canonical CIK. Each issuer
 binding keeps every security-level proof, including distinct legitimate source-record IDs. The SEC
-plan carries both artifact and bridge hashes. A stale/mutated record, artifact, bridge, universe
+plan embeds the entire typed bridge proof in addition to its derived artifact and bridge hashes;
+naked declarative hashes are forbidden. A stale/mutated record, artifact, bridge, universe
 snapshot, plan, CIK, lineage, or `as_of` fails closed. Ticker inference and consumer-created mappings
 are not part of this path.
 
 All behavioral fields participate in the appropriate canonical `typed_hash`: security/issuer identity,
 symbology and windows, CIK and source lineage, listing state, constituent entry/exit and revision
-lineage, supported relationships, provider identity, coverage manifest, `as_of`, raw/source hashes,
+lineage, supported relationships, provider identity, coverage manifest, `as_of`, typed source
+evidence material with recomputed hashes,
 runtime fingerprint, and every policy version. Both input collections are canonicalized, so real input
 reordering preserves the artifact identity. Exact duplicates and duplicate logical/source identities
 are rejected before ordering; reorder invariance never means deduplication.
@@ -82,11 +84,13 @@ membership hash commits the full chain known at that cutoff. Missing predecessor
 disconnected chains, cycles, and non-increasing knowledge times fail closed.
 
 The coverage manifest separates `available_at` from `acquired_at` and uses typed one-to-one evidence
-entries containing sequence, snapshot identity, raw/evidence hashes, effective window, knowledge and
+entries containing sequence, snapshot identity, raw/evidence material plus recomputed hashes,
+effective window, knowledge and
 acquisition times, and source/provider identity. It binds provider, dataset/version,
 scope, temporal bounds, ordered gap-free evidence, correction and
 revision semantics, licensing, retention, and a conservative completeness enum. A current-only
-snapshot, a sequence gap, missing evidence, or mutated raw hash cannot claim
+snapshot, a sequence or temporal gap, overlap, missing evidence, or mutated raw/evidence material
+cannot claim
 `VERIFIED_WITHIN_DECLARED_SCOPE`. Even that scoped state does not change Phase 7B's fixed
 `historical_completeness=false` or global readiness. An omitted exit is therefore never treated as
 proof of continuing membership unless a future gap-free evidence sequence supports the claimed scope.

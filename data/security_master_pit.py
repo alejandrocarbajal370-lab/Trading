@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import datetime
-import re
 import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
@@ -20,7 +19,7 @@ LISTING_POLICY_VERSION = "listing-state-half-open-v1"
 SYMBOL_IDENTITY_POLICY_VERSION = "us-symbology-nfkc-uppercase-ascii-v2"
 RELATIONSHIP_POLICY_VERSION = "structural-lineage-paired-semantics-v2"
 BITEMPORAL_POLICY_VERSION = "effective-knowledge-supersession-v2"
-COVERAGE_MANIFEST_VERSION = "historical-provider-coverage-v2"
+COVERAGE_MANIFEST_VERSION = "historical-provider-coverage-v3"
 PLACEHOLDERS = frozenset({"", "nan", "none", "null", "n/a", "na", "unknown", "placeholder"})
 HASH_PATTERN = r"^[0-9a-f]{64}$"
 
@@ -82,10 +81,32 @@ class ProviderIdentity(BaseModel):
         return _text(value, info.field_name)
 
 
+class SourceEvidence(BaseModel):
+    """Content-addressed upstream material; a hash without material is not evidence."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    source_identity: str
+    material: dict[str, object]
+    source_hash: str = Field(pattern=HASH_PATTERN)
+
+    @field_validator("source_identity", mode="before")
+    @classmethod
+    def valid_identity(cls, value: object) -> str:
+        return _text(value, "source_identity")
+
+    @model_validator(mode="after")
+    def sealed(self) -> SourceEvidence:
+        if typed_hash(self.material) != self.source_hash:
+            raise ValueError("source evidence hash mismatch")
+        return self
+
+
 class CoverageEvidenceEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     sequence_number: int = Field(ge=1)
     snapshot_identity: str
+    raw_evidence: dict[str, object]
+    evidence_material: dict[str, object]
     raw_source_hash: str = Field(pattern=HASH_PATTERN)
     evidence_hash: str = Field(pattern=HASH_PATTERN)
     effective_from: datetime.datetime
@@ -113,12 +134,20 @@ class CoverageEvidenceEntry(BaseModel):
             raise ValueError("coverage evidence window is invalid")
         if self.available_at > self.acquired_at:
             raise ValueError("coverage evidence cannot be known after acquisition")
+        if typed_hash(self.raw_evidence) != self.raw_source_hash:
+            raise ValueError("coverage raw evidence hash mismatch")
+        if typed_hash(self.evidence_material) != self.evidence_hash:
+            raise ValueError("coverage evidence material hash mismatch")
+        if self.evidence_material.get("raw_source_hash") != self.raw_source_hash:
+            raise ValueError("coverage evidence material is not bound to raw evidence")
+        if self.evidence_material.get("snapshot_identity") != self.snapshot_identity:
+            raise ValueError("coverage evidence material is not bound to snapshot identity")
         return self
 
 
 class ProviderCoverageManifest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    contract_version: Literal["historical-provider-coverage-v2"] = COVERAGE_MANIFEST_VERSION
+    contract_version: Literal["historical-provider-coverage-v3"] = COVERAGE_MANIFEST_VERSION
     provider: str
     dataset: str
     dataset_version: str
@@ -182,7 +211,7 @@ class ProviderCoverageManifest(BaseModel):
             set(evidence_hashes)
         ):
             raise ValueError("coverage evidence hashes must be one-to-one")
-        expected = tuple(range(sequences[0], sequences[-1] + 1)) if sequences else ()
+        expected = tuple(range(1, len(sequences) + 1))
         verified = self.completeness_state == CoverageCompleteness.VERIFIED_WITHIN_DECLARED_SCOPE
         if verified and (self.current_only or not self.entries or sequences != expected):
             raise ValueError(
@@ -196,6 +225,13 @@ class ProviderCoverageManifest(BaseModel):
                 raise ValueError("coverage evidence is outside declared scope")
             if index and entry.effective_from < self.entries[index - 1].effective_to:
                 raise ValueError("coverage evidence windows overlap")
+            if verified and index and entry.effective_from != self.entries[index - 1].effective_to:
+                raise ValueError("verified coverage contains a temporal gap")
+        if verified and (
+            self.entries[0].effective_from != self.temporal_coverage_from
+            or self.entries[-1].effective_to != self.temporal_coverage_to
+        ):
+            raise ValueError("verified coverage does not exactly span declared scope")
         if typed_hash(self.identity_payload()) != self.manifest_hash:
             raise ValueError("coverage manifest hash mismatch")
         return self
@@ -487,11 +523,17 @@ class Phase7BBridgeProofEnvelope(BaseModel):
     security_revision_records: tuple[SecurityIdentityRecord, ...]
     membership_records: tuple[ConstituentRecord, ...]
     coverage_manifest: ProviderCoverageManifest | None = None
+    source_evidence: tuple[SourceEvidence, ...]
 
     @model_validator(mode="after")
     def verify_content_commitments(self) -> Phase7BBridgeProofEnvelope:
         security_payload = [row.model_dump(mode="python") for row in self.security_revision_records]
         membership_payload = [row.model_dump(mode="python") for row in self.membership_records]
+        # Re-run the semantic validators as well as the byte commitments. A fully
+        # resealed but invalid proof must not become valid merely by recomputing hashes.
+        _validate_record_sets(list(self.security_revision_records))
+        _validate_membership_chains(list(self.membership_records))
+        _validate_security_graph(list(self.security_revision_records), self.artifact.as_of)
         ids = tuple(row.permanent_id for row in self.security_records)
         if ids != tuple(sorted(ids)) or len(ids) != len(set(ids)):
             raise ValueError("proof security records are not unique and canonical")
@@ -516,6 +558,29 @@ class Phase7BBridgeProofEnvelope(BaseModel):
         proved_coverage = self.coverage_manifest.manifest_hash if self.coverage_manifest else None
         if proved_coverage != self.artifact.coverage_manifest_hash:
             raise ValueError("proof coverage commitment mismatch")
+        if self.coverage_manifest is not None:
+            ProviderCoverageManifest.model_validate(
+                self.coverage_manifest.model_dump(mode="python")
+            )
+        source_ids = tuple(item.source_identity for item in self.source_evidence)
+        source_hashes = tuple(item.source_hash for item in self.source_evidence)
+        if source_ids != tuple(sorted(source_ids)) or len(source_ids) != len(set(source_ids)):
+            raise ValueError("source evidence is not unique and canonical")
+        if tuple(sorted(source_hashes)) != self.artifact.source_hashes:
+            raise ValueError("source evidence differs from artifact commitments")
+        recomputed = reconstruct_pit_universe(
+            security_records=list(self.security_revision_records),
+            constituent_records=list(self.membership_records),
+            universe_id=self.artifact.universe_id,
+            as_of=self.artifact.as_of,
+            provider=self.artifact.provider,
+            source_evidence=self.source_evidence,
+            runtime_code_fingerprint=self.artifact.runtime_code_fingerprint,
+            require_cik=True,
+            coverage_manifest=self.coverage_manifest,
+        )
+        if recomputed.artifact != self.artifact or recomputed.securities != self.security_records:
+            raise ValueError("proof does not reproduce selected Phase 7B artifact content")
         return self
 
 
@@ -600,6 +665,7 @@ class PITReconstruction:
     security_proof_records: tuple[SecurityIdentityRecord, ...] = ()
     membership_proof_records: tuple[ConstituentRecord, ...] = ()
     coverage_manifest: ProviderCoverageManifest | None = None
+    source_evidence: tuple[SourceEvidence, ...] = ()
 
 
 def _canonical_rows(rows: list[BaseModel]) -> list[BaseModel]:
@@ -813,7 +879,7 @@ def reconstruct_pit_universe(
     universe_id: str,
     as_of: datetime.datetime,
     provider: ProviderIdentity,
-    source_hashes: tuple[str, ...],
+    source_evidence: tuple[SourceEvidence, ...],
     runtime_code_fingerprint: str,
     require_cik: bool = True,
     coverage_manifest: ProviderCoverageManifest | None = None,
@@ -822,9 +888,12 @@ def reconstruct_pit_universe(
     assert cutoff is not None
     universe_id = _text(universe_id, "universe_id")
     runtime_code_fingerprint = _text(runtime_code_fingerprint, "runtime_code_fingerprint")
-    if not source_hashes or any(re.fullmatch(HASH_PATTERN, item) is None for item in source_hashes):
-        raise SecurityMasterPITError("source hashes are missing or malformed")
-    source_hashes = tuple(sorted(source_hashes))
+    if not source_evidence:
+        raise SecurityMasterPITError("recomputable source evidence is required")
+    source_evidence = tuple(sorted(source_evidence, key=lambda item: item.source_identity))
+    if len({item.source_identity for item in source_evidence}) != len(source_evidence):
+        raise SecurityMasterPITError("duplicate source evidence identity")
+    source_hashes = tuple(sorted(item.source_hash for item in source_evidence))
     if coverage_manifest is not None:
         ProviderCoverageManifest.model_validate(coverage_manifest.model_dump(mode="python"))
     security_rows = list(_canonical_rows(security_records))
@@ -951,6 +1020,7 @@ def reconstruct_pit_universe(
         security_proof_records,
         membership_proof_records,
         coverage_manifest,
+        source_evidence,
     )
 
 
@@ -1005,6 +1075,7 @@ def phase7b_sec_mapping_bridge(reconstruction: PITReconstruction) -> Phase7BSecM
         security_revision_records=security_revision_records,
         membership_records=memberships,
         coverage_manifest=reconstruction.coverage_manifest,
+        source_evidence=reconstruction.source_evidence,
     )
     values = {
         "proof": proof,
