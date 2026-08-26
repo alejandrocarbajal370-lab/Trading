@@ -216,6 +216,32 @@ def test_relationship_graph_self_cycles_unknown_future_conflicts_and_valid_dag()
     assert valid.artifact.relationship_hash
 
 
+def test_paired_structural_relationship_cycle_rejects():
+    def edge(pid, related, kind, record, revision="ORIGINAL", supersedes=None, offset=0):
+        return relation(
+            pid,
+            related,
+            kind,
+            symbol=pid.upper(),
+            source_record_id=record,
+            revision_id=revision,
+            supersedes_source_record_id=supersedes,
+            available_at=START + datetime.timedelta(days=1 + offset),
+            relationship_available_at=START + datetime.timedelta(days=2 + offset),
+        )
+
+    records = [
+        edge("a", "b", "MERGER_PREDECESSOR", "a1"),
+        edge("a", "c", "MERGER_SUCCESSOR", "a2", "R2", "a1", 2),
+        edge("b", "a", "MERGER_SUCCESSOR", "b1"),
+        edge("b", "c", "MERGER_PREDECESSOR", "b2", "R2", "b1", 2),
+        edge("c", "b", "MERGER_SUCCESSOR", "c1"),
+        edge("c", "a", "MERGER_PREDECESSOR", "c2", "R2", "c1", 2),
+    ]
+    with pytest.raises(SecurityMasterPITError, match="cycle"):
+        reconstruct(records, [member("a")])
+
+
 def _coverage(**updates):
     entries = (
         CoverageEvidenceEntry(
