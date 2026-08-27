@@ -306,6 +306,10 @@ def govern_fx(
         raise FXGovernanceError(f"FX data missing required columns: {', '.join(missing)}")
     if data.empty:
         raise FXGovernanceError("FX data requires at least one observation")
+    # Numeric-looking text and booleans are declarations, not verified market
+    # observations. Reject them before pandas can silently coerce their meaning.
+    if data["rate"].map(lambda value: isinstance(value, bool) or not isinstance(value, (int, float, np.number))).any():
+        raise FXGovernanceError("FX rates must be native numeric observations")
     try:
         data["base_currency"] = data["base_currency"].map(_currency)
         data["quote_currency"] = data["quote_currency"].map(_currency)
