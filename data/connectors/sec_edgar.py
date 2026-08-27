@@ -353,8 +353,8 @@ class SecEdgarFundamentalsSource:
                     raise SecEdgarError("naive acceptance timestamp is forbidden")
                 parsed = parsed.tz_localize("America/New_York", ambiguous="raise", nonexistent="raise")
             normalized = parsed.tz_convert("UTC").to_pydatetime()
-            if accession_text in result and result[accession_text] != normalized:
-                raise SecEdgarError("conflicting duplicate accession")
+            if accession_text in result:
+                raise SecEdgarError("duplicate accession after canonicalization")
             result[accession_text] = normalized
         return result
 
@@ -368,9 +368,9 @@ class SecEdgarFundamentalsSource:
     @staticmethod
     def _merge_accessions(target: dict[str, datetime.datetime], incoming: dict[str, datetime.datetime], symbol: str) -> None:
         for accession, accepted_at in incoming.items():
-            if accession in target and target[accession] != accepted_at:
-                raise SecEdgarError(f"conflicting duplicate accession for {symbol}")
-            target.setdefault(accession, accepted_at)
+            if accession in target:
+                raise SecEdgarError(f"duplicate accession across SEC submission resources for {symbol}")
+            target[accession] = accepted_at
 
     @staticmethod
     def _history_metadata_consistent(metadata: object, history: dict[str, object]) -> bool:

@@ -18,22 +18,27 @@ rows. Accession, form, and `acceptanceDateTime` are independently rejoined from 
 recent/historical Submissions. Missing bytes, a wrong CIK/resource, duplicate chronology,
 or any locally resealed mutation fails closed.
 
-The resulting `phase7c-raw-proof-v1` envelope commits to the acquisition-plan hash,
+The resulting `phase7c-raw-proof-v2` envelope commits to the acquisition-plan hash,
 physical raw-manifest identities, canonical selection hash, Company Facts and Submissions
 content, mapping and unit registries, form-period policy, as-of cutoff, issuer identity,
 accession/revision chain, and runtime fingerprint. Its hash is embedded in every
 Accounting row and Accounting lineage. A coherent new raw acquisition produces a new
 proof and Accounting identity; old commitments cannot be reused.
+Every Company Facts, recent Submissions, and historical Submissions manifest must have
+an `as_of` exactly equal to the plan/binding cutoff under
+`sec-raw-temporal-exact-cutoff-v1`. `acquired_at` remains a separate acquisition event
+time and need not equal the cutoff. Old, future, or mixed raw cutoffs fail closed.
 Issuer facts are stored once. Multiple share classes appear only in the applicability
 lineage and never cause duplicated economics.
 
 ## Versioned contracts and minimal metric scope
 
 - mapping registry: `sec-canonical-fundamentals-v2`
-- raw proof: `phase7c-raw-proof-v1`
+- raw proof: `phase7c-raw-proof-v2`
 - unit/currency registry: `sec-unit-currency-registry-v1`
-- form-period policy: `sec-form-period-policy-v1`
-- Accounting adapter: `sec-accounting-binding-v2`
+- raw temporal policy: `sec-raw-temporal-exact-cutoff-v1`
+- form-period policy: `sec-form-period-policy-v2`
+- Accounting adapter: `sec-accounting-binding-v3`
 
 Legacy Phase 7C v1 registries/adapters are incompatible and fail validation; they are
 not silently reinterpreted.
@@ -61,14 +66,20 @@ statement-role, ticker, or unit heuristic creates a mapping.
 ## Selection and period policy
 
 - Knowledge time is SEC `acceptanceDateTime`; missing, naive, or future acceptance fails.
-- Instant and duration semantics must exactly match the registry.
+- Instant and duration semantics must exactly match the registry. The same hashed
+  form/fp matrix is enforced for both: annual forms allow only `FY`; `10-Q` forms allow
+  only `Q1`/`Q2`/`Q3`, including instant facts.
 - Duration start/end are mandatory; instant facts forbid a start. `10-K`/`10-K/A` and
   supported `20-F` forms require `FY` and 330–400 days. `10-Q`/`10-Q/A` forbid `FY`;
-  Q1 allows 60–120 days, Q2 60–210, and Q3 60–300 so both discrete-quarter and SEC YTD
-  presentations remain explicit. `6-K` and `40-F` receive no automatic fiscal semantics.
+  Q1 allows `QUARTER` at 60–120 days. Q2 and Q3 classify 60–120 days as `QUARTER` and
+  121–210/300 days respectively as `YTD`, so discrete-quarter and SEC YTD presentations
+  remain explicit and have distinct canonical identities. `6-K` and `40-F` receive no automatic fiscal semantics.
   Non-calendar fiscal years are preserved unchanged. Form and acceptance are revalidated
   from Submissions, never trusted from the canonical row.
-- Exact duplicate observations may collapse only when all sealed semantics are equal.
+- Duplicate accessions never collapse, even when their rows are identical. Canonical
+  accession normalization precedes duplicate detection within recent submissions,
+  within history, and across their merge.
+- Exact duplicate Company Facts observations may collapse only when all sealed semantics are equal.
   Different frames/contexts, same-time conflicts, or ambiguous revisions fail closed.
 - Amendments form a chronological revision chain. A later amendment remains invisible
   to an earlier Accounting snapshot.

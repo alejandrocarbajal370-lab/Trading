@@ -27,10 +27,11 @@ from fundamentals.governance import (
 from governance.canonical import runtime_fingerprint
 
 SEC_MAPPING_REGISTRY_VERSION = "sec-canonical-fundamentals-v2"
-SEC_RAW_PROOF_VERSION = "phase7c-raw-proof-v1"
+SEC_RAW_PROOF_VERSION = "phase7c-raw-proof-v2"
 SEC_UNIT_REGISTRY_VERSION = "sec-unit-currency-registry-v1"
-FORM_PERIOD_POLICY_VERSION = "sec-form-period-policy-v1"
-SEC_ACCOUNTING_ADAPTER_VERSION = "sec-accounting-binding-v2"
+FORM_PERIOD_POLICY_VERSION = "sec-form-period-policy-v2"
+RAW_TEMPORAL_POLICY_VERSION = "sec-raw-temporal-exact-cutoff-v1"
+SEC_ACCOUNTING_ADAPTER_VERSION = "sec-accounting-binding-v3"
 
 
 class SecAccountingBindingError(AccountingGovernanceError):
@@ -130,12 +131,14 @@ DEFAULT_SEC_UNIT_REGISTRY = build_unit_registry()
 
 class VerifiedSecRawEvidence(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
-    version: Literal["phase7c-raw-proof-v1"] = SEC_RAW_PROOF_VERSION
+    version: Literal["phase7c-raw-proof-v2"] = SEC_RAW_PROOF_VERSION
     as_of: datetime.datetime
     plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     mapping_registry_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     unit_registry_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     form_period_policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    raw_temporal_policy_version: Literal["sec-raw-temporal-exact-cutoff-v1"] = RAW_TEMPORAL_POLICY_VERSION
+    raw_resource_cutoffs: tuple[str, ...]
     raw_manifest_identities: tuple[str, ...]
     canonical_selection_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     runtime_fingerprint: str = Field(min_length=1)
@@ -150,6 +153,8 @@ class VerifiedSecRawEvidence(BaseModel):
             raise ValueError("raw proof as_of must be timezone-aware")
         if self.raw_manifest_identities != tuple(sorted(set(self.raw_manifest_identities))):
             raise ValueError("raw proof manifests must be unique and canonical")
+        if self.raw_resource_cutoffs != tuple(sorted(set(self.raw_resource_cutoffs))):
+            raise ValueError("raw proof resource cutoffs must be unique and canonical")
         if _hash(self.payload()) != self.proof_hash:
             raise ValueError("raw proof hash mismatch")
         return self
@@ -178,37 +183,42 @@ def _currency_unit(value: object, registry: SecUnitRegistry) -> str:
     return unit
 
 
-FORM_PERIOD_POLICY_HASH = _hash({
+FORM_PERIOD_POLICY = {
     "version": FORM_PERIOD_POLICY_VERSION,
-    "annual": ("10-K", "10-K/A", "20-F", "20-F/A"),
-    "quarter": ("10-Q", "10-Q/A"),
+    "form_fp": {
+        "10-K": ("FY",), "10-K/A": ("FY",), "20-F": ("FY",), "20-F/A": ("FY",),
+        "10-Q": ("Q1", "Q2", "Q3"), "10-Q/A": ("Q1", "Q2", "Q3"),
+    },
     "unsupported_semantic_forms": ("6-K", "6-K/A", "40-F", "40-F/A"),
-    "annual_days": (330, 400),
-    "10q_days_by_fp": {"Q1": (60, 120), "Q2": (60, 210), "Q3": (60, 300)},
-})
+    "duration_ranges": {
+        "FY": {"ANNUAL": (330, 400)},
+        "Q1": {"QUARTER": (60, 120)},
+        "Q2": {"QUARTER": (60, 120), "YTD": (121, 210)},
+        "Q3": {"QUARTER": (60, 120), "YTD": (121, 300)},
+    },
+}
+FORM_PERIOD_POLICY_HASH = _hash(FORM_PERIOD_POLICY)
 
 
-def _form_period(row: pd.Series, start: datetime.date | None, end: datetime.date) -> None:
+def _form_period(row: pd.Series, start: datetime.date | None, end: datetime.date) -> str:
     form, fp = row.get("form"), row.get("fiscal_period")
     if not isinstance(form, str) or not isinstance(fp, str):
         raise SecAccountingBindingError("SEC form/fiscal period identity is missing")
     form, fp = form.strip().upper(), fp.strip().upper()
-    if form in {"6-K", "6-K/A", "40-F", "40-F/A"}:
+    unsupported = set(FORM_PERIOD_POLICY["unsupported_semantic_forms"])
+    matrix = FORM_PERIOD_POLICY["form_fp"]
+    if form in unsupported:
         raise SecAccountingBindingError("SEC form has no explicit Phase 7C fiscal semantics")
+    if form not in matrix or fp not in matrix[form]:
+        raise SecAccountingBindingError("SEC form/fiscal period is incoherent")
     if start is None:
-        if form not in {"10-K", "10-K/A", "10-Q", "10-Q/A", "20-F", "20-F/A"}:
-            raise SecAccountingBindingError("SEC instant form is unsupported")
-        return
+        return "INSTANT"
     days = (end - start).days + 1
-    if form in {"10-K", "10-K/A", "20-F", "20-F/A"}:
-        if fp != "FY" or not 330 <= days <= 400:
-            raise SecAccountingBindingError("SEC annual form/fiscal period is incoherent")
-    elif form in {"10-Q", "10-Q/A"}:
-        ranges = {"Q1": (60, 120), "Q2": (60, 210), "Q3": (60, 300)}
-        if fp not in ranges or not ranges[fp][0] <= days <= ranges[fp][1]:
-            raise SecAccountingBindingError("SEC quarterly form/fiscal period is incoherent")
-    else:
-        raise SecAccountingBindingError("SEC form/fiscal period is unsupported")
+    classifications = FORM_PERIOD_POLICY["duration_ranges"][fp]
+    matches = [name for name, limits in classifications.items() if limits[0] <= days <= limits[1]]
+    if len(matches) != 1:
+        raise SecAccountingBindingError("SEC duration is outside the governed fiscal policy")
+    return matches[0]
 
 
 def _period(row: pd.Series, expected: str) -> tuple[datetime.date | None, datetime.date]:
@@ -227,25 +237,21 @@ def _period(row: pd.Series, expected: str) -> tuple[datetime.date | None, dateti
     return start, end
 
 
-def _fiscal_label(row: pd.Series, start: datetime.date | None, end: datetime.date) -> str:
+def _fiscal_label(row: pd.Series, start: datetime.date | None, end: datetime.date, duration_semantics: str) -> str:
     fp, fy = row.get("fiscal_period"), row.get("fiscal_year")
     if not isinstance(fp, str) or not fp.strip() or pd.isna(fy):
         raise SecAccountingBindingError("SEC fiscal identity is missing")
     label = fp.strip().upper()
-    if start is not None:
-        days = (end - start).days + 1
-        if label == "FY" and not 330 <= days <= 400:
-            raise SecAccountingBindingError("SEC FY duration is incompatible with period dates")
-        if label in {"Q1", "Q2", "Q3", "Q4"} and not 60 <= days <= 120:
-            raise SecAccountingBindingError("SEC quarter duration is incompatible with period dates")
-    return f"{label}-{int(fy)}:{start.isoformat() if start else end.isoformat()}:{end.isoformat()}"
+    return f"{label}-{int(fy)}:{duration_semantics}:{start.isoformat() if start else end.isoformat()}:{end.isoformat()}"
 
 
 def _verified_payloads(
-    sec: SecFundamentalsResult, raw_store: RawSnapshotStore,
-) -> tuple[dict[str, tuple[RawSnapshotManifest, dict[str, object]]], tuple[str, ...]]:
+    sec: SecFundamentalsResult, raw_store: RawSnapshotStore, as_of: datetime.datetime,
+) -> tuple[dict[str, tuple[RawSnapshotManifest, dict[str, object]]], tuple[str, ...], tuple[str, ...]]:
     verified: dict[str, tuple[RawSnapshotManifest, dict[str, object]]] = {}
     identities: list[str] = []
+    cutoffs: list[str] = []
+    expected_cutoff = as_of.astimezone(datetime.UTC)
     for declared in sec.raw_manifests:
         path = raw_store.root / declared.provider / "acquisitions" / f"{declared.acquisition_id}.json"
         try:
@@ -258,13 +264,16 @@ def _verified_payloads(
             raise SecAccountingBindingError("raw SEC manifest/payload proof is not physically verifiable") from error
         if not isinstance(payload, dict) or observed.provider != "sec_edgar":
             raise SecAccountingBindingError("raw SEC resource payload/provider is invalid")
+        if observed.as_of != expected_cutoff:
+            raise SecAccountingBindingError("raw SEC manifest as_of violates exact-cutoff policy")
         if observed.resource in verified:
             raise SecAccountingBindingError("duplicate raw SEC resource acquisition")
         verified[observed.resource] = (observed, payload)
         identities.append(_hash(observed.model_dump(mode="json")))
+        cutoffs.append(f"{observed.resource}:{observed.as_of.isoformat()}")
     if not verified:
         raise SecAccountingBindingError("raw SEC snapshot proof is required")
-    return verified, tuple(sorted(identities))
+    return verified, tuple(sorted(identities)), tuple(sorted(cutoffs))
 
 
 def _submission_chronology(
@@ -293,8 +302,8 @@ def _submission_chronology(
             if pd.isna(stamp) or stamp.tzinfo is None or not isinstance(form, str) or not form.strip():
                 raise SecAccountingBindingError("verified SEC accession chronology is invalid")
             value = (stamp.tz_convert("UTC").to_pydatetime(), form.strip().upper())
-            if key in chronology and chronology[key] != value:
-                raise SecAccountingBindingError("conflicting duplicate SEC accession chronology")
+            if key in chronology:
+                raise SecAccountingBindingError("duplicate SEC accession chronology after canonicalization")
             chronology[key] = value
     return chronology, tuple(sorted(hashes))
 
@@ -369,7 +378,7 @@ def bind_sec_to_accounting(
     unit_registry = SecUnitRegistry.model_validate(unit_registry.model_dump(mode="python"))
     if plan.as_of != as_of:
         raise SecAccountingBindingError("SEC plan/as_of mismatch")
-    resources, raw_manifest_identities = _verified_payloads(sec, raw_store)
+    resources, raw_manifest_identities, raw_resource_cutoffs = _verified_payloads(sec, raw_store, as_of)
     rebuilt_facts = _rebuild_raw_facts(sec, resources, plan, as_of.astimezone(datetime.UTC))
     companyfacts = {
         resource.split(":", 1)[1]: manifest
@@ -418,7 +427,7 @@ def bind_sec_to_accounting(
             raise SecAccountingBindingError("Phase 7C mapping unit adapter is not implemented")
         unit = _currency_unit(row.get("unit"), unit_registry)
         start, end = _period(row, mapping.period_type)
-        _form_period(row, start, end)
+        duration_semantics = _form_period(row, start, end)
         available = pd.Timestamp(row.get("available_at"))
         if pd.isna(available) or available.tzinfo is None:
             raise SecAccountingBindingError("SEC acceptanceDateTime is required and timezone-aware")
@@ -429,7 +438,7 @@ def bind_sec_to_accounting(
         accession, form = row.get("accession"), row.get("form")
         if not isinstance(accession, str) or not isinstance(form, str):
             raise SecAccountingBindingError("SEC accession/form lineage is missing")
-        fiscal_period = _fiscal_label(row, start, end)
+        fiscal_period = _fiscal_label(row, start, end, duration_semantics)
         try:
             value = float(pd.to_numeric(row.get("value"), errors="raise"))
         except (TypeError, ValueError) as error:
@@ -446,6 +455,7 @@ def bind_sec_to_accounting(
             "unit_family": mapping.unit_family, "accession": accession, "form": form,
             "start": start, "end": end, "frame": row.get("frame"),
             "period_type": mapping.period_type, "available_at": available.isoformat(),
+            "duration_semantics": duration_semantics,
             "mapping_registry_hash": registry.registry_hash,
         })
         output.append({
@@ -465,6 +475,7 @@ def bind_sec_to_accounting(
             "supersedes_revision": None,
             "fiscal_period_start": start,
             "period_type": mapping.period_type,
+            "duration_semantics": duration_semantics,
             "taxonomy": taxonomy,
             "concept": concept,
             "accession": accession,
@@ -517,6 +528,7 @@ def bind_sec_to_accounting(
     selection_columns = [
         "canonical_cik", "taxonomy", "concept", "metric", "unit", "accession", "form",
         "fiscal_period_start", "period_end", "period_type", "available_at", "value", "frame",
+        "duration_semantics",
         "mapping_registry_hash", "unit_registry_hash", "form_period_policy_hash",
         "canonical_fact_identity", "original_sec_unit", "canonical_unit_family",
         "raw_snapshot_sha256", "submission_snapshot_sha256",
@@ -532,6 +544,8 @@ def bind_sec_to_accounting(
         "mapping_registry_hash": registry.registry_hash,
         "unit_registry_hash": unit_registry.registry_hash,
         "form_period_policy_hash": FORM_PERIOD_POLICY_HASH,
+        "raw_temporal_policy_version": RAW_TEMPORAL_POLICY_VERSION,
+        "raw_resource_cutoffs": raw_resource_cutoffs,
         "raw_manifest_identities": raw_manifest_identities,
         "canonical_selection_hash": selection_hash,
         "runtime_fingerprint": runtime.fingerprint,

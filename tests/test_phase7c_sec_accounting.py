@@ -27,7 +27,7 @@ AS_OF = datetime.datetime(2026, 8, 25, 20, tzinfo=datetime.UTC)
 ACCESSION = "0000000001-26-000001"
 
 
-def _plan(tmp_path, *, two_classes=False):
+def _plan(tmp_path, *, two_classes=False, as_of=AS_OF):
     ids = ("perm-a", "perm-b") if two_classes else ("perm-a",)
     members = pd.DataFrame([
         {"symbol": f"S{index}", "permanent_id": permanent_id, "exchange": "NYSE",
@@ -39,11 +39,11 @@ def _plan(tmp_path, *, two_classes=False):
          "available_at": "2026-08-25T19:00:00Z"}
         for index, permanent_id in enumerate(ids)
     ])
-    membership = validate_universe(members, rules=UniverseRules(), as_of=pd.Timestamp(AS_OF))
+    membership = validate_universe(members, rules=UniverseRules(), as_of=pd.Timestamp(as_of))
     snapshot = UniverseSnapshotStore(tmp_path / "universe").save(
-        membership, as_of=pd.Timestamp(AS_OF), validation={"status": "PASS"},
+        membership, as_of=pd.Timestamp(as_of), validation={"status": "PASS"},
         rules=UniverseRules(), schedule=UniverseRebalanceSchedule(),
-        recorded_at=pd.Timestamp(AS_OF),
+        recorded_at=pd.Timestamp(as_of),
     )
     mappings = pd.DataFrame([
         {"permanent_id": permanent_id, "cik": "1", "valid_from": "2020-01-01T00:00:00Z",
@@ -52,10 +52,10 @@ def _plan(tmp_path, *, two_classes=False):
         for index, permanent_id in enumerate(ids)
     ])
     return build_sec_acquisition_plan_from_unproved_records_for_testing(
-        universe_snapshot_dir=snapshot, security_master_records=mappings, as_of=AS_OF)
+        universe_snapshot_dir=snapshot, security_master_records=mappings, as_of=as_of)
 
 
-def _result(tmp_path, observations, *, accepted="2026-02-01T16:00:00Z"):
+def _result(tmp_path, observations, *, accepted="2026-02-01T16:00:00Z", as_of=AS_OF):
     accessions = []
     accepted_times = []
     forms = []
@@ -82,7 +82,7 @@ def _result(tmp_path, observations, *, accepted="2026-02-01T16:00:00Z"):
     source = SecEdgarFundamentalsSource(
         user_agent="Phase7C research@example.org", raw_store=RawSnapshotStore(tmp_path / "raw"),
         transport=transport)
-    return source.fetch(cik_by_symbol={"ANY": "1"}, as_of=AS_OF)
+    return source.fetch(cik_by_symbol={"ANY": "1"}, as_of=as_of)
 
 
 def _revenue(val=100, **changes):
@@ -90,6 +90,78 @@ def _revenue(val=100, **changes):
                    "fp": "FY", "frame": "CY2025"}
     observation.update(changes)
     return ("Revenues", "USD", observation)
+
+
+def _assets(**changes):
+    observation = {"start": None, "end": "2025-12-31", "fp": "FY", "frame": "CY2025Q4I"}
+    observation.update(changes)
+    return ("Assets", "USD", observation)
+
+
+@pytest.mark.parametrize("offset", [-1, 1])
+def test_raw_manifest_cutoff_must_exactly_match_binding(tmp_path, offset):
+    raw_as_of = AS_OF + datetime.timedelta(days=offset)
+    sec = _result(tmp_path, [_revenue()], as_of=raw_as_of)
+    with pytest.raises(SecAccountingBindingError, match="exact-cutoff"):
+        bind_sec_to_accounting(sec, plan=_plan(tmp_path, as_of=AS_OF), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+
+
+def test_mixed_raw_cutoffs_fail_even_when_manifest_is_physically_resealed(tmp_path):
+    sec = _result(tmp_path, [_revenue()])
+    target = sec.raw_manifests[0]
+    stale = target.model_copy(update={"as_of": AS_OF - datetime.timedelta(days=1)})
+    event = tmp_path / "raw" / target.provider / "acquisitions" / f"{target.acquisition_id}.json"
+    event.write_text(json.dumps(stale.model_dump(mode="json"), indent=2, sort_keys=True) + "\n")
+    object.__setattr__(sec, "raw_manifests", (stale, *sec.raw_manifests[1:]))
+    with pytest.raises(SecAccountingBindingError, match="exact-cutoff"):
+        bind_sec_to_accounting(sec, plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+
+
+def test_acquired_at_may_differ_when_raw_cutoff_matches(tmp_path):
+    sec = _result(tmp_path, [_revenue()])
+    assert all(item.as_of == AS_OF and item.acquired_at != item.as_of for item in sec.raw_manifests)
+    bound = bind_sec_to_accounting(sec, plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+    assert bound.raw_proof.raw_temporal_policy_version.endswith("exact-cutoff-v1")
+
+
+@pytest.mark.parametrize("form,fp", [("10-Q", "FY"), ("10-K", "Q1")])
+def test_instant_form_period_mismatch_fails_closed(tmp_path, form, fp):
+    with pytest.raises(SecAccountingBindingError, match="form/fiscal period"):
+        bind_sec_to_accounting(_result(tmp_path, [_assets(form=form, fp=fp)]), plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+
+
+@pytest.mark.parametrize("form,fp", [("10-Q", "Q2"), ("10-K", "FY"), ("20-F", "FY")])
+def test_instant_supported_form_period_is_accepted(tmp_path, form, fp):
+    bound = bind_sec_to_accounting(_result(tmp_path, [_assets(form=form, fp=fp)]), plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+    assert bound.mapped_metrics == ("total_assets",)
+
+
+@pytest.mark.parametrize("fp,start,end,semantic", [
+    ("Q2", "2025-01-01", "2025-06-30", "YTD"),
+    ("Q3", "2025-01-01", "2025-09-27", "YTD"),
+    ("Q2", "2025-04-01", "2025-06-30", "QUARTER"),
+])
+def test_quarter_and_ytd_duration_semantics_are_explicit(tmp_path, fp, start, end, semantic):
+    bound = bind_sec_to_accounting(_result(tmp_path, [_revenue(form="10-Q", fp=fp, start=start, end=end)]), plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+    row = bound.accounting.frame.iloc[0]
+    assert row["duration_semantics"] == semantic
+    assert f":{semantic}:" in row["fiscal_period"]
+
+
+@pytest.mark.parametrize("fp,start,end", [("Q1", "2025-01-01", "2025-05-30"), ("Q2", "2025-01-01", "2025-08-01")])
+def test_duration_outside_single_policy_range_is_rejected(tmp_path, fp, start, end):
+    with pytest.raises(SecAccountingBindingError, match="governed fiscal policy"):
+        bind_sec_to_accounting(_result(tmp_path, [_revenue(form="10-Q", fp=fp, start=start, end=end)]), plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+
+
+def test_q2_discrete_and_ytd_have_distinct_identities(tmp_path):
+    observations = [
+        _revenue(form="10-Q", fp="Q2", start="2025-04-01", end="2025-06-30", frame="CY2025Q2"),
+        _revenue(form="10-Q", fp="Q2", start="2025-01-01", end="2025-06-30", frame="CY2025Q2YTD"),
+    ]
+    bound = bind_sec_to_accounting(_result(tmp_path, observations), plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
+    assert set(bound.accounting.frame["duration_semantics"]) == {"QUARTER", "YTD"}
+    assert bound.accounting.frame["canonical_fact_identity"].nunique() == 2
 
 
 def test_sec_to_accounting_is_issuer_level_sealed_and_confidence_open(tmp_path):

@@ -89,7 +89,7 @@ def test_historical_submission_files_are_fetched_and_preserved(tmp_path):
     assert len(result.raw_manifests) == 3
 
 
-def test_recent_history_and_companyfacts_reconcile_canonical_accessions(tmp_path):
+def test_recent_history_duplicate_canonical_accession_is_rejected(tmp_path):
     metadata = {
         "name": "CIK0000000001-submissions-001.json", "filingCount": 1,
         "filingFrom": "2025-01-01", "filingTo": "2025-01-01",
@@ -103,11 +103,10 @@ def test_recent_history_and_companyfacts_reconcile_canonical_accessions(tmp_path
         "filingDate": ["2025-01-01"], "form": ["10-K"],
     }
     facts["facts"]["us-gaap"]["Revenues"]["units"]["USD"][0]["accn"] = "000000000126000001"
-    result = _source(tmp_path, submissions, facts, history).fetch(
-        cik_by_symbol={"ABC": "1"}, as_of=NOW
-    )
-    assert result.facts.iloc[0]["accession"] == "0000000001-26-000001"
-    assert result.completeness_by_symbol == {"ABC": "COMPLETE_WITHIN_SEC_REFERENCES"}
+    with pytest.raises(SecEdgarError, match="duplicate accession across"):
+        _source(tmp_path, submissions, facts, history).fetch(
+            cik_by_symbol={"ABC": "1"}, as_of=NOW
+        )
 
 
 @pytest.mark.parametrize("column", ["filingDate", "acceptanceDateTime", "form"])
