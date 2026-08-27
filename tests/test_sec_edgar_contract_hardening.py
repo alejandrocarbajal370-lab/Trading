@@ -125,14 +125,28 @@ def test_acceptance_chronology_fails_closed(tmp_path, timestamp, message):
         source._acceptance_by_accession({"accessionNumber": [ACC_A], "acceptanceDateTime": [timestamp]})
 
 
-def test_accession_duplicates_identical_dedupe_conflicts_fail(tmp_path):
+def test_accession_duplicates_identical_and_conflicting_fail(tmp_path):
     source = _source(tmp_path, lambda *a: sec.SecEdgarResponse(b"{}", "application/json"))
     payload = {"accessionNumber": [ACC_A, ACC_A.replace("-", "")], "acceptanceDateTime": [
         "2026-01-01T12:00:00Z", "2026-01-01T12:00:00Z"]}
-    assert list(source._acceptance_by_accession(payload)) == [ACC_A]
-    payload["acceptanceDateTime"][1] = "2026-01-02T12:00:00Z"
-    with pytest.raises(sec.SecEdgarError, match="conflicting duplicate"):
+    with pytest.raises(sec.SecEdgarError, match="duplicate accession"):
         source._acceptance_by_accession(payload)
+    payload["acceptanceDateTime"][1] = "2026-01-02T12:00:00Z"
+    with pytest.raises(sec.SecEdgarError, match="duplicate accession"):
+        source._acceptance_by_accession(payload)
+
+
+def test_accession_merge_rejects_duplicate_across_recent_and_history():
+    target = {ACC_A: NOW}
+    with pytest.raises(sec.SecEdgarError, match="across SEC submission resources"):
+        sec.SecEdgarFundamentalsSource._merge_accessions(target, {ACC_A: NOW}, "X")
+
+
+def test_unique_accession_reordering_preserves_index(tmp_path):
+    source = _source(tmp_path, lambda *a: sec.SecEdgarResponse(b"{}", "application/json"))
+    left = {"accessionNumber": [ACC_A, ACC_B], "acceptanceDateTime": [NOW.isoformat(), (NOW - datetime.timedelta(days=1)).isoformat()]}
+    right = {key: list(reversed(value)) for key, value in left.items()}
+    assert source._acceptance_by_accession(left) == source._acceptance_by_accession(right)
 
 
 @pytest.mark.parametrize("value", ["", "abc", "0001-26-000001", "0" * 18, None])
