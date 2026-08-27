@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -154,6 +155,15 @@ def test_duration_outside_single_policy_range_is_rejected(tmp_path, fp, start, e
         bind_sec_to_accounting(_result(tmp_path, [_revenue(form="10-Q", fp=fp, start=start, end=end)]), plan=_plan(tmp_path), as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"))
 
 
+@pytest.mark.parametrize("field,value", [("start", 20250101), ("end", 20251231)])
+def test_numeric_fiscal_dates_are_not_reinterpreted_as_timestamps(tmp_path, field, value):
+    with pytest.raises(SecAccountingBindingError, match="fiscal period"):
+        bind_sec_to_accounting(
+            _result(tmp_path, [_revenue(**{field: value})]), plan=_plan(tmp_path),
+            as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "raw"),
+        )
+
+
 def test_q2_discrete_and_ytd_have_distinct_identities(tmp_path):
     observations = [
         _revenue(form="10-Q", fp="Q2", start="2025-04-01", end="2025-06-30", frame="CY2025Q2"),
@@ -244,6 +254,47 @@ def test_non_calendar_fy_preserved_and_late_amendment_is_pit(tmp_path):
     assert bound.accounting.frame.iloc[0]["fiscal_period_start"] == datetime.date(2024, 10, 1)
     before = bound.accounting.snapshot(cutoff=datetime.datetime(2026, 3, 1, tzinfo=datetime.UTC))
     assert before.iloc[0]["value"] == 100
+
+
+def test_native_integer_fiscal_year_is_preserved_in_identity(tmp_path):
+    bound = bind_sec_to_accounting(
+        _result(tmp_path, [_revenue(fy=2025)]), plan=_plan(tmp_path), as_of=AS_OF,
+        raw_store=RawSnapshotStore(tmp_path / "raw"),
+    )
+    row = bound.accounting.frame.iloc[0]
+    assert row["fiscal_year"] == 2025
+    assert row["fiscal_period"].startswith("FY-2025:")
+
+
+@pytest.mark.parametrize(
+    "fy",
+    [2025.5, 2025.0, True, False, np.nan, np.inf, -np.inf, None, "2025", "2025.0", 1899, 2201],
+)
+def test_invalid_fiscal_year_fails_closed_even_with_coherent_raw_proof(tmp_path, fy):
+    sec = _result(tmp_path, [_revenue(fy=fy)])
+    with pytest.raises(SecAccountingBindingError, match="fiscal year"):
+        bind_sec_to_accounting(
+            sec, plan=_plan(tmp_path), as_of=AS_OF,
+            raw_store=RawSnapshotStore(tmp_path / "raw"),
+        )
+
+
+def test_fiscal_year_identity_is_deterministic_and_year_sensitive(tmp_path):
+    first = bind_sec_to_accounting(
+        _result(tmp_path / "first", [_revenue(fy=2025)]), plan=_plan(tmp_path / "first"),
+        as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "first" / "raw"),
+    )
+    same = bind_sec_to_accounting(
+        _result(tmp_path / "same", [_revenue(fy=2025)]), plan=_plan(tmp_path / "same"),
+        as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "same" / "raw"),
+    )
+    changed = bind_sec_to_accounting(
+        _result(tmp_path / "changed", [_revenue(fy=2024)]), plan=_plan(tmp_path / "changed"),
+        as_of=AS_OF, raw_store=RawSnapshotStore(tmp_path / "changed" / "raw"),
+    )
+    first_id = first.accounting.frame.iloc[0]["canonical_fact_identity"]
+    assert same.accounting.frame.iloc[0]["canonical_fact_identity"] == first_id
+    assert changed.accounting.frame.iloc[0]["canonical_fact_identity"] != first_id
 
 
 def test_sec_accounting_snapshot_before_and_after_amendment(tmp_path):

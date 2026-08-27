@@ -69,7 +69,14 @@ statement-role, ticker, or unit heuristic creates a mapping.
 - Instant and duration semantics must exactly match the registry. The same hashed
   form/fp matrix is enforced for both: annual forms allow only `FY`; `10-Q` forms allow
   only `Q1`/`Q2`/`Q3`, including instant facts.
-- Duration start/end are mandatory; instant facts forbid a start. `10-K`/`10-K/A` and
+- Fiscal year is governed by the hashed `sec-form-period-policy-v2` domain: only a
+  native JSON/Python integer from 1900 through 2200 inclusive is accepted. Booleans,
+  floats (including integral floats), nulls, non-finite values, and strings are rejected;
+  no coercion, truncation, missing-value substitution, or numeric-label parsing occurs.
+  The validated integer is committed to the fiscal label, fact identity, canonical
+  selection proof, Accounting row, and lineage proof.
+- Fiscal start/end accept only exact ISO `YYYY-MM-DD` strings; numeric timestamp
+  reinterpretation is forbidden. Duration start/end are mandatory; instant facts forbid a start. `10-K`/`10-K/A` and
   supported `20-F` forms require `FY` and 330–400 days. `10-Q`/`10-Q/A` forbid `FY`;
   Q1 allows `QUARTER` at 60–120 days. Q2 and Q3 classify 60–120 days as `QUARTER` and
   121–210/300 days respectively as `YTD`, so discrete-quarter and SEC YTD presentations

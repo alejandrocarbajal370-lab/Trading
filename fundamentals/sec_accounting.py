@@ -4,6 +4,7 @@ import datetime
 import hashlib
 import json
 import math
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -185,6 +186,7 @@ def _currency_unit(value: object, registry: SecUnitRegistry) -> str:
 
 FORM_PERIOD_POLICY = {
     "version": FORM_PERIOD_POLICY_VERSION,
+    "fiscal_year_domain": {"native_integer_only": True, "minimum": 1900, "maximum": 2200},
     "form_fp": {
         "10-K": ("FY",), "10-K/A": ("FY",), "20-F": ("FY",), "20-F/A": ("FY",),
         "10-Q": ("Q1", "Q2", "Q3"), "10-Q/A": ("Q1", "Q2", "Q3"),
@@ -198,6 +200,16 @@ FORM_PERIOD_POLICY = {
     },
 }
 FORM_PERIOD_POLICY_HASH = _hash(FORM_PERIOD_POLICY)
+
+
+def _fiscal_year(value: object) -> int:
+    """Return a lossless governed SEC fiscal year or fail closed."""
+    domain = FORM_PERIOD_POLICY["fiscal_year_domain"]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise SecAccountingBindingError("SEC fiscal year must be a native integer")
+    if not domain["minimum"] <= value <= domain["maximum"]:
+        raise SecAccountingBindingError("SEC fiscal year is outside the governed domain")
+    return value
 
 
 def _form_period(row: pd.Series, start: datetime.date | None, end: datetime.date) -> str:
@@ -224,9 +236,16 @@ def _form_period(row: pd.Series, start: datetime.date | None, end: datetime.date
 def _period(row: pd.Series, expected: str) -> tuple[datetime.date | None, datetime.date]:
     if row["period_type"] != expected:
         raise SecAccountingBindingError("SEC instant/duration semantic mismatch")
+    raw_end, raw_start = row["period_end"], row["fiscal_period_start"]
+    if not isinstance(raw_end, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_end) is None:
+        raise SecAccountingBindingError("SEC fiscal period is invalid")
+    if raw_start is not None and (
+        not isinstance(raw_start, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_start) is None
+    ):
+        raise SecAccountingBindingError("SEC fiscal period is invalid")
     try:
-        end = pd.Timestamp(row["period_end"]).date()
-        start = None if pd.isna(row["fiscal_period_start"]) else pd.Timestamp(row["fiscal_period_start"]).date()
+        end = datetime.date.fromisoformat(raw_end)
+        start = None if raw_start is None else datetime.date.fromisoformat(raw_start)
     except (TypeError, ValueError) as error:
         raise SecAccountingBindingError("SEC fiscal period is invalid") from error
     if expected == "duration":
@@ -239,10 +258,10 @@ def _period(row: pd.Series, expected: str) -> tuple[datetime.date | None, dateti
 
 def _fiscal_label(row: pd.Series, start: datetime.date | None, end: datetime.date, duration_semantics: str) -> str:
     fp, fy = row.get("fiscal_period"), row.get("fiscal_year")
-    if not isinstance(fp, str) or not fp.strip() or pd.isna(fy):
+    if not isinstance(fp, str) or not fp.strip():
         raise SecAccountingBindingError("SEC fiscal identity is missing")
     label = fp.strip().upper()
-    return f"{label}-{int(fy)}:{duration_semantics}:{start.isoformat() if start else end.isoformat()}:{end.isoformat()}"
+    return f"{label}-{_fiscal_year(fy)}:{duration_semantics}:{start.isoformat() if start else end.isoformat()}:{end.isoformat()}"
 
 
 def _verified_payloads(
@@ -438,6 +457,7 @@ def bind_sec_to_accounting(
         accession, form = row.get("accession"), row.get("form")
         if not isinstance(accession, str) or not isinstance(form, str):
             raise SecAccountingBindingError("SEC accession/form lineage is missing")
+        fiscal_year = _fiscal_year(row.get("fiscal_year"))
         fiscal_period = _fiscal_label(row, start, end, duration_semantics)
         try:
             value = float(pd.to_numeric(row.get("value"), errors="raise"))
@@ -456,6 +476,7 @@ def bind_sec_to_accounting(
             "start": start, "end": end, "frame": row.get("frame"),
             "period_type": mapping.period_type, "available_at": available.isoformat(),
             "duration_semantics": duration_semantics,
+            "fiscal_year": fiscal_year,
             "mapping_registry_hash": registry.registry_hash,
         })
         output.append({
@@ -463,6 +484,7 @@ def bind_sec_to_accounting(
             "entity": issuer.issuer_id,
             "metric": mapping.canonical_metric,
             "fiscal_period": fiscal_period,
+            "fiscal_year": fiscal_year,
             "period_end": end,
             "filing_date": filing_date,
             "available_at": available,
@@ -527,7 +549,7 @@ def bind_sec_to_accounting(
     frame = pd.concat(rebuilt, ignore_index=True)
     selection_columns = [
         "canonical_cik", "taxonomy", "concept", "metric", "unit", "accession", "form",
-        "fiscal_period_start", "period_end", "period_type", "available_at", "value", "frame",
+        "fiscal_year", "fiscal_period_start", "period_end", "period_type", "available_at", "value", "frame",
         "duration_semantics",
         "mapping_registry_hash", "unit_registry_hash", "form_period_policy_hash",
         "canonical_fact_identity", "original_sec_unit", "canonical_unit_family",
