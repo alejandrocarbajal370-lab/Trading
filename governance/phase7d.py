@@ -17,12 +17,12 @@ from governance.research_chain import GovernedFactorBatch
 from research.pre_phase6_readiness import PrePhase6Admission, admit_sealed_for_phase6
 
 CONFIDENCE_THRESHOLD: Literal[0.8] = 0.8
-CONFIDENCE_CONTRACT_VERSION = "governed-confidence-evidence-v2"
+CONFIDENCE_CONTRACT_VERSION = "governed-confidence-evidence-v3"
 CONFIDENCE_POLICY_VERSION = "contractual-control-min-0.80-v2"
 SUFFICIENCY_POLICY_VERSION = "qv-phase6-exact-v2"
 FX_USE_POLICY_VERSION = "fx-exact-direct-no-fill-v2"
-READINESS_POLICY_VERSION = "phase7d-readiness-v2"
-ADMISSION_CONTRACT_VERSION = "qvm-real-data-admission-v3.1"
+READINESS_POLICY_VERSION = "phase7d-readiness-v3"
+ADMISSION_CONTRACT_VERSION = "qvm-real-data-admission-v3.2"
 SHA = r"^[0-9a-f]{64}$"
 
 
@@ -46,7 +46,9 @@ def _strict_probability(value: object) -> float | None:
 
 
 class UpstreamEvidenceProof(ContractModel):
-    version: Literal["phase7d-upstream-evidence-v1"] = "phase7d-upstream-evidence-v1"
+    version: Literal["phase7d-upstream-evidence-reference-v2"] = (
+        "phase7d-upstream-evidence-reference-v2"
+    )
     component: Literal[
         "data_confidence", "mapping_confidence", "calculation_confidence", "economic_confidence"
     ]
@@ -59,9 +61,14 @@ class UpstreamEvidenceProof(ContractModel):
     accounting_canonical_id: str
     accounting_checksum: str = Field(pattern=SHA)
     as_of: datetime.datetime
-    source: str
-    source_record_id: str
-    source_reference_hash: str = Field(pattern=SHA)
+    governed_object_type: Literal[
+        "AccountingDataset",
+        "MappingPolicy",
+        "CalculationPolicy",
+        "EconomicValidation",
+    ]
+    governed_object_id: str
+    governed_object_hash: str = Field(pattern=SHA)
     score: float | None
     proof_hash: str = Field(pattern=SHA)
 
@@ -85,39 +92,126 @@ class UpstreamEvidenceProof(ContractModel):
         return self
 
 
-def seal_upstream_evidence(
+class CanonicalUpstreamEvidence(ContractModel):
+    """A context-owned object. Its identity is recomputed, never caller-declared."""
+
+    component: Literal[
+        "data_confidence", "mapping_confidence", "calculation_confidence", "economic_confidence"
+    ]
+    evidence_type: Literal[
+        "ACCOUNTING_CONTENT_VERIFIED",
+        "EXACT_MAPPING_REPLAY",
+        "CALCULATION_REPLAY",
+        "ECONOMIC_VALIDATION",
+    ]
+    governed_object_type: Literal[
+        "AccountingDataset", "MappingPolicy", "CalculationPolicy", "EconomicValidation"
+    ]
+    governed_object_id: str
+    governed_object_hash: str = Field(pattern=SHA)
+    accounting_canonical_id: str
+    accounting_checksum: str = Field(pattern=SHA)
+    as_of: datetime.datetime
+    score: float | None
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def strict_score(cls, value: object) -> object:
+        return _strict_probability(value)
+
+
+class UpstreamProofContext(ContractModel):
+    evidence: tuple[CanonicalUpstreamEvidence, ...]
+
+
+def canonical_confidence_evidence(
     accounting: AccountingDataset,
     *,
     component: str,
     as_of: datetime.datetime,
-    source: str,
-    source_record_id: str,
-    source_reference_hash: str,
-    score: float | None,
-) -> UpstreamEvidenceProof:
+    economic_validation: CanonicalUpstreamEvidence | None = None,
+) -> CanonicalUpstreamEvidence:
+    """Build evidence only from governed datasets/policies, never naked hashes."""
+    if component == "economic_confidence":
+        if economic_validation is None:
+            raise Phase7DContractError("economic confidence requires governed external evidence")
+        return economic_validation
     kind = {
         "data_confidence": "ACCOUNTING_CONTENT_VERIFIED",
         "mapping_confidence": "EXACT_MAPPING_REPLAY",
         "calculation_confidence": "CALCULATION_REPLAY",
-        "economic_confidence": "ECONOMIC_VALIDATION",
     }[component]
-    values = {
-        "component": component,
-        "evidence_type": kind,
-        "accounting_canonical_id": accounting.metadata.canonical_id,
-        "accounting_checksum": accounting.metadata.checksum,
-        "as_of": as_of,
-        "source": source,
-        "source_record_id": source_record_id,
-        "source_reference_hash": source_reference_hash,
-        "score": score,
-    }
+    object_type = {
+        "data_confidence": "AccountingDataset",
+        "mapping_confidence": "MappingPolicy",
+        "calculation_confidence": "CalculationPolicy",
+    }[component]
+    object_id = {
+        "data_confidence": accounting.metadata.canonical_id,
+        "mapping_confidence": SUFFICIENCY_POLICY_VERSION,
+        "calculation_confidence": "accounting-qv-adapter-v2",
+    }[component]
+    object_hash = {
+        "data_confidence": canonical_accounting_checksum(accounting.snapshot(cutoff=as_of)),
+        "mapping_confidence": sufficiency_policy_hash(),
+        "calculation_confidence": typed_hash(
+            {"adapter": "accounting-qv-adapter-v2", "matrix": sufficiency_policy_hash()}
+        ),
+    }[component]
+    return CanonicalUpstreamEvidence(
+        component=component,
+        evidence_type=kind,
+        governed_object_type=object_type,
+        governed_object_id=object_id,
+        governed_object_hash=object_hash,
+        accounting_canonical_id=accounting.metadata.canonical_id,
+        accounting_checksum=accounting.metadata.checksum,
+        as_of=as_of,
+        score=1.0,
+    )
+
+
+def reference_upstream_evidence(evidence: CanonicalUpstreamEvidence) -> UpstreamEvidenceProof:
+    values = evidence.model_dump(mode="python")
     payload = {
-        "version": "phase7d-upstream-evidence-v1",
-        **values,
-        "as_of": as_of.isoformat().replace("+00:00", "Z"),
+        "version": "phase7d-upstream-evidence-reference-v2",
+        **evidence.model_dump(mode="json"),
     }
     return UpstreamEvidenceProof(**values, proof_hash=typed_hash(payload))
+
+
+def verify_upstream_evidence(
+    proof: UpstreamEvidenceProof, context: UpstreamProofContext
+) -> CanonicalUpstreamEvidence:
+    candidates = [
+        x
+        for x in context.evidence
+        if (
+            x.component,
+            x.evidence_type,
+            x.governed_object_type,
+            x.governed_object_id,
+            x.governed_object_hash,
+            x.accounting_canonical_id,
+            x.accounting_checksum,
+            x.as_of,
+            x.score,
+        )
+        == (
+            proof.component,
+            proof.evidence_type,
+            proof.governed_object_type,
+            proof.governed_object_id,
+            proof.governed_object_hash,
+            proof.accounting_canonical_id,
+            proof.accounting_checksum,
+            proof.as_of,
+            proof.score,
+        )
+    ]
+    if len(candidates) != 1:
+        raise Phase7DContractError("upstream evidence reference is not resolvable")
+    return candidates[0]
 
 
 class ConfidenceComponent(ContractModel):
@@ -160,7 +254,7 @@ def confidence_policy_hash() -> str:
 
 
 class GovernedConfidenceProof(ContractModel):
-    contract_version: Literal["governed-confidence-evidence-v2"] = CONFIDENCE_CONTRACT_VERSION
+    contract_version: Literal["governed-confidence-evidence-v3"] = CONFIDENCE_CONTRACT_VERSION
     policy_version: Literal["contractual-control-min-0.80-v2"] = CONFIDENCE_POLICY_VERSION
     policy_hash: str = Field(pattern=SHA)
     threshold: Literal[0.8] = 0.8
@@ -238,6 +332,25 @@ def seal_confidence(
         "components": [x.model_dump(mode="json") for x in components],
     }
     return GovernedConfidenceProof(**values, proof_hash=typed_hash(payload))
+
+
+def verify_governed_confidence(
+    proof: GovernedConfidenceProof,
+    *,
+    accounting: AccountingDataset,
+    upstream_context: UpstreamProofContext,
+) -> GovernedConfidenceProof:
+    """Resolve every reference. Self-hash proves integrity, never authenticity."""
+    parsed = GovernedConfidenceProof.model_validate(proof.model_dump(mode="python"))
+    if (parsed.accounting_canonical_id, parsed.accounting_checksum) != (
+        accounting.metadata.canonical_id,
+        accounting.metadata.checksum,
+    ):
+        raise Phase7DContractError("confidence Accounting identity mismatch")
+    for component in parsed.components:
+        for reference in component.upstream_proofs:
+            verify_upstream_evidence(reference, upstream_context)
+    return parsed
 
 
 class SufficiencyClass(StrEnum):
@@ -499,13 +612,16 @@ def adapt_accounting_factor_inputs(
     accounting: AccountingDataset,
     *,
     confidence: GovernedConfidenceProof,
+    upstream_context: UpstreamProofContext,
     as_of: datetime.datetime,
     entity_context: dict[str, tuple[str | None, str | None]] | None = None,
     sufficiency: MetricSufficiencyMatrix = DEFAULT_SUFFICIENCY_MATRIX,
 ) -> FactorInputAdapterProof:
     if type(accounting) is not AccountingDataset:
         raise TypeError("exact AccountingDataset required")
-    confidence = GovernedConfidenceProof.model_validate(confidence.model_dump(mode="python"))
+    confidence = verify_governed_confidence(
+        confidence, accounting=accounting, upstream_context=upstream_context
+    )
     MetricSufficiencyMatrix.model_validate(sufficiency.model_dump())
     if (confidence.accounting_canonical_id, confidence.accounting_checksum, confidence.as_of) != (
         accounting.metadata.canonical_id,
@@ -660,6 +776,8 @@ class FXConversionUse(ContractModel):
     raw_evidence_hash: str | None
     fx_canonical_id: str | None
     fx_checksum: str | None
+    fx_dataset_version: str | None
+    staleness_policy_hash: str | None
 
 
 class FXUseProof(ContractModel):
@@ -725,14 +843,12 @@ def governed_fx_conversion(
         )
         if not same and c.conversion_method != "direct":
             raise FXGovernanceError("implicit inverse forbidden")
-        row = (
-            fx.frame.loc[
-                (fx.frame.base_currency == c.source_currency)
-                & (fx.frame.quote_currency == c.target_currency)
-            ]
-            .sort_values("market_timestamp")
-            .iloc[-1]
-        )
+        row = fx.frame.loc[
+            (fx.frame.base_currency == c.source_currency)
+            & (fx.frame.quote_currency == c.target_currency)
+            & (fx.frame.market_timestamp == pd.Timestamp(c.rate_market_timestamp))
+            & (fx.frame.available_at == pd.Timestamp(c.rate_available_at))
+        ].iloc[0]
         row_identity = typed_hash(row.to_dict())
         record = str(row["source_record_id"]) if "source_record_id" in row else row_identity
         raw = str(row["raw_evidence_hash"]) if "raw_evidence_hash" in row else row_identity
@@ -752,6 +868,10 @@ def governed_fx_conversion(
         raw_evidence_hash=raw,
         fx_canonical_id=c.fx_canonical_id,
         fx_checksum=c.fx_checksum,
+        fx_dataset_version=c.fx_dataset_version,
+        staleness_policy_hash=None
+        if same
+        else typed_hash(fx.metadata.staleness_policy.model_dump(mode="json")),
     )
     values = {
         "accounting_canonical_id": accounting.metadata.canonical_id,
@@ -773,13 +893,109 @@ def governed_fx_conversion(
     )
 
 
-class ProviderReadinessProof(ContractModel):
-    version: Literal["provider-readiness-v1"] = "provider-readiness-v1"
+def verify_fx_use_proof(
+    proof: FXUseProof,
+    *,
+    fx_dataset: FXDataset | None,
+    accounting: AccountingDataset,
+    adapter_proof_hash: str | None,
+) -> FXUseProof:
+    parsed = FXUseProof.model_validate(proof.model_dump(mode="python"))
+    if (parsed.accounting_canonical_id, parsed.accounting_checksum, parsed.adapter_proof_hash) != (
+        accounting.metadata.canonical_id,
+        accounting.metadata.checksum,
+        adapter_proof_hash,
+    ):
+        raise Phase7DContractError("FX consuming identity mismatch")
+    for item in parsed.conversions:
+        if item.source_currency == item.target_currency:
+            expected = (
+                1.0,
+                item.amount,
+                "IDENTITY",
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            observed = (
+                item.rate,
+                item.converted_amount,
+                item.semantics,
+                item.market_timestamp,
+                item.available_at,
+                item.source,
+                item.source_record_id,
+                item.raw_evidence_hash,
+                item.fx_canonical_id,
+                item.fx_checksum,
+                item.fx_dataset_version,
+            )
+            if observed != expected:
+                raise Phase7DContractError("fabricated same-currency FX lineage")
+            continue
+        if fx_dataset is None:
+            raise Phase7DContractError("cross FX lacks governed dataset")
+        if (parsed.fx_canonical_id, parsed.fx_checksum, item.fx_canonical_id, item.fx_checksum) != (
+            fx_dataset.metadata.canonical_id,
+            fx_dataset.metadata.checksum,
+            fx_dataset.metadata.canonical_id,
+            fx_dataset.metadata.checksum,
+        ):
+            raise Phase7DContractError("FX dataset identity mismatch")
+        rows = fx_dataset.frame.loc[
+            (fx_dataset.frame.base_currency == item.source_currency)
+            & (fx_dataset.frame.quote_currency == item.target_currency)
+            & (fx_dataset.frame.market_timestamp == pd.Timestamp(item.market_timestamp))
+            & (fx_dataset.frame.available_at == pd.Timestamp(item.available_at))
+        ]
+        if len(rows) != 1:
+            raise Phase7DContractError("exact FX observation is not resolvable")
+        row = rows.iloc[0]
+        row_identity = typed_hash(row.to_dict())
+        expected_record = (
+            str(row["source_record_id"]) if "source_record_id" in row else row_identity
+        )
+        expected_raw = str(row["raw_evidence_hash"]) if "raw_evidence_hash" in row else row_identity
+        if (
+            item.rate != float(row.rate)
+            or item.converted_amount != item.amount * float(row.rate)
+            or item.source != fx_dataset.metadata.source
+            or item.source_record_id != expected_record
+            or item.raw_evidence_hash != expected_raw
+            or item.fx_dataset_version != fx_dataset.metadata.dataset_version
+            or item.staleness_policy_hash
+            != typed_hash(fx_dataset.metadata.staleness_policy.model_dump(mode="json"))
+            or item.semantics != "TARGET=SOURCE*DIRECT_RATE"
+        ):
+            raise Phase7DContractError("FX exact-lineage replay mismatch")
+    return parsed
+
+
+class ProviderGateEvidence(ContractModel):
+    gate: Literal["LEGAL_ACCESS", "HISTORICAL_PIT", "OPERATIONS_MONITORED"]
     provider: str
     dataset_identity: str
-    legal_access: Literal[True]
-    historical_pit: Literal[True]
-    operations_monitored: Literal[True]
+    evidence_source: str
+    evidence_record_id: str
+    evidence_hash: str = Field(pattern=SHA)
+    as_of: datetime.datetime
+
+
+class ProviderEvidenceContext(ContractModel):
+    evidence: tuple[ProviderGateEvidence, ...]
+
+
+class ProviderReadinessProof(ContractModel):
+    version: Literal["provider-readiness-v2"] = "provider-readiness-v2"
+    provider: str
+    dataset_identity: str
+    gate_references: tuple[ProviderGateEvidence, ...]
+    state: Literal["VERIFIED", "OPEN_EXTERNAL"]
     as_of: datetime.datetime
     proof_hash: str = Field(pattern=SHA)
 
@@ -790,23 +1006,49 @@ class ProviderReadinessProof(ContractModel):
         return self
 
 
-def seal_provider_readiness(
-    *, provider: str, dataset_identity: str, as_of: datetime.datetime
+def assess_provider_readiness(
+    *,
+    provider: str,
+    dataset_identity: str,
+    as_of: datetime.datetime,
+    evidence: tuple[ProviderGateEvidence, ...] = (),
 ) -> ProviderReadinessProof:
+    required = {"LEGAL_ACCESS", "HISTORICAL_PIT", "OPERATIONS_MONITORED"}
+    matched = tuple(
+        x
+        for x in evidence
+        if (x.provider, x.dataset_identity, x.as_of) == (provider, dataset_identity, as_of)
+    )
+    state = (
+        "VERIFIED"
+        if {x.gate for x in matched} == required and len(matched) == 3
+        else "OPEN_EXTERNAL"
+    )
     values = {
         "provider": provider,
         "dataset_identity": dataset_identity,
-        "legal_access": True,
-        "historical_pit": True,
-        "operations_monitored": True,
+        "gate_references": matched,
+        "state": state,
         "as_of": as_of,
     }
     payload = {
-        "version": "provider-readiness-v1",
+        "version": "provider-readiness-v2",
         **values,
+        "gate_references": [x.model_dump(mode="json") for x in matched],
         "as_of": as_of.isoformat().replace("+00:00", "Z"),
     }
     return ProviderReadinessProof(**values, proof_hash=typed_hash(payload))
+
+
+def verify_provider_readiness(
+    proof: ProviderReadinessProof, context: ProviderEvidenceContext
+) -> ProviderReadinessProof:
+    parsed = ProviderReadinessProof.model_validate(proof.model_dump(mode="python"))
+    required = {"LEGAL_ACCESS", "HISTORICAL_PIT", "OPERATIONS_MONITORED"}
+    resolved = [x for x in parsed.gate_references if x in context.evidence]
+    if parsed.state != "VERIFIED" or len(resolved) != 3 or {x.gate for x in resolved} != required:
+        raise Phase7DContractError("provider readiness remains OPEN_EXTERNAL")
+    return parsed
 
 
 class PipelineState(StrEnum):
@@ -815,6 +1057,23 @@ class PipelineState(StrEnum):
     FACTOR_INPUTS_BOUND = "FACTOR_INPUTS_BOUND"
     QVM_NOT_READY = "QVM_NOT_READY"
     QVM_ADMISSIBLE = "QVM_ADMISSIBLE"
+
+
+READINESS_EDGES = {
+    (PipelineState.ACCOUNTING_BOUND, PipelineState.CONFIDENCE_BOUND): "GovernedConfidenceProof",
+    (PipelineState.CONFIDENCE_BOUND, PipelineState.FACTOR_INPUTS_BOUND): "FactorInputAdapterProof",
+    (PipelineState.FACTOR_INPUTS_BOUND, PipelineState.QVM_NOT_READY): "ProviderReadinessProof",
+    (PipelineState.FACTOR_INPUTS_BOUND, PipelineState.QVM_ADMISSIBLE): "PrePhase6Admission",
+}
+
+
+def readiness_policy_hash() -> str:
+    return typed_hash(
+        {
+            "version": READINESS_POLICY_VERSION,
+            "edges": sorted((a.value, b.value, kind) for (a, b), kind in READINESS_EDGES.items()),
+        }
+    )
 
 
 class ReadinessTransition(ContractModel):
@@ -830,14 +1089,15 @@ class ReadinessTransition(ContractModel):
 
 
 class ReadinessStateProof(ContractModel):
-    policy_version: Literal["phase7d-readiness-v2"] = READINESS_POLICY_VERSION
+    policy_version: Literal["phase7d-readiness-v3"] = READINESS_POLICY_VERSION
+    policy_hash: str = Field(pattern=SHA)
     transitions: tuple[ReadinessTransition, ...] = Field(min_length=1)
     state: PipelineState
     proof_hash: str = Field(pattern=SHA)
 
     @model_validator(mode="after")
     def verify(self) -> ReadinessStateProof:
-        if (
+        if self.policy_hash != readiness_policy_hash() or (
             self.transitions[0].from_state != "ACCOUNTING_BOUND"
             or any(
                 a.to_state != b.from_state for a, b in zip(self.transitions, self.transitions[1:])
@@ -845,11 +1105,12 @@ class ReadinessStateProof(ContractModel):
             or self.transitions[-1].to_state != self.state
         ):
             raise ValueError("readiness transition jump")
-        if (
-            self.state == "QVM_ADMISSIBLE"
-            and self.transitions[-1].prerequisite_type != "PrePhase6Admission"
-        ):
-            raise ValueError("admissible requires Phase6")
+        for transition in self.transitions:
+            if (
+                READINESS_EDGES.get((transition.from_state, transition.to_state))
+                != transition.prerequisite_type
+            ):
+                raise ValueError("non-canonical readiness edge or prerequisite")
         if typed_hash(self.model_dump(mode="json", exclude={"proof_hash"})) != self.proof_hash:
             raise ValueError("readiness hash mismatch")
         return self
@@ -880,11 +1141,13 @@ def _readiness(
         ),
     )
     return ReadinessStateProof(
+        policy_hash=readiness_policy_hash(),
         transitions=ts,
         state=end,
         proof_hash=typed_hash(
             {
                 "policy_version": READINESS_POLICY_VERSION,
+                "policy_hash": readiness_policy_hash(),
                 "transitions": [x.model_dump(mode="json") for x in ts],
                 "state": end,
             }
@@ -892,8 +1155,25 @@ def _readiness(
     )
 
 
+def verify_readiness_state(
+    proof: ReadinessStateProof,
+    *,
+    confidence_hash: str,
+    adapter_hash: str,
+    terminal_type: str,
+    terminal_hash: str,
+) -> ReadinessStateProof:
+    parsed = ReadinessStateProof.model_validate(proof.model_dump(mode="python"))
+    expected = (confidence_hash, adapter_hash, terminal_hash)
+    if tuple(x.prerequisite_hash for x in parsed.transitions) != expected:
+        raise Phase7DContractError("readiness prerequisite is not resolvable")
+    if parsed.transitions[-1].prerequisite_type != terminal_type:
+        raise Phase7DContractError("readiness terminal prerequisite mismatch")
+    return parsed
+
+
 class QVMAdmissionV3(ContractModel):
-    contract_version: Literal["qvm-real-data-admission-v3.1"] = ADMISSION_CONTRACT_VERSION
+    contract_version: Literal["qvm-real-data-admission-v3.2"] = ADMISSION_CONTRACT_VERSION
     state: Literal["QVM_ADMISSIBLE", "QVM_NOT_READY"]
     reasons: tuple[str, ...]
     accounting_canonical_id: str
@@ -939,13 +1219,22 @@ def admit_qvm_v3(
     fx_proof: FXUseProof | None,
     batches: tuple[GovernedFactorBatch, ...],
     provider_proofs: tuple[ProviderReadinessProof, ...] = (),
+    upstream_context: UpstreamProofContext | None = None,
+    provider_context: ProviderEvidenceContext | None = None,
 ) -> QVMAdmissionV3:
+    upstream_context = upstream_context or UpstreamProofContext(evidence=())
+    provider_context = provider_context or ProviderEvidenceContext(evidence=())
     AccountingDataset(frame=accounting.frame.copy(deep=True), metadata=accounting.metadata)
     reasons = []
     if confidence is None:
         reasons.append("CONFIDENCE_PROOF_MISSING")
     else:
-        confidence = GovernedConfidenceProof.model_validate(confidence.model_dump(mode="python"))
+        try:
+            confidence = verify_governed_confidence(
+                confidence, accounting=accounting, upstream_context=upstream_context
+            )
+        except (TypeError, ValueError):
+            reasons.append("CONFIDENCE_UPSTREAM_UNRESOLVED")
         if (confidence.accounting_canonical_id, confidence.accounting_checksum) != (
             accounting.metadata.canonical_id,
             accounting.metadata.checksum,
@@ -974,6 +1263,7 @@ def admit_qvm_v3(
                 replayed = adapt_accounting_factor_inputs(
                     accounting,
                     confidence=confidence,
+                    upstream_context=upstream_context,
                     as_of=confidence.as_of,
                     entity_context=contexts,
                 )
@@ -1029,26 +1319,20 @@ def admit_qvm_v3(
         if observed_fx_fact_ids != required_fx_fact_ids:
             reasons.append("FX_CONVERSION_SET_MISMATCH")
         if fx_dataset is not None:
-            for item in fx_proof.conversions:
-                if item.source_currency == item.target_currency:
-                    continue
-                try:
-                    replay = fx_dataset.convert(
-                        item.amount,
-                        source_currency=item.source_currency,
-                        target_currency=item.target_currency,
-                        market_at=item.market_timestamp,
-                        cutoff=item.available_at,
-                    )
-                    if (replay.rate, replay.converted_amount) != (
-                        item.rate,
-                        item.converted_amount,
-                    ):
-                        raise ValueError("conversion mismatch")
-                except (TypeError, ValueError, FXGovernanceError):
-                    reasons.append(f"FX_CONVERSION_REPLAY_FAILED:{item.input_fact_id}")
+            try:
+                verify_fx_use_proof(
+                    fx_proof,
+                    fx_dataset=fx_dataset,
+                    accounting=accounting,
+                    adapter_proof_hash=None if adapter is None else adapter.proof_hash,
+                )
+            except (TypeError, ValueError, FXGovernanceError):
+                reasons.append("FX_EXACT_LINEAGE_REPLAY_FAILED")
     for p in provider_proofs:
-        ProviderReadinessProof.model_validate(p.model_dump(mode="python"))
+        try:
+            verify_provider_readiness(p, provider_context)
+        except (TypeError, ValueError):
+            reasons.append(f"PROVIDER_OPEN_EXTERNAL:{p.provider}")
     if not provider_proofs:
         reasons.append("PROVIDER_REAL_DATA_OPEN")
     valid = []
@@ -1109,3 +1393,51 @@ def admit_qvm_v3(
         "readiness_proof": readiness.model_dump(mode="json"),
     }
     return QVMAdmissionV3(**values, admission_hash=typed_hash(payload))
+
+
+def verify_qvm_admission_v3(
+    admission: QVMAdmissionV3,
+    *,
+    accounting: AccountingDataset,
+    confidence: GovernedConfidenceProof | None,
+    adapter: FactorInputAdapterProof | None,
+    fx_dataset: FXDataset | None,
+    fx_proof: FXUseProof | None,
+    batches: tuple[GovernedFactorBatch, ...],
+    provider_proofs: tuple[ProviderReadinessProof, ...] = (),
+    upstream_context: UpstreamProofContext | None = None,
+    provider_context: ProviderEvidenceContext | None = None,
+) -> QVMAdmissionV3:
+    """Governed verification for both ADMISSIBLE and NOT_READY artifacts."""
+    upstream_context = upstream_context or UpstreamProofContext(evidence=())
+    provider_context = provider_context or ProviderEvidenceContext(evidence=())
+    parsed = QVMAdmissionV3.model_validate(admission.model_dump(mode="python"))
+    expected = admit_qvm_v3(
+        accounting=accounting,
+        confidence=confidence,
+        adapter=adapter,
+        fx_dataset=fx_dataset,
+        fx_proof=fx_proof,
+        batches=batches,
+        provider_proofs=provider_proofs,
+        upstream_context=upstream_context,
+        provider_context=provider_context,
+    )
+    if parsed != expected:
+        raise Phase7DContractError("admission is not derivable from governed upstream context")
+    terminal_type = (
+        "PrePhase6Admission" if parsed.state == "QVM_ADMISSIBLE" else "ProviderReadinessProof"
+    )
+    terminal_hash = (
+        typed_hash(parsed.phase6_admission.model_dump(mode="json"))
+        if parsed.phase6_admission is not None
+        else ("0" * 64 if not provider_proofs else provider_proofs[0].proof_hash)
+    )
+    verify_readiness_state(
+        parsed.readiness_proof,
+        confidence_hash="0" * 64 if confidence is None else confidence.proof_hash,
+        adapter_hash="0" * 64 if adapter is None else adapter.proof_hash,
+        terminal_type=terminal_type,
+        terminal_hash=terminal_hash,
+    )
+    return parsed

@@ -6,7 +6,23 @@ authorizes backtesting, signals, scoring changes, portfolio construction, orders
 Every admission preserves `NO_TRADE`, `live_execution_enabled=false`, and
 `signals_generated=false`.
 
-## Confidence v2
+## Integrity is not authenticity
+
+A self-hash proves only that a local envelope has not changed; it does not prove its claims are
+true. Phase 7D therefore separates structural parsing from governed, context-bound verification.
+Confidence references resolve to canonical Accounting/mapping/calculation/economic objects; FX
+use replays the exact dataset row and every lineage field; readiness prerequisites resolve to the
+exact upstream proof; and consumers must rederive both `QVM_ADMISSIBLE` and `QVM_NOT_READY`
+with `verify_qvm_admission_v3` before treating an admission as authoritative.
+
+Provider legal access/licensing, historical PIT completeness, retention, and operations monitoring
+are `OPEN_EXTERNAL`/unknown by default. A provider is `VERIFIED` only when every required typed
+gate-evidence object is supplied and resolved by the governed provider context. A provider name or
+dataset identity never auto-certifies those gates. The positive admissible path is a synthetic
+`RESEARCH_ONLY` contract fixture; the real route remains `QVM_NOT_READY` and globally
+`INSUFFICIENT_REAL_DATA`.
+
+## Confidence v3
 
 The canonical policy `contractual-control-min-0.80-v2` fixes the threshold at exactly `0.80` in a
 `Literal` and a policy hash. No public producer or admission API accepts a threshold. A proof that

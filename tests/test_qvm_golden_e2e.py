@@ -26,12 +26,17 @@ from governance.integration import CrossLayerGovernanceError, integrate_governed
 from governance.phase7d import (
     ConfidenceComponent,
     FXUseProof,
+    ProviderEvidenceContext,
+    ProviderGateEvidence,
+    UpstreamProofContext,
     adapt_accounting_factor_inputs,
     admit_qvm_v3,
+    assess_provider_readiness,
+    canonical_confidence_evidence,
     governed_fx_conversion,
+    reference_upstream_evidence,
     seal_confidence,
-    seal_provider_readiness,
-    seal_upstream_evidence,
+    verify_qvm_admission_v3,
 )
 from governance.research_chain import (
     _value_inputs,
@@ -710,25 +715,22 @@ def test_phase7d_fully_coherent_contract_fixture_is_qvm_admissible(tmp_path: Pat
     accounting = chain.accounting_data
     as_of = batches[0].as_of
     components = []
+    upstream_evidence = []
     for name in ("data_confidence", "mapping_confidence", "calculation_confidence"):
-        upstream = seal_upstream_evidence(
-            accounting,
-            component=name,
-            as_of=as_of,
-            source="contract-fixture",
-            source_record_id=name,
-            source_reference_hash=typed_hash({"fixture": name}),
-            score=1.0,
-        )
+        evidence = canonical_confidence_evidence(accounting, component=name, as_of=as_of)
+        upstream_evidence.append(evidence)
+        upstream = reference_upstream_evidence(evidence)
         components.append(
             ConfidenceComponent(
                 name=name, score=1.0, upstream_proofs=(upstream,), rationale_code="CONTRACT_FIXTURE"
             )
         )
     confidence = seal_confidence(accounting, as_of=as_of, components=tuple(components))
+    upstream_context = UpstreamProofContext(evidence=tuple(upstream_evidence))
     adapter = adapt_accounting_factor_inputs(
         accounting,
         confidence=confidence,
+        upstream_context=upstream_context,
         as_of=as_of,
         entity_context={"AAA": ("Industrials", "Machinery")},
     )
@@ -775,10 +777,23 @@ def test_phase7d_fully_coherent_contract_fixture_is_qvm_admissible(tmp_path: Pat
             }
         ),
     )
-    provider = seal_provider_readiness(
+    gate_evidence = tuple(
+        ProviderGateEvidence(
+            gate=gate,
+            provider="CONTRACT_FIXTURE_ONLY",
+            dataset_identity=chain.manifest.cross_layer_fingerprint,
+            evidence_source="governed-contract-fixture",
+            evidence_record_id=gate,
+            evidence_hash=typed_hash({"fixture": gate}),
+            as_of=as_of,
+        )
+        for gate in ("LEGAL_ACCESS", "HISTORICAL_PIT", "OPERATIONS_MONITORED")
+    )
+    provider = assess_provider_readiness(
         provider="CONTRACT_FIXTURE_ONLY",
         dataset_identity=chain.manifest.cross_layer_fingerprint,
         as_of=as_of,
+        evidence=gate_evidence,
     )
     result = admit_qvm_v3(
         accounting=accounting,
@@ -788,11 +803,28 @@ def test_phase7d_fully_coherent_contract_fixture_is_qvm_admissible(tmp_path: Pat
         fx_proof=fx_proof,
         batches=batches,
         provider_proofs=(provider,),
+        upstream_context=upstream_context,
+        provider_context=ProviderEvidenceContext(evidence=gate_evidence),
     )
     assert result.state == "QVM_ADMISSIBLE", result.reasons
     assert result.research_only and result.trade_decision == "NO_TRADE"
     assert not result.live_execution_enabled and not result.signals_generated
     assert result.global_readiness == "INSUFFICIENT_REAL_DATA"
+    assert (
+        verify_qvm_admission_v3(
+            result,
+            accounting=accounting,
+            confidence=confidence,
+            adapter=adapter,
+            fx_dataset=chain.fx_data,
+            fx_proof=fx_proof,
+            batches=batches,
+            provider_proofs=(provider,),
+            upstream_context=upstream_context,
+            provider_context=ProviderEvidenceContext(evidence=gate_evidence),
+        )
+        == result
+    )
 
 
 @pytest.mark.parametrize("batch_index,new_factor", [(0, "Value"), (1, "Momentum"), (2, "Quality")])

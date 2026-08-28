@@ -11,21 +11,31 @@ from fundamentals.governance import AccountingLineageEntry, govern_accounting
 from governance.canonical import typed_hash
 from governance.phase7d import (
     DEFAULT_SUFFICIENCY_MATRIX,
+    CanonicalUpstreamEvidence,
     ConfidenceComponent,
     FactorInputAdapterProof,
     FXUseProof,
     GovernedConfidenceProof,
     MetricSufficiencyMatrix,
+    ProviderEvidenceContext,
     ProviderReadinessProof,
     QVMAdmissionV3,
     ReadinessStateProof,
     UpstreamEvidenceProof,
+    UpstreamProofContext,
     adapt_accounting_factor_inputs,
     admit_qvm_v3,
+    assess_provider_readiness,
+    canonical_confidence_evidence,
     governed_fx_conversion,
+    readiness_policy_hash,
+    reference_upstream_evidence,
     seal_confidence,
-    seal_upstream_evidence,
     sufficiency_policy_hash,
+    verify_fx_use_proof,
+    verify_governed_confidence,
+    verify_provider_readiness,
+    verify_qvm_admission_v3,
 )
 
 AS_OF = datetime.datetime(2025, 4, 1, 20, tzinfo=datetime.UTC)
@@ -36,19 +46,17 @@ def _accounting(rows: list[dict[str, object]] | None = None):
     frame = pd.DataFrame(
         [
             {
-
-                    "fact_id": f"f{i}",
-                    "fiscal_period": "FY-2024",
-                    "period_end": "2024-12-31",
-                    "filing_date": "2025-02-01T12:00:00Z",
-                    "available_at": "2025-02-01T12:00:00Z",
-                    "unit": "USD",
-                    "source": "sec_edgar",
-                    "dataset_version": "v1",
-                    "revision": 0,
-                    "revision_type": "ORIGINAL",
-                    "supersedes_revision": None
-                ,
+                "fact_id": f"f{i}",
+                "fiscal_period": "FY-2024",
+                "period_end": "2024-12-31",
+                "filing_date": "2025-02-01T12:00:00Z",
+                "available_at": "2025-02-01T12:00:00Z",
+                "unit": "USD",
+                "source": "sec_edgar",
+                "dataset_version": "v1",
+                "revision": 0,
+                "revision_type": "ORIGINAL",
+                "supersedes_revision": None,
                 **row,
             }
             for i, row in enumerate(rows)
@@ -70,25 +78,46 @@ def _accounting(rows: list[dict[str, object]] | None = None):
 
 def _components(accounting, score: float | None = 1.0, economic: bool = False):
     names = ["data_confidence", "mapping_confidence", "calculation_confidence"]
-    if economic:
+    if economic or score != 1.0:
         names.append("economic_confidence")
     result = []
     for name in names:
-        proof = seal_upstream_evidence(
-            accounting,
-            component=name,
-            as_of=AS_OF,
-            source="phase7c",
-            source_record_id=name,
-            source_reference_hash="a" * 64,
-            score=score,
+        economic_evidence = None
+        if name == "economic_confidence":
+            economic_evidence = CanonicalUpstreamEvidence(
+                component=name,
+                evidence_type="ECONOMIC_VALIDATION",
+                governed_object_type="EconomicValidation",
+                governed_object_id="governed-economic-fixture-v1",
+                governed_object_hash=typed_hash({"fixture": "economic-v1", "score": score}),
+                accounting_canonical_id=accounting.metadata.canonical_id,
+                accounting_checksum=accounting.metadata.checksum,
+                as_of=AS_OF,
+                score=score,
+            )
+        proof = reference_upstream_evidence(
+            canonical_confidence_evidence(
+                accounting,
+                component=name,
+                as_of=AS_OF,
+                economic_validation=economic_evidence,
+            )
         )
         result.append(
             ConfidenceComponent(
-                name=name, score=score, upstream_proofs=(proof,), rationale_code=name
+                name=name, score=proof.score, upstream_proofs=(proof,), rationale_code=name
             )
         )
     return tuple(result)
+
+
+def _context(accounting):
+    return UpstreamProofContext(
+        evidence=tuple(
+            canonical_confidence_evidence(accounting, component=name, as_of=AS_OF)
+            for name in ("data_confidence", "mapping_confidence", "calculation_confidence")
+        )
+    )
 
 
 def _confidence(accounting, score=1.0, economic=False):
@@ -153,14 +182,9 @@ def test_fabricated_64hex_without_upstream_proof_rejected():
 
 
 def test_evidence_component_source_swap_rejected():
-    p = seal_upstream_evidence(
-        _accounting(),
-        component="data_confidence",
-        as_of=AS_OF,
-        source="x",
-        source_record_id="x",
-        source_reference_hash="a" * 64,
-        score=1.0,
+    accounting = _accounting()
+    p = reference_upstream_evidence(
+        canonical_confidence_evidence(accounting, component="data_confidence", as_of=AS_OF)
     )
     data = p.model_dump(mode="json")
     data["component"] = "mapping_confidence"
@@ -200,7 +224,10 @@ def test_adapter_does_not_mix_five_entities():
     rows = [{"entity": f"PERM-{i}", "metric": name, "value": 10.0} for i, name in enumerate(names)]
     accounting = _accounting(rows)
     adapter = adapt_accounting_factor_inputs(
-        accounting, confidence=_confidence(accounting), as_of=AS_OF
+        accounting,
+        confidence=_confidence(accounting),
+        upstream_context=_context(accounting),
+        as_of=AS_OF,
     )
     assert not any(x.state == "PASS" for x in adapter.states)
 
@@ -221,7 +248,10 @@ def test_adapter_rejects_period_semantics_currency_or_unit_mixing(mutation):
     ]
     accounting = _accounting(rows)
     adapter = adapt_accounting_factor_inputs(
-        accounting, confidence=_confidence(accounting), as_of=AS_OF
+        accounting,
+        confidence=_confidence(accounting),
+        upstream_context=_context(accounting),
+        as_of=AS_OF,
     )
     state = next(x for x in adapter.states if x.metric == "cfo_conversion")
     assert state.state != "PASS"
@@ -237,7 +267,10 @@ def test_valid_group_formula_and_exact_lineage():
     state = next(
         x
         for x in adapt_accounting_factor_inputs(
-            accounting, confidence=_confidence(accounting), as_of=AS_OF
+            accounting,
+            confidence=_confidence(accounting),
+            upstream_context=_context(accounting),
+            as_of=AS_OF,
         ).states
         if x.metric == "cfo_conversion"
     )
@@ -255,12 +288,14 @@ def test_applicability_not_pass_and_sector_specific():
     bank = adapt_accounting_factor_inputs(
         accounting,
         confidence=_confidence(accounting),
+        upstream_context=_context(accounting),
         as_of=AS_OF,
         entity_context={"PERM-1": ("Financials", "Banks")},
     )
     industrial = adapt_accounting_factor_inputs(
         accounting,
         confidence=_confidence(accounting),
+        upstream_context=_context(accounting),
         as_of=AS_OF,
         entity_context={"PERM-1": ("Industrials", "Machinery")},
     )
@@ -361,12 +396,13 @@ def test_provider_proof_cannot_be_local_arbitrary_hash():
 
 def test_readiness_direct_jump_resealed_rejected():
     data = {
-        "policy_version": "phase7d-readiness-v2",
+        "policy_version": "phase7d-readiness-v3",
+        "policy_hash": readiness_policy_hash(),
         "transitions": [
             {
                 "from_state": "ACCOUNTING_BOUND",
                 "to_state": "QVM_ADMISSIBLE",
-                "prerequisite_type": "ProviderReadinessProof",
+                "prerequisite_type": "PrePhase6Admission",
                 "prerequisite_hash": "a" * 64,
             }
         ],
@@ -411,7 +447,10 @@ def test_real_route_remains_not_ready_and_safe():
 def test_stale_adapter_hash_is_rejected():
     accounting = _accounting()
     adapter = adapt_accounting_factor_inputs(
-        accounting, confidence=_confidence(accounting), as_of=AS_OF
+        accounting,
+        confidence=_confidence(accounting),
+        upstream_context=_context(accounting),
+        as_of=AS_OF,
     )
     data = adapter.model_dump(mode="json")
     data["sufficiency_matrix_hash"] = "0" * 64
@@ -421,3 +460,112 @@ def test_stale_adapter_hash_is_rejected():
 
 def test_sufficiency_hash_is_stable_and_canonical():
     assert DEFAULT_SUFFICIENCY_MATRIX.matrix_hash == sufficiency_policy_hash()
+
+
+def test_fabricated_confidence_coherently_resealed_is_not_authentic():
+    accounting = _accounting()
+    proof = _confidence(accounting)
+    fake = (
+        proof.components[0]
+        .upstream_proofs[0]
+        .model_copy(update={"governed_object_id": "attacker", "governed_object_hash": "f" * 64})
+    )
+    fake = fake.model_copy(
+        update={"proof_hash": typed_hash(fake.model_dump(mode="json", exclude={"proof_hash"}))}
+    )
+    component = proof.components[0].model_copy(update={"upstream_proofs": (fake,)})
+    resealed = seal_confidence(
+        accounting, as_of=AS_OF, components=(component, *proof.components[1:])
+    )
+    with pytest.raises(ValueError, match="not resolvable"):
+        verify_governed_confidence(
+            resealed, accounting=accounting, upstream_context=_context(accounting)
+        )
+
+
+def test_resealed_fake_fx_lineage_rejected_by_context_replay():
+    accounting = _accounting()
+    fx = _fx()
+    _, proof = governed_fx_conversion(
+        fx,
+        accounting=accounting,
+        amount=10,
+        source_currency="EUR",
+        target_currency="USD",
+        market_at=AS_OF,
+        cutoff=AS_OF,
+    )
+    entry = proof.conversions[0].model_copy(
+        update={
+            "source": "ATTACKER",
+            "source_record_id": "fake",
+            "raw_evidence_hash": "f" * 64,
+            "fx_canonical_id": "fake",
+            "fx_checksum": "e" * 64,
+        }
+    )
+    values = proof.model_dump(mode="python", exclude={"proof_hash", "conversions"})
+    values["conversions"] = (entry,)
+    payload = proof.model_dump(mode="json", exclude={"proof_hash", "conversions"})
+    payload["conversions"] = [entry.model_dump(mode="json")]
+    resealed = FXUseProof(**values, proof_hash=typed_hash(payload))
+    with pytest.raises(ValueError):
+        verify_fx_use_proof(resealed, fx_dataset=fx, accounting=accounting, adapter_proof_hash=None)
+
+
+def test_invented_provider_stays_open_external():
+    proof = assess_provider_readiness(provider="INVENTED", dataset_identity="fake", as_of=AS_OF)
+    assert proof.state == "OPEN_EXTERNAL"
+    with pytest.raises(ValueError, match="OPEN_EXTERNAL"):
+        verify_provider_readiness(proof, ProviderEvidenceContext(evidence=()))
+
+
+def test_resealed_not_ready_parses_but_governed_verifier_rejects():
+    accounting = _accounting()
+    result = admit_qvm_v3(
+        accounting=accounting,
+        confidence=None,
+        adapter=None,
+        fx_dataset=None,
+        fx_proof=None,
+        batches=(),
+    )
+    data = result.model_dump(mode="json")
+    data["accounting_canonical_id"] = "accounting:attacker"
+    data["accounting_checksum"] = "f" * 64
+    data["admission_hash"] = typed_hash({k: v for k, v in data.items() if k != "admission_hash"})
+    parsed = QVMAdmissionV3.model_validate(data)
+    with pytest.raises(ValueError, match="not derivable"):
+        verify_qvm_admission_v3(
+            parsed,
+            accounting=accounting,
+            confidence=None,
+            adapter=None,
+            fx_dataset=None,
+            fx_proof=None,
+            batches=(),
+        )
+
+
+def test_genuine_not_ready_verifies_against_context():
+    accounting = _accounting()
+    result = admit_qvm_v3(
+        accounting=accounting,
+        confidence=None,
+        adapter=None,
+        fx_dataset=None,
+        fx_proof=None,
+        batches=(),
+    )
+    assert (
+        verify_qvm_admission_v3(
+            result,
+            accounting=accounting,
+            confidence=None,
+            adapter=None,
+            fx_dataset=None,
+            fx_proof=None,
+            batches=(),
+        )
+        == result
+    )
