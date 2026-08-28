@@ -1,6 +1,6 @@
 # Phase 7E — Real Provider Evidence Admission & External Gate Closure Design
 
-Status: **ACTIVE DESIGN / CONTRACT SCAFFOLDING; NOT COMPLETE**. Phase 7E defines how external
+Status: **REMEDIATED CONTRACT DESIGN; INDEPENDENT RE-AUDIT REQUIRED; NOT COMPLETE**. Phase 7E defines how external
 evidence may be admitted; it does not supply that evidence, select a provider, or authorize real
 readiness. The real route remains `QVM_NOT_READY`, global readiness remains
 `INSUFFICIENT_REAL_DATA`, and backtesting remains `NOT_AUTHORIZED`.
@@ -33,10 +33,13 @@ constituents PIT), 7C (SEC/accounting binding), and independently re-audited and
 1. identify the candidate provider and exact dataset/version without treating selection as approval;
 2. assemble source records for each gate, bound to that same provider/dataset and declared scope;
 3. have a maker submit each record and a distinct checker accept or reject it;
-4. recompute the versioned bundle hash and resolve every referenced source in governed custody;
+4. recompute the versioned bundle hash for integrity and resolve every referenced source through
+   an independently provisioned, canonical trust anchor;
 5. record gate results; missing, rejected, stale, mismatched, or fixture evidence stays
    `OPEN_EXTERNAL`;
-6. only after every gate is accepted may Phase 7E be called `EVIDENCE_REVIEW_COMPLETE`;
+6. only after every gate is accepted by a future real verifier backed by custody and identity
+   trust anchors may Phase 7E be called `EVIDENCE_REVIEW_COMPLETE`; the current repository cannot
+   produce that state;
 7. a future, separately authorized phase must integrate and validate real data before any readiness
    transition. Completing Phase 7E alone never changes `QVM_NOT_READY`.
 
@@ -66,6 +69,23 @@ controlled system and retained under governed custody. `CONTRACT_TEST_ONLY` mean
 mock, sample, sandbox, or adversarial data. Contract tests can prove parser and gate behavior but
 can never promote a provider, gate, real route, or global readiness.
 
+The implementation now exposes two non-convertible result domains. The contract verifier accepts
+only `ContractTestEvidence`, `ContractTestCustodyContext`, and a synthetic reviewer registry; it
+can prove that the ten typed schemas, policies, scope/time rules, and maker-checker mechanics work,
+but its result is `ContractGateVerification`, never real admission. The real verifier returns all
+gates `OPEN_EXTERNAL` because no independently provisioned custody resolver, reviewer registry,
+legal authority, or canonical trust policy exists in this repository. Caller-created contexts,
+enums, strings, aliases, resealed objects, `model_validate`, and mutually matching hashes cannot
+change that outcome.
+
+Each gate has a distinct discriminated payload schema. Evidence is bound to provider, dataset,
+as-of, scope, coverage window, policy version/hash, and its approval. Approvals bind the exact
+evidence hash and canonical reviewer identities; mutation invalidates them. Contract policy may
+specify a maximum age, but no undocumented economic freshness duration is invented for real use.
+Retention evidence must identify an immutability-control artifact and derived-artifact policy:
+a content hash is not WORM. Real maker-checker authenticity requires a separately governed
+identity source; two display strings are not two governed actors.
+
 Before real readiness can even be considered, all of these artifacts must exist: provider and
 dataset selection decision; licensing/legal approval; declared coverage specification; immutable
 raw acquisition manifests; PIT/security-master, FX, shares, restatement and corporate-action
@@ -76,13 +96,15 @@ not from self-hashing.
 
 ## Acceptance and exit criteria
 
-This design phase is accepted when the canonical document and typed tests persistently enforce
+This design phase may be accepted only after independent re-audit of the remediated SHA confirms
+that the canonical document and typed tests persistently enforce
 the matrix, concrete proof requirements, maker-checker rule, fixture boundary, and fail-closed
 defaults. Its external-evidence exit is stricter: a provider/dataset is selected; all ten gates
 have scope-matched, resolvable, real records accepted by independent checkers; the bundle is
 independently audited; no unresolved exception remains; and a subsequent phase is explicitly
 authorized. Phase 7E records `EVIDENCE_REVIEW_COMPLETE`; it deliberately has no transition to real
-QVM or global readiness.
+QVM or global readiness. Even a later merge of Phase 7E would not imply provider selection,
+authentic evidence admission, or real-provider readiness.
 
 ## Permanent safety invariants
 

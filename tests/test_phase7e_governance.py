@@ -5,119 +5,342 @@ from pydantic import ValidationError
 
 from governance.canonical import typed_hash
 from governance.phase7e import (
-    EvidenceClass,
-    EvidenceCustodyContext,
+    CompletenessPayload,
+    ContractApproval,
+    ContractEvidenceBundle,
+    ContractReviewerRegistry,
+    ContractTestCustodyContext,
+    ContractTestEvidence,
+    CorporateActionPayload,
     EvidenceGate,
-    EvidenceRecord,
-    Phase7EBundle,
-    ReviewedGateEvidence,
+    FxPayload,
+    GatePolicy,
+    GateState,
+    HistoricalPitPayload,
+    LicensingPayload,
+    OperationsPayload,
+    RestatementPayload,
+    RetentionPayload,
+    ScalePayload,
+    SharesPayload,
     assess_phase7e_bundle,
-    require_complete_external_evidence,
+    verify_contract_evidence_bundle,
+    verify_real_external_evidence_bundle,
 )
 
-AS_OF = datetime.datetime(2026, 8, 28, tzinfo=datetime.UTC)
+NOW = datetime.datetime(2026, 8, 28, tzinfo=datetime.UTC)
+START = NOW - datetime.timedelta(days=365)
+PROVIDER, DATASET, SCOPE = "synthetic-provider", "synthetic-dataset", "full-scope"
 
 
-def _record(gate: EvidenceGate, kind: EvidenceClass = EvidenceClass.REAL_EXTERNAL):
-    return EvidenceRecord(
-        gate=gate,
-        evidence_class=kind,
-        provider_id="provider-under-review",
-        dataset_id="dataset-under-review",
-        source_uri="governed://external-review/record",
-        source_record_id=f"record:{gate.value}",
-        content_hash=typed_hash({"gate": gate.value}),
-        observed_at=AS_OF,
-        scope="declared historical scope",
-    )
+def _sealed(cls, **values):
+    field = "policy_hash" if cls is GatePolicy else "content_hash"
+    base = cls.model_construct(**values, **{field: "0" * 64})
+    values[field] = typed_hash(base.model_dump(mode="json", exclude={field}))
+    return cls(**values)
 
 
-def _review(gate: EvidenceGate):
-    return ReviewedGateEvidence(
-        record=_record(gate),
-        maker_id="maker",
-        checker_id="independent-checker",
-        decision="ACCEPT",
-        checked_at=AS_OF,
-        review_record_id=f"review:{gate.value}",
-    )
-
-
-def _bundle(reviews):
+def _policy(gate, **changes):
     values = {
-        "provider_id": "provider-under-review",
-        "dataset_id": "dataset-under-review",
-        "reviews": tuple(reviews),
-        "assembled_at": AS_OF,
+        "gate": gate,
+        "provider_id": PROVIDER,
+        "dataset_id": DATASET,
+        "as_of": NOW,
+        "scope_id": SCOPE,
+        "window_start": START,
+        "window_end": NOW,
+        "max_age": datetime.timedelta(days=30),
     }
-    payload = {
-        "version": "phase7e-real-provider-evidence-v1",
-        **values,
-        "reviews": [x.model_dump(mode="json") for x in values["reviews"]],
-        "assembled_at": AS_OF.isoformat().replace("+00:00", "Z"),
-    }
-    return Phase7EBundle(**values, bundle_hash=typed_hash(payload))
+    values.update(changes)
+    return _sealed(GatePolicy, **values)
 
 
-def test_absence_of_evidence_is_open_external_and_not_ready():
-    result = assess_phase7e_bundle(None)
-    assert {state for _, state in result.gate_states} == {"OPEN_EXTERNAL"}
-    assert result.state == "OPEN_EXTERNAL"
-    assert result.real_route == "QVM_NOT_READY"
-    assert result.global_readiness == "INSUFFICIENT_REAL_DATA"
-    assert (result.trade_decision, result.live_execution_enabled, result.signals_generated) == (
-        "NO_TRADE",
-        False,
-        False,
+def _payloads():
+    return {
+        EvidenceGate.HISTORICAL_PIT_SECURITY_MASTER: HistoricalPitPayload(
+            kind="historical_pit",
+            universe_id="u",
+            security_master_id="sm",
+            window_start=START,
+            window_end=NOW,
+            pit_semantics="available-at",
+            completeness_artifact_ids=("c",),
+        ),
+        EvidenceGate.LICENSING_LEGAL: LicensingPayload(
+            kind="licensing",
+            legal_artifact_id="legal",
+            permitted_use="research",
+            effective_at=START,
+            expires_at=NOW + datetime.timedelta(days=1),
+            retention_permitted=True,
+            derived_use_permitted=True,
+        ),
+        EvidenceGate.HISTORICAL_COMPLETENESS: CompletenessPayload(
+            kind="completeness",
+            universe_id="u",
+            window_start=START,
+            window_end=NOW,
+            expected_count=10,
+            observed_count=10,
+            methodology_id="m",
+        ),
+        EvidenceGate.RETENTION_WORM: RetentionPayload(
+            kind="retention_worm",
+            storage_control_artifact_id="s",
+            retention_days=365,
+            immutability_mechanism_artifact_id="immutable-control",
+            derived_artifact_policy_id="d",
+        ),
+        EvidenceGate.OPERATIONS_MONITORING: OperationsPayload(
+            kind="operations",
+            window_start=START,
+            window_end=NOW,
+            monitoring_artifact_id="m",
+            incident_artifact_id="i",
+            availability_artifact_id="a",
+        ),
+        EvidenceGate.REAL_FX: FxPayload(
+            kind="fx",
+            pairs=("USD/MXN",),
+            window_start=START,
+            window_end=NOW,
+            pit_semantics="available-at",
+            fx_artifact_id="fx",
+        ),
+        EvidenceGate.SHARES_OUTSTANDING_PIT: SharesPayload(
+            kind="shares_pit",
+            issuer_ids=("i",),
+            security_ids=("s",),
+            window_start=START,
+            window_end=NOW,
+            shares_semantics="as-reported",
+            lineage_id="l",
+        ),
+        EvidenceGate.RESTATEMENT_MATERIALITY: RestatementPayload(
+            kind="restatement",
+            accounting_policy_id="a",
+            restatement_policy_id="r",
+            detection_artifact_id="d",
+            materiality_artifact_id="m",
+        ),
+        EvidenceGate.CORPORATE_ACTION_ECONOMICS: CorporateActionPayload(
+            kind="corporate_actions",
+            security_ids=("s",),
+            action_types=("split",),
+            window_start=START,
+            window_end=NOW,
+            economic_treatment_policy_id="e",
+        ),
+        EvidenceGate.SCALE_OPERATIONAL_VALIDATION: ScalePayload(
+            kind="scale",
+            workload_id="w",
+            coverage_id="c",
+            volume=100,
+            window_start=START,
+            window_end=NOW,
+            operational_test_artifact_id="o",
+        ),
+    }
+
+
+def _evidence(gate, policy=None, **changes):
+    policy = policy or _policy(gate)
+    values = {
+        "gate": gate,
+        "provider_id": PROVIDER,
+        "dataset_id": DATASET,
+        "evidence_id": f"e:{gate}",
+        "effective_at": START,
+        "available_at": NOW - datetime.timedelta(days=1),
+        "expires_at": None,
+        "as_of": NOW,
+        "scope_id": SCOPE,
+        "policy_version": policy.version,
+        "policy_hash": policy.policy_hash,
+        "payload": _payloads()[gate],
+    }
+    values.update(changes)
+    return _sealed(ContractTestEvidence, **values)
+
+
+def _approval(e, policy=None, **changes):
+    policy = policy or _policy(e.gate)
+    values = {
+        "gate": e.gate,
+        "maker": "Maker One",
+        "checker": "Checker Two",
+        "provider_id": e.provider_id,
+        "dataset_id": e.dataset_id,
+        "evidence_hash": e.content_hash,
+        "as_of": e.as_of,
+        "scope_id": e.scope_id,
+        "policy_version": e.policy_version,
+        "policy_hash": e.policy_hash,
+        "decision": "ACCEPT",
+    }
+    values.update(changes)
+    return ContractApproval(**values)
+
+
+def _bundle(evidences, approvals=None):
+    approvals = tuple(approvals if approvals is not None else [_approval(e) for e in evidences])
+    values = {
+        "provider_id": PROVIDER,
+        "dataset_id": DATASET,
+        "evidences": tuple(evidences),
+        "approvals": approvals,
+    }
+    raw = ContractEvidenceBundle.model_construct(**values, bundle_hash="0" * 64)
+    return ContractEvidenceBundle(
+        **values, bundle_hash=typed_hash(raw.model_dump(mode="json", exclude={"bundle_hash"}))
     )
-    assert result.backtesting == "NOT_AUTHORIZED"
 
 
-def test_partial_bundle_cannot_verify_provider():
-    bundle = _bundle([_review(EvidenceGate.LICENSING_LEGAL)])
-    context = EvidenceCustodyContext(reviews=bundle.reviews)
-    result = assess_phase7e_bundle(bundle, context)
+REGISTRY = ContractReviewerRegistry(
+    actors=(
+        ("maker-one", ("Maker One", " maker  one ")),
+        ("checker-two", ("Checker Two",)),
+    )
+)
+CUSTODY = ContractTestCustodyContext()
+
+
+def _verify(bundle, policies):
+    return verify_contract_evidence_bundle(bundle, tuple(policies), CUSTODY, REGISTRY)
+
+
+def test_full_forgery_and_resealed_context_produces_zero_real_verified_gates():
+    policies = [_policy(g) for g in EvidenceGate]
+    forged = _bundle([_evidence(g, p) for g, p in zip(EvidenceGate, policies, strict=True)])
+
+    class ForgedResolver:
+        canonical_trust_anchor_id = "caller-made"
+
+    result = verify_real_external_evidence_bundle(forged, ForgedResolver())
+    assert {s for _, s in result.gate_states} == {GateState.OPEN_EXTERNAL}
     assert result.state == "OPEN_EXTERNAL"
-    with pytest.raises(ValueError, match="OPEN_EXTERNAL"):
-        require_complete_external_evidence(bundle, context)
 
 
-def test_self_declared_bundle_without_governed_custody_cannot_verify_any_gate():
-    bundle = _bundle([_review(gate) for gate in EvidenceGate])
-    result = assess_phase7e_bundle(bundle)
-    assert {state for _, state in result.gate_states} == {"OPEN_EXTERNAL"}
+def test_contract_marker_cannot_be_changed_to_real_external_and_resealed():
+    data = _evidence(EvidenceGate.REAL_FX).model_dump(mode="python")
+    data["trust_domain"] = "REAL_EXTERNAL"
+    with pytest.raises(ValidationError):
+        ContractTestEvidence(**data)
+
+
+def test_contract_payload_copied_to_nominal_real_context_is_rejected():
+    assert (
+        verify_real_external_evidence_bundle(_evidence(EvidenceGate.REAL_FX), object()).state
+        == "OPEN_EXTERNAL"
+    )
+
+
+def test_gate_specific_payload_cannot_be_relabelled():
+    with pytest.raises(ValidationError, match="gate-specific"):
+        _evidence(EvidenceGate.LICENSING_LEGAL, payload=_payloads()[EvidenceGate.REAL_FX])
+
+
+def test_incompatible_payload_or_identity_reuse_rejected():
+    e = _evidence(EvidenceGate.REAL_FX)
+    with pytest.raises(ValidationError, match="duplicate or reused"):
+        _bundle([e, e])
+
+
+@pytest.mark.parametrize(
+    "field,value", [("provider_id", "other-provider"), ("dataset_id", "other-dataset")]
+)
+def test_cross_provider_or_dataset_reuse_rejected(field, value):
+    e = _evidence(EvidenceGate.REAL_FX, **{field: value})
+    with pytest.raises(ValidationError, match="binding mismatch"):
+        _bundle([e])
+
+
+@pytest.mark.parametrize(
+    "maker,checker", [("Maker One", " maker  one "), ("MAKER ONE", "maker-one")]
+)
+def test_same_reviewer_alias_case_whitespace_rejected(maker, checker):
+    p = _policy(EvidenceGate.REAL_FX)
+    e = _evidence(EvidenceGate.REAL_FX, p)
+    result = _verify(_bundle([e], [_approval(e, p, maker=maker, checker=checker)]), [p])
+    assert result.gate_states[5][1] == GateState.OPEN_EXTERNAL
+
+
+def test_invented_or_missing_checker_rejected():
+    p = _policy(EvidenceGate.REAL_FX)
+    e = _evidence(EvidenceGate.REAL_FX, p)
+    a = _approval(e, p, maker="invented-a", checker="invented-b")
+    assert not _verify(_bundle([e], [a]), [p]).contract_semantics_complete
+
+
+def test_evidence_mutation_after_approval_invalidates_approval():
+    p = _policy(EvidenceGate.REAL_FX)
+    old = _evidence(EvidenceGate.REAL_FX, p)
+    a = _approval(old, p)
+    changed = _evidence(EvidenceGate.REAL_FX, p, evidence_id="changed")
+    assert _verify(_bundle([changed], [a]), [p]).gate_states[5][1] == GateState.OPEN_EXTERNAL
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"available_at": NOW + datetime.timedelta(seconds=1)},
+        {"expires_at": NOW - datetime.timedelta(seconds=1)},
+        {"available_at": NOW - datetime.timedelta(days=31)},
+    ],
+)
+def test_future_expired_or_stale_evidence_rejected(changes):
+    p = _policy(EvidenceGate.REAL_FX)
+    e = _evidence(EvidenceGate.REAL_FX, p, **changes)
+    assert _verify(_bundle([e]), [p]).gate_states[5][1] == GateState.OPEN_EXTERNAL
+
+
+@pytest.mark.parametrize(
+    "approval_changes",
+    [
+        {"as_of": NOW - datetime.timedelta(seconds=1)},
+        {"scope_id": "partial"},
+        {"policy_hash": "f" * 64},
+    ],
+)
+def test_asof_scope_or_policy_mismatch_rejected(approval_changes):
+    p = _policy(EvidenceGate.REAL_FX)
+    e = _evidence(EvidenceGate.REAL_FX, p)
+    assert (
+        _verify(_bundle([e], [_approval(e, p, **approval_changes)]), [p]).gate_states[5][1]
+        == GateState.OPEN_EXTERNAL
+    )
+
+
+def test_partial_coverage_cannot_satisfy_full_gate():
+    p = _policy(EvidenceGate.REAL_FX)
+    payload = _payloads()[EvidenceGate.REAL_FX].model_copy(
+        update={"window_start": START + datetime.timedelta(days=1)}
+    )
+    e = _evidence(EvidenceGate.REAL_FX, p, payload=payload)
+    assert _verify(_bundle([e]), [p]).gate_states[5][1] == GateState.OPEN_EXTERNAL
+
+
+def test_predeclared_verified_states_never_complete_real_aggregate():
+    forged = {g.value: "VERIFIED" for g in EvidenceGate}
+    result = assess_phase7e_bundle(forged, forged)
     assert result.state == "OPEN_EXTERNAL"
+    assert {s for _, s in result.gate_states} == {GateState.OPEN_EXTERNAL}
 
 
-def test_fixture_cannot_be_accepted_as_real_evidence():
-    with pytest.raises(ValidationError, match="contract-test-only"):
-        ReviewedGateEvidence(
-            record=_record(EvidenceGate.REAL_FX, EvidenceClass.CONTRACT_TEST_ONLY),
-            maker_id="maker",
-            checker_id="checker",
-            decision="ACCEPT",
-            checked_at=AS_OF,
-            review_record_id="fixture-review",
-        )
+def test_complete_fixture_passes_contract_semantics_only():
+    policies = [_policy(g) for g in EvidenceGate]
+    bundle = _bundle([_evidence(g, p) for g, p in zip(EvidenceGate, policies, strict=True)])
+    contract = _verify(bundle, policies)
+    assert contract.contract_semantics_complete
+    assert {s for _, s in contract.gate_states} == {GateState.VERIFIED}
+    assert verify_real_external_evidence_bundle(contract).state == "OPEN_EXTERNAL"
 
 
-def test_maker_cannot_check_own_evidence():
-    with pytest.raises(ValidationError, match="distinct"):
-        ReviewedGateEvidence(
-            record=_record(EvidenceGate.RETENTION_WORM),
-            maker_id="same-person",
-            checker_id="same-person",
-            decision="ACCEPT",
-            checked_at=AS_OF,
-            review_record_id="invalid-review",
-        )
-
-
-def test_all_concrete_gate_reviews_complete_phase7e_only_not_real_readiness():
-    bundle = _bundle([_review(gate) for gate in EvidenceGate])
-    context = EvidenceCustodyContext(reviews=bundle.reviews)
-    result = require_complete_external_evidence(bundle, context)
-    assert result.state == "EVIDENCE_REVIEW_COMPLETE"
-    assert {state for _, state in result.gate_states} == {"VERIFIED"}
+def test_real_route_remains_open_and_safety_invariants_hold():
+    result = assess_phase7e_bundle(None)
+    assert result.state == "OPEN_EXTERNAL"
     assert result.real_route == "QVM_NOT_READY"
     assert result.global_readiness == "INSUFFICIENT_REAL_DATA"
+    assert result.trade_decision == "NO_TRADE"
+    assert not result.live_execution_enabled and not result.signals_generated
+    assert result.backtesting == "NOT_AUTHORIZED"

@@ -5,9 +5,13 @@ Systematic Equity Research & Portfolio Engine built with a capital-preservation-
 Phases 6 and 7A/7B/7C/7D are integrated. Phase 7D completed independent re-audit and was squash
 merged as PR #23. Phase 7E is now the explicit next design/governance phase and is documented in
 [`docs/phase7e_real_provider_evidence_admission.md`](docs/phase7e_real_provider_evidence_admission.md).
-It defines provider-agnostic evidence admission but is not complete and supplies no real external
-evidence. Provider selection, coverage, licensing, retention, operations and the other real-data
-gates remain `OPEN_EXTERNAL`.
+It defines provider-agnostic contract semantics but is not complete, requires independent re-audit,
+and supplies no real external evidence. The repository has no governed custody trust anchor or
+reviewer identity registry, so its real verifier is deliberately incapable of producing
+`VERIFIED`. Local fixtures, caller-created contexts, and self-hashes cannot close a gate; hashes
+prove integrity, not authenticity, and a hash is not WORM. Provider selection, coverage,
+licensing, retention, operations and the other real-data gates remain `OPEN_EXTERNAL`. A future
+merge of Phase 7E would not imply real-provider readiness.
 
 ## Current stage
 
