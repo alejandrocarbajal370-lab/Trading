@@ -21,7 +21,18 @@ from factors.qvm import (
 )
 from factors.value import evaluate_value_metrics
 from fundamentals.governance import AccountingLineageEntry, govern_accounting
+from governance.canonical import typed_hash
 from governance.integration import CrossLayerGovernanceError, integrate_governed_inputs
+from governance.phase7d import (
+    ConfidenceComponent,
+    FXUseProof,
+    adapt_accounting_factor_inputs,
+    admit_qvm_v3,
+    governed_fx_conversion,
+    seal_confidence,
+    seal_provider_readiness,
+    seal_upstream_evidence,
+)
 from governance.research_chain import (
     _value_inputs,
     evaluate_governed_momentum,
@@ -501,12 +512,15 @@ def _phase56_chain(
         "revenue": 100.0,
         "net_income": 12.0,
         "operating_income": 18.0,
+        "ebit": 18.0,
         "ebitda": 22.0,
         "total_debt": 30.0,
         "cash": 10.0,
         "total_equity": 70.0,
         "total_assets": 120.0,
         "tax_rate": 0.25,
+        "market_cap": 240.0,
+        "enterprise_value": 260.0,
     }
     accounting_rows = []
     instant_metrics = {"total_debt", "cash", "total_equity", "total_assets"}
@@ -645,7 +659,9 @@ def _admission_batches(tmp_path: Path):
 def _reseal(batch, **updates):
     values = {**batch.model_dump(mode="python"), **updates}
     values["batch_identity_hash"] = governed_factor_batch_identity(values)
-    return batch.model_copy(update={**updates, "batch_identity_hash": values["batch_identity_hash"]})
+    return batch.model_copy(
+        update={**updates, "batch_identity_hash": values["batch_identity_hash"]}
+    )
 
 
 def test_pre_phase6_admission_emits_research_only_identity_artifact(tmp_path: Path) -> None:
@@ -663,6 +679,120 @@ def test_pre_phase6_admission_emits_research_only_identity_artifact(tmp_path: Pa
     assert artifact.execution_enabled is False
     assert artifact.trade_decision == "NO_TRADE"
     assert artifact.live_execution_enabled is False
+
+
+def test_phase7d_fully_coherent_contract_fixture_is_qvm_admissible(tmp_path: Path) -> None:
+    """Contract reachability only; this is not a real-provider readiness claim."""
+    periods = (
+        ("FY2023", "2023-01-01", "2023-12-31"),
+        ("FY2024", "2024-01-01", "2024-12-31"),
+    )
+    chain = _phase56_chain(tmp_path, periods=periods)
+    batches = (
+        seal_factor_output(
+            factor="Quality",
+            metrics=_quality_output().query("metric in ['roic', 'fcf_margin']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Value",
+            metrics=_value_output().query("metric in ['ev_to_ebit', 'fcf_yield']"),
+            cross_layer=chain,
+        ),
+        seal_factor_output(
+            factor="Momentum",
+            metrics=_momentum_output().query(
+                "metric in ['momentum_12_1', 'volatility_adjusted_momentum_12_1']"
+            ),
+            cross_layer=chain,
+        ),
+    )
+    accounting = chain.accounting_data
+    as_of = batches[0].as_of
+    components = []
+    for name in ("data_confidence", "mapping_confidence", "calculation_confidence"):
+        upstream = seal_upstream_evidence(
+            accounting,
+            component=name,
+            as_of=as_of,
+            source="contract-fixture",
+            source_record_id=name,
+            source_reference_hash=typed_hash({"fixture": name}),
+            score=1.0,
+        )
+        components.append(
+            ConfidenceComponent(
+                name=name, score=1.0, upstream_proofs=(upstream,), rationale_code="CONTRACT_FIXTURE"
+            )
+        )
+    confidence = seal_confidence(accounting, as_of=as_of, components=tuple(components))
+    adapter = adapt_accounting_factor_inputs(
+        accounting,
+        confidence=confidence,
+        as_of=as_of,
+        entity_context={"AAA": ("Industrials", "Machinery")},
+    )
+    required = {
+        item.fact_id: item
+        for state in adapter.states
+        if state.factor == "Value" and state.state == "PASS"
+        for item in state.inputs
+        if item.currency != "USD"
+    }
+    uses = []
+    for fact_id, item in sorted(required.items()):
+        market_at = datetime.datetime.combine(
+            item.period_end, datetime.time(16), tzinfo=datetime.UTC
+        )
+        cutoff = market_at + datetime.timedelta(minutes=1)
+        _, single = governed_fx_conversion(
+            chain.fx_data,
+            accounting=accounting,
+            amount=item.value,
+            source_currency=item.currency,
+            target_currency="USD",
+            market_at=market_at,
+            cutoff=cutoff,
+            input_fact_id=fact_id,
+            adapter_proof_hash=adapter.proof_hash,
+        )
+        uses.extend(single.conversions)
+    fx_values = {
+        "accounting_canonical_id": accounting.metadata.canonical_id,
+        "accounting_checksum": accounting.metadata.checksum,
+        "adapter_proof_hash": adapter.proof_hash,
+        "fx_canonical_id": chain.fx_data.metadata.canonical_id,
+        "fx_checksum": chain.fx_data.metadata.checksum,
+        "conversions": tuple(uses),
+    }
+    fx_proof = FXUseProof(
+        **fx_values,
+        proof_hash=typed_hash(
+            {
+                "policy_version": "fx-exact-direct-no-fill-v2",
+                **fx_values,
+                "conversions": [item.model_dump(mode="json") for item in uses],
+            }
+        ),
+    )
+    provider = seal_provider_readiness(
+        provider="CONTRACT_FIXTURE_ONLY",
+        dataset_identity=chain.manifest.cross_layer_fingerprint,
+        as_of=as_of,
+    )
+    result = admit_qvm_v3(
+        accounting=accounting,
+        confidence=confidence,
+        adapter=adapter,
+        fx_dataset=chain.fx_data,
+        fx_proof=fx_proof,
+        batches=batches,
+        provider_proofs=(provider,),
+    )
+    assert result.state == "QVM_ADMISSIBLE", result.reasons
+    assert result.research_only and result.trade_decision == "NO_TRADE"
+    assert not result.live_execution_enabled and not result.signals_generated
+    assert result.global_readiness == "INSUFFICIENT_REAL_DATA"
 
 
 @pytest.mark.parametrize("batch_index,new_factor", [(0, "Value"), (1, "Momentum"), (2, "Quality")])
@@ -711,9 +841,7 @@ def test_governance_order_is_versioned_hashed_and_revalidated(tmp_path: Path) ->
         "fx_conversions_sha256",
     ],
 )
-def test_admission_rejects_each_outer_identity_mutation(
-    tmp_path: Path, field: str
-) -> None:
+def test_admission_rejects_each_outer_identity_mutation(tmp_path: Path, field: str) -> None:
     batches = list(_admission_batches(tmp_path))
     original = getattr(batches[0], field)
     if field == "as_of":
