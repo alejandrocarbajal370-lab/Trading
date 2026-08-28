@@ -1,6 +1,6 @@
 # Phase 7D — governed confidence, FX PIT, and QVM admission
 
-Status: **REMEDIATED CONTRACT CANDIDATE / INDEPENDENT RE-AUDIT REQUIRED**. Real-data readiness
+Status: **INDEPENDENTLY RE-AUDITED AND MERGED (PR #23)**. Real-data readiness
 remains `INSUFFICIENT_REAL_DATA`; the real route remains `QVM_NOT_READY`. This phase never
 authorizes backtesting, signals, scoring changes, portfolio construction, orders, or execution.
 Every admission preserves `NO_TRADE`, `live_execution_enabled=false`, and
@@ -88,4 +88,6 @@ coherent synthetic contract can reach `QVM_ADMISSIBLE` in `RESEARCH_ONLY` mode w
 | Real QVM route | `QVM_NOT_READY` |
 | Global readiness | `INSUFFICIENT_REAL_DATA` |
 
-No area is declared finally `CONTRACT-CLOSED` until a new independent adversarial audit passes.
+Phase 7D's internal contract is closed by its completed independent adversarial re-audit and merge.
+External evidence gates remain open and are governed by the Phase 7E design; this closure does not
+claim provider authenticity or real-data readiness.

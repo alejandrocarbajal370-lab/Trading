@@ -2,19 +2,21 @@
 
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
-Phase 7B security-master and historical-constituents PIT contracts are documented in
-[`docs/phase7b_security_master_constituents.md`](docs/phase7b_security_master_constituents.md).
-They remain research-only and `INSUFFICIENT_REAL_DATA`; no real historical provider is connected.
-The versioned Phase 7B -> Phase 7A SEC bridge is contract-closed with synthetic/adversarial tests, but
-provider coverage and licensed historical evidence remain `OPEN-EXTERNAL`; this is not real-data
-validation or permission to backtest.
+Phases 6 and 7A/7B/7C/7D are integrated. Phase 7D completed independent re-audit and was squash
+merged as PR #23. Phase 7E is now the explicit next design/governance phase and is documented in
+[`docs/phase7e_real_provider_evidence_admission.md`](docs/phase7e_real_provider_evidence_admission.md).
+It defines provider-agnostic evidence admission but is not complete and supplies no real external
+evidence. Provider selection, coverage, licensing, retention, operations and the other real-data
+gates remain `OPEN_EXTERNAL`.
 
 ## Current stage
 
-Phase 5.6 (cross-layer governance integration) is merged. Phase 6 remains an open design only;
-PRE-Phase 6 remediation is in progress and no Phase 6 scoring, ranking, portfolio, backtest,
-signal, broker, order, or execution capability exists. All current paths remain research-only,
-`NO_TRADE`, with live execution disabled.
+Phase 6's research-only QVM scoring engine and the Phase 7A–7D contractual foundations are merged.
+Phase 7E formalizes the evidence required before any future real-provider readiness review. No real
+historical provider is admitted. The real route is `QVM_NOT_READY`, global readiness is
+`INSUFFICIENT_REAL_DATA`, and backtesting is `NOT_AUTHORIZED`. All paths remain `NO_TRADE`, with
+signals and live execution disabled; no portfolio, target-price, broker, order, execution, or
+dashboard/Excel capability is authorized.
 
 The PRE-Phase 6 boundary admits only sealed `GovernedFactorBatch` objects. The packages
 `execution/`, `portfolio/`, `backtesting/`, `risk/`, and `database/` are placeholders, not

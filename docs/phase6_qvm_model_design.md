@@ -1,7 +1,7 @@
 # Phase 6 — QVM Alpha Model Research Design
 
 **Document version:** `phase6-qvm-design-v1.1`
-**Status:** frozen design proposed for independent review; implementation not authorized
+**Status:** frozen design; research-only implementation integrated in Phase 6 (PR #19)
 **Base:** `main@2331a46f664f58e2a4bffed97e91ccd9831ddbdc`
 **Mode:** `RESEARCH_ONLY`
 **Mandatory safety state:** `trade_decision=NO_TRADE`, `live_execution_enabled=false`
