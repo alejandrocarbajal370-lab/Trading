@@ -8,8 +8,9 @@ the REAL route cannot derive ``VERIFIED``.
 from __future__ import annotations
 
 import datetime
+import json
 from enum import StrEnum
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Any, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -47,6 +48,7 @@ class GateState(StrEnum):
 
 
 REQUIRED_GATES = frozenset(EvidenceGate)
+CANONICAL_GATES = tuple(EvidenceGate)
 
 
 class WindowPayload(ContractModel):
@@ -78,6 +80,12 @@ class CompletenessPayload(WindowPayload):
     expected_count: int = Field(gt=0)
     observed_count: int = Field(ge=0)
     methodology_id: str
+
+    @model_validator(mode="after")
+    def complete_coverage(self) -> CompletenessPayload:
+        if self.observed_count < self.expected_count:
+            raise ValueError("partial coverage cannot be represented as complete")
+        return self
 
 
 class RetentionPayload(ContractModel):
@@ -164,6 +172,25 @@ PAYLOAD_GATE = dict(
         strict=True,
     )
 )
+GATE_PAYLOAD_TYPE = {
+    gate: payload_type
+    for gate, payload_type in zip(
+        EvidenceGate,
+        (
+            HistoricalPitPayload,
+            LicensingPayload,
+            CompletenessPayload,
+            RetentionPayload,
+            OperationsPayload,
+            FxPayload,
+            SharesPayload,
+            RestatementPayload,
+            CorporateActionPayload,
+            ScalePayload,
+        ),
+        strict=True,
+    )
+}
 
 
 class GatePolicy(ContractModel):
@@ -264,6 +291,7 @@ class ContractEvidenceBundle(ContractModel):
             [e.gate for e in self.evidences],
             [e.evidence_id for e in self.evidences],
             [e.content_hash for e in self.evidences],
+            [a.gate for a in self.approvals],
         ):
             if len(values) != len(set(values)):
                 raise ValueError("duplicate or reused evidence")
@@ -276,6 +304,15 @@ class ContractGateVerification(ContractModel):
     gate_states: tuple[tuple[EvidenceGate, GateState], ...]
     contract_semantics_complete: bool
     trust_domain: Literal["CONTRACT_TEST_ONLY"] = "CONTRACT_TEST_ONLY"
+
+    @model_validator(mode="after")
+    def coherent(self) -> ContractGateVerification:
+        if tuple(g for g, _ in self.gate_states) != CANONICAL_GATES:
+            raise ValueError("contract gate states must be complete, unique, and canonical")
+        complete = all(state == GateState.VERIFIED for _, state in self.gate_states)
+        if self.contract_semantics_complete != complete:
+            raise ValueError("contract completion is derived from gate states")
+        return self
 
 
 class RealExternalTrustResolver(Protocol):
@@ -290,6 +327,12 @@ class RealGateVerification(ContractModel):
     state: Literal["OPEN_EXTERNAL"] = "OPEN_EXTERNAL"
     reason: Literal["REAL_TRUST_ANCHORS_UNAVAILABLE"] = "REAL_TRUST_ANCHORS_UNAVAILABLE"
 
+    @model_validator(mode="after")
+    def only_current_real_state(self) -> RealGateVerification:
+        if self.gate_states != _open_states():
+            raise ValueError("real results require exactly ten canonical OPEN_EXTERNAL gates")
+        return self
+
 
 class Phase7EAssessment(ContractModel):
     gate_states: tuple[tuple[EvidenceGate, GateState], ...]
@@ -301,21 +344,65 @@ class Phase7EAssessment(ContractModel):
     signals_generated: Literal[False] = False
     backtesting: Literal["NOT_AUTHORIZED"] = "NOT_AUTHORIZED"
 
+    @model_validator(mode="after")
+    def only_current_assessment(self) -> Phase7EAssessment:
+        if self.gate_states != _open_states():
+            raise ValueError("assessment requires exactly ten canonical OPEN_EXTERNAL gates")
+        return self
+
 
 def _open_states():
     return tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate)
 
 
+ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+def _primitive_snapshot(value: Any) -> Any:
+    """Detach an untrusted value from Pydantic construction history.
+
+    ``model_copy`` and ``model_construct`` may skip validation.  A JSON primitive
+    round-trip deliberately discards model identity before the expected type is
+    selected and validated at this verifier boundary.
+    """
+    if isinstance(value, BaseModel):
+        value = value.model_dump(mode="json", warnings=False)
+    try:
+        return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
+    except (TypeError, ValueError) as exc:
+        raise Phase7EContractError("input is not canonically serializable") from exc
+
+
+def _revalidate(expected: type[ModelT], value: Any, label: str) -> ModelT:
+    try:
+        return expected.model_validate(_primitive_snapshot(value))
+    except (TypeError, ValueError) as exc:
+        raise Phase7EContractError(f"invalid {label}") from exc
+
+
 def verify_contract_evidence_bundle(bundle, policies, custody, reviewers):
-    """Validate synthetic mechanics; return a type unusable by the REAL route."""
-    if not isinstance(custody, ContractTestCustodyContext):
-        raise Phase7EContractError("contract custody required")
+    """Revalidate untrusted primitives, then validate synthetic mechanics."""
+    custody = _revalidate(ContractTestCustodyContext, custody, "contract custody")
+    reviewers = _revalidate(ContractReviewerRegistry, reviewers, "reviewer registry")
+    bundle = _revalidate(ContractEvidenceBundle, bundle, "contract bundle")
+    policies = tuple(_revalidate(GatePolicy, p, "gate policy") for p in policies)
+
     policy_by_gate = {p.gate: p for p in policies}
     if len(policy_by_gate) != len(policies):
         raise Phase7EContractError("duplicate policies")
-    evidence_by_gate = {e.gate: e for e in bundle.evidences}
+    if set(policy_by_gate) - REQUIRED_GATES:
+        raise Phase7EContractError("unknown policy gate")
+
+    evidence_by_gate = {}
+    for raw_evidence in bundle.evidences:
+        evidence = _revalidate(ContractTestEvidence, raw_evidence, "contract evidence")
+        expected_payload = GATE_PAYLOAD_TYPE[evidence.gate]
+        expected_payload.model_validate(_primitive_snapshot(evidence.payload))
+        evidence_by_gate[evidence.gate] = evidence
+
     accepted = set()
-    for a in bundle.approvals:
+    for raw_approval in bundle.approvals:
+        a = _revalidate(ContractApproval, raw_approval, "contract approval")
         e, policy = evidence_by_gate.get(a.gate), policy_by_gate.get(a.gate)
         maker, checker = reviewers.resolve(a.maker), reviewers.resolve(a.checker)
         if e is None or policy is None or maker is None or checker is None or maker == checker:
@@ -351,12 +438,14 @@ def verify_contract_evidence_bundle(bundle, policies, custody, reviewers):
 def verify_real_external_evidence_bundle(bundle=None, resolver=None):
     """Always fail closed: the audited repository has no external trust anchors."""
     del bundle, resolver
-    return RealGateVerification(gate_states=_open_states())
+    return RealGateVerification.model_validate({"gate_states": _open_states()})
 
 
 def assess_phase7e_bundle(bundle=None, context=None):
     del bundle, context
-    return Phase7EAssessment(gate_states=verify_real_external_evidence_bundle().gate_states)
+    return Phase7EAssessment.model_validate(
+        {"gate_states": verify_real_external_evidence_bundle().gate_states}
+    )
 
 
 def require_complete_external_evidence(bundle, context):

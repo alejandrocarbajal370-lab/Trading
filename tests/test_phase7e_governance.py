@@ -8,6 +8,7 @@ from governance.phase7e import (
     CompletenessPayload,
     ContractApproval,
     ContractEvidenceBundle,
+    ContractGateVerification,
     ContractReviewerRegistry,
     ContractTestCustodyContext,
     ContractTestEvidence,
@@ -19,6 +20,9 @@ from governance.phase7e import (
     HistoricalPitPayload,
     LicensingPayload,
     OperationsPayload,
+    Phase7EAssessment,
+    Phase7EContractError,
+    RealGateVerification,
     RestatementPayload,
     RetentionPayload,
     ScalePayload,
@@ -196,6 +200,19 @@ def _bundle(evidences, approvals=None):
     )
 
 
+def _resealed_bundle_copy(bundle, **changes):
+    values = bundle.model_dump(mode="python", exclude={"bundle_hash"}, warnings=False)
+    values.update(changes)
+    raw = ContractEvidenceBundle.model_construct(**values, bundle_hash="0" * 64)
+    return raw.model_copy(
+        update={
+            "bundle_hash": typed_hash(
+                raw.model_dump(mode="json", exclude={"bundle_hash"}, warnings=False)
+            )
+        }
+    )
+
+
 REGISTRY = ContractReviewerRegistry(
     actors=(
         ("maker-one", ("Maker One", " maker  one ")),
@@ -344,3 +361,141 @@ def test_real_route_remains_open_and_safety_invariants_hold():
     assert result.trade_decision == "NO_TRADE"
     assert not result.live_execution_enabled and not result.signals_generated
     assert result.backtesting == "NOT_AUTHORIZED"
+
+
+@pytest.mark.parametrize("model", [RealGateVerification, Phase7EAssessment])
+@pytest.mark.parametrize(
+    "states",
+    [
+        tuple((g, GateState.VERIFIED) for g in EvidenceGate),
+        tuple((g, GateState.OPEN_EXTERNAL) for g in tuple(EvidenceGate)[:-1]),
+        tuple((g, GateState.OPEN_EXTERNAL) for g in EvidenceGate)
+        + ((EvidenceGate.REAL_FX, GateState.OPEN_EXTERNAL),),
+        tuple(reversed(tuple((g, GateState.OPEN_EXTERNAL) for g in EvidenceGate))),
+    ],
+)
+def test_public_real_outputs_reject_fabricated_missing_duplicate_or_reordered_states(model, states):
+    with pytest.raises(ValidationError):
+        model.model_validate({"gate_states": states})
+
+
+@pytest.mark.parametrize("model", [RealGateVerification, Phase7EAssessment])
+def test_direct_real_constructor_rejects_verified(model):
+    with pytest.raises(ValidationError):
+        model(gate_states=tuple((g, GateState.VERIFIED) for g in EvidenceGate))
+
+
+def test_real_outputs_reject_unknown_gate_and_inconsistent_safety_fields():
+    states = [(g.value, GateState.OPEN_EXTERNAL.value) for g in EvidenceGate]
+    states[0] = ("UNKNOWN", GateState.OPEN_EXTERNAL.value)
+    with pytest.raises(ValidationError):
+        RealGateVerification.model_validate_json(
+            __import__("json").dumps({"gate_states": states})
+        )
+    with pytest.raises(ValidationError):
+        Phase7EAssessment.model_validate(
+            {"gate_states": _open_states_for_test(), "trade_decision": "TRADE"}
+        )
+
+
+def _open_states_for_test():
+    return tuple((g, GateState.OPEN_EXTERNAL) for g in EvidenceGate)
+
+
+def test_model_copy_cannot_turn_real_output_verified_or_fool_aggregate():
+    forged = verify_real_external_evidence_bundle().model_copy(
+        update={"gate_states": tuple((g, GateState.VERIFIED) for g in EvidenceGate)}
+    )
+    with pytest.raises(ValidationError):
+        RealGateVerification.model_validate(forged.model_dump(mode="json"))
+    result = assess_phase7e_bundle(forged, forged)
+    assert result.gate_states == _open_states_for_test()
+
+
+@pytest.mark.parametrize("source_gate", list(EvidenceGate))
+@pytest.mark.parametrize("target_gate", list(EvidenceGate))
+def test_cross_gate_model_copy_matrix_is_rejected(source_gate, target_gate):
+    if source_gate == target_gate:
+        return
+    policy = _policy(source_gate)
+    evidence = _evidence(source_gate, policy)
+    forged = evidence.model_copy(update={"gate": target_gate})
+    bundle = _resealed_bundle_copy(
+        _bundle([evidence]), evidences=(forged,), approvals=(_approval(evidence, policy),)
+    )
+    with pytest.raises(Phase7EContractError):
+        _verify(bundle, [policy])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"provider_id": "copied-provider"},
+        {"dataset_id": "copied-dataset"},
+        {"as_of": NOW - datetime.timedelta(seconds=1)},
+        {"scope_id": "partial-scope"},
+    ],
+)
+def test_copied_evidence_semantics_with_stale_hash_rejected_at_boundary(change):
+    policy = _policy(EvidenceGate.REAL_FX)
+    evidence = _evidence(EvidenceGate.REAL_FX, policy)
+    forged = evidence.model_copy(update=change)
+    bundle = _resealed_bundle_copy(_bundle([evidence]), evidences=(forged,))
+    with pytest.raises(Phase7EContractError):
+        _verify(bundle, [policy])
+
+
+def test_copied_payload_and_stale_evidence_hash_rejected_at_boundary():
+    policy = _policy(EvidenceGate.REAL_FX)
+    evidence = _evidence(EvidenceGate.REAL_FX, policy)
+    payload = evidence.payload.model_copy(update={"kind": "licensing"})
+    forged = evidence.model_copy(update={"payload": payload})
+    bundle = _resealed_bundle_copy(_bundle([evidence]), evidences=(forged,))
+    with pytest.raises(Phase7EContractError):
+        _verify(bundle, [policy])
+
+
+def test_copied_policy_with_stale_hash_rejected_at_boundary():
+    policy = _policy(EvidenceGate.REAL_FX)
+    evidence = _evidence(EvidenceGate.REAL_FX, policy)
+    forged_policy = policy.model_copy(update={"provider_id": "copied-provider"})
+    with pytest.raises(Phase7EContractError):
+        _verify(_bundle([evidence]), [forged_policy])
+
+
+def test_copied_approval_binding_is_rederived_not_trusted():
+    policy = _policy(EvidenceGate.REAL_FX)
+    evidence = _evidence(EvidenceGate.REAL_FX, policy)
+    approval = _approval(evidence, policy).model_copy(update={"evidence_hash": "f" * 64})
+    result = _verify(_bundle([evidence], [approval]), [policy])
+    assert result.gate_states[5][1] == GateState.OPEN_EXTERNAL
+
+
+def test_model_construct_nested_invalid_evidence_rejected_at_boundary():
+    policy = _policy(EvidenceGate.REAL_FX)
+    evidence = _evidence(EvidenceGate.REAL_FX, policy)
+    forged = ContractTestEvidence.model_construct(
+        **evidence.model_dump(mode="python", exclude={"content_hash"}), content_hash="0" * 64
+    )
+    bundle = _resealed_bundle_copy(_bundle([evidence]), evidences=(forged,))
+    with pytest.raises(Phase7EContractError):
+        _verify(bundle, [policy])
+
+
+def test_forged_primitive_json_bundle_rejected_at_boundary():
+    policy = _policy(EvidenceGate.REAL_FX)
+    evidence = _evidence(EvidenceGate.REAL_FX, policy)
+    primitive = _bundle([evidence]).model_dump(mode="json")
+    primitive["evidences"][0]["gate"] = EvidenceGate.LICENSING_LEGAL.value
+    with pytest.raises(Phase7EContractError):
+        _verify(primitive, [policy])
+
+
+def test_fabricated_contract_child_results_are_not_an_aggregate_authority():
+    forged = ContractGateVerification.model_construct(
+        gate_states=tuple((g, GateState.VERIFIED) for g in EvidenceGate),
+        contract_semantics_complete=True,
+        trust_domain="CONTRACT_TEST_ONLY",
+    )
+    assert verify_real_external_evidence_bundle(forged).gate_states == _open_states_for_test()
+    assert assess_phase7e_bundle(forged).gate_states == _open_states_for_test()

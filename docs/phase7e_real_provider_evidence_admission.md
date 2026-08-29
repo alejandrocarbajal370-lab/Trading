@@ -45,7 +45,7 @@ constituents PIT), 7C (SEC/accounting binding), and independently re-audited and
 
 ## Canonical evidence-gate matrix
 
-Allowed gate states are `OPEN_EXTERNAL`, `UNDER_REVIEW`, and `VERIFIED`. Only a governed bundle of
+Allowed gate states are `OPEN_EXTERNAL` and `VERIFIED`. Only a governed bundle of
 `REAL_EXTERNAL` records accepted by a distinct checker can derive `VERIFIED`; callers cannot set a
 gate state. The current repository contains no such bundle, so every gate is `OPEN_EXTERNAL`.
 
@@ -78,6 +78,17 @@ legal authority, or canonical trust policy exists in this repository. Caller-cre
 enums, strings, aliases, resealed objects, `model_validate`, and mutually matching hashes cannot
 change that outcome.
 
+Pydantic construction is not a trust boundary. The contract verifier treats models, copied models,
+objects created without validation, nested objects, and serialized dictionaries as untrusted. At
+the verifier boundary it first reduces every input to a canonical primitive snapshot, then rebuilds
+the expected concrete type for the expected gate and recomputes policy, evidence, and bundle
+hashes. A copied or resealed object cannot carry constructor-time validation forward as authority.
+Contract child results are DTOs, not aggregate authority; contract status is always rederived from
+the revalidated bundle. Every normally constructed or deserialized nominal REAL result and
+assessment accepts only the current ten canonical `OPEN_EXTERNAL` states and the permanent closed
+safety fields. Objects produced with validation-bypassing internals remain untrusted and are ignored
+or revalidated at every consumer boundary.
+
 Each gate has a distinct discriminated payload schema. Evidence is bound to provider, dataset,
 as-of, scope, coverage window, policy version/hash, and its approval. Approvals bind the exact
 evidence hash and canonical reviewer identities; mutation invalidates them. Contract policy may
@@ -96,7 +107,7 @@ not from self-hashing.
 
 ## Acceptance and exit criteria
 
-This design phase may be accepted only after independent re-audit of the remediated SHA confirms
+This design foundation may be accepted only after independent re-audit of the remediated SHA confirms
 that the canonical document and typed tests persistently enforce
 the matrix, concrete proof requirements, maker-checker rule, fixture boundary, and fail-closed
 defaults. Its external-evidence exit is stricter: a provider/dataset is selected; all ten gates
