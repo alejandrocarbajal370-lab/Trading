@@ -2,12 +2,12 @@
 
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
-Phases 6 and 7A/7B/7C/7D are integrated. Phase 7D completed independent re-audit and was squash
-merged as PR #23. Phase 7E is now the explicit next design/governance phase and is documented in
-[`docs/phase7e_real_provider_evidence_admission.md`](docs/phase7e_real_provider_evidence_admission.md).
-It defines provider-agnostic contract semantics but is not complete, requires independent re-audit,
-and supplies no real external evidence. The repository has no governed custody trust anchor or
-reviewer identity registry, so every valid official and nominal real output is deliberately
+Phases 6 and 7A/7B/7C/7D/7E are integrated. Phase 7E completed independent re-audit and was squash
+merged as PR #24. The proposed next internal design phase is **Phase 7F — External Trust Boundary
+Architecture**, defined by
+[`docs/adr/0001-phase7f-external-trust-boundary.md`](docs/adr/0001-phase7f-external-trust-boundary.md).
+It is definition-only and supplies no real external evidence. The repository has no governed
+custody trust anchor or reviewer identity registry, so every valid official and nominal real output is deliberately
 incapable of representing `VERIFIED`. The verifier revalidates copied or unvalidated Pydantic objects from
 canonical primitive snapshots; constructor history is never a trust boundary. Local fixtures,
 caller-created contexts, and self-hashes cannot close a gate; hashes
@@ -17,9 +17,11 @@ merge of Phase 7E would not imply real-provider readiness.
 
 ## Current stage
 
-Phase 6's research-only QVM scoring engine and the Phase 7A–7D contractual foundations are merged.
-Phase 7E formalizes the evidence required before any future real-provider readiness review. No real
-historical provider is admitted. The real route is `QVM_NOT_READY`, global readiness is
+Phase 6's research-only QVM scoring engine and the Phase 7A–7E contractual foundations are merged.
+Phase 7E formalizes the evidence required before any future real-provider readiness review. The
+proposed Phase 7F formalizes the external trust boundary required before authentic evidence could
+be resolved or reviewed. No real historical provider is admitted. The real route is
+`QVM_NOT_READY`, global readiness is
 `INSUFFICIENT_REAL_DATA`, and backtesting is `NOT_AUTHORIZED`. All paths remain `NO_TRADE`, with
 signals and live execution disabled; no portfolio, target-price, broker, order, execution, or
 dashboard/Excel capability is authorized.
