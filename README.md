@@ -4,9 +4,9 @@ Systematic Equity Research & Portfolio Engine built with a capital-preservation-
 
 Phases 6 and 7A/7B/7C/7D/7E are integrated. Phase 7E completed independent re-audit and was squash
 merged as PR #24. The proposed next internal design phase is **Phase 7F — External Trust Boundary
-Architecture**, defined by
+Architecture**, defined and implemented as a contract-test-only boundary by
 [`docs/adr/0001-phase7f-external-trust-boundary.md`](docs/adr/0001-phase7f-external-trust-boundary.md).
-It is definition-only and supplies no real external evidence. The repository has no governed
+It supplies no real external evidence. The repository has no governed
 custody trust anchor or reviewer identity registry, so every valid official and nominal real output is deliberately
 incapable of representing `VERIFIED`. The verifier revalidates copied or unvalidated Pydantic objects from
 canonical primitive snapshots; constructor history is never a trust boundary. Local fixtures,

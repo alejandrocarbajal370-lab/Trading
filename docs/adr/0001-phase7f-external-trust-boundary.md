@@ -1,6 +1,6 @@
 # ADR 0001 — Phase 7F External Trust Boundary Architecture
 
-Status: **PROPOSED; DEFINITION ONLY; NO REAL EVIDENCE ADMITTED**
+Status: **IMPLEMENTED CONTRACT DESIGN; DRAFT REVIEW; NO REAL EVIDENCE ADMITTED**
 
 ## Context
 
@@ -16,7 +16,7 @@ Architecture**. This ADR establishes the roadmap; it does not implement a produc
 
 ## Decision
 
-Phase 7F will specify provider-neutral contracts for:
+Phase 7F specifies provider-neutral contracts for:
 
 1. a canonical trust-anchor registry whose entries identify an independently controlled evidence
    system, authority, supported artifact classes, version, activation/revocation times, and audit
