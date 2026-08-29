@@ -1,7 +1,7 @@
 # PRE-Phase 6 remediation contract
 
-Status: research-only. Phase 6 scoring has not started. `NO_TRADE` and
-`live_execution_enabled=false` are invariant.
+Status: integrated prerequisite. Phase 6 research-only scoring was subsequently integrated;
+`NO_TRADE` and `live_execution_enabled=false` remain invariant.
 
 ## Internal contracts
 
