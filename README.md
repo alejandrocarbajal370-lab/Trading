@@ -3,24 +3,29 @@
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
 Phases 6 and 7A/7B/7C/7D/7E are integrated. Phase 7E completed independent re-audit and was squash
-merged as PR #24. The proposed next internal design phase is **Phase 7F — External Trust Boundary
-Architecture**, defined and implemented as a contract-test-only boundary by
+merged as PR #24. **Phase 7F — External Trust Boundary Architecture** is proposed in draft form as
+a contract-test-only boundary in
 [`docs/adr/0001-phase7f-external-trust-boundary.md`](docs/adr/0001-phase7f-external-trust-boundary.md).
-It supplies no real external evidence. The repository has no governed
-custody trust anchor or reviewer identity registry, so every valid official and nominal real output is deliberately
-incapable of representing `VERIFIED`. The verifier revalidates copied or unvalidated Pydantic objects from
-canonical primitive snapshots; constructor history is never a trust boundary. Local fixtures,
-caller-created contexts, and self-hashes cannot close a gate; hashes
-prove integrity, not authenticity, and a hash is not WORM. Provider selection, coverage,
-licensing, retention, operations and the other real-data gates remain `OPEN_EXTERNAL`. A future
-merge of Phase 7E would not imply real-provider readiness.
+It implements only synthetic, governed contract mechanics. Its typed authority registry,
+trust-anchor registry, policy, scope, reviewer registry, custody record and independent audit can
+prove that a synthetic chain is internally consistent; they cannot prove external authenticity,
+WORM/object lock, real reviewer appointment, provider approval or evidence truth. No REAL trust
+root or caller-injectable resolver is implemented. Every sensitive input is revalidated from
+primitive snapshots and every semantic hash is recomputed. Current revocation and expiry are
+checked at verifier time with no grandfathering. Provider selection and all ten real-data gates
+remain `OPEN_EXTERNAL`.
 
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7E contractual foundations are merged.
-Phase 7E formalizes the evidence required before any future real-provider readiness review. The
-proposed Phase 7F formalizes the external trust boundary required before authentic evidence could
-be resolved or reviewed. No real historical provider is admitted. The real route is
+Phase 7E formalizes the evidence required before any future real-provider readiness review. Draft
+Phase 7F models the contract seam needed before authentic evidence could later be resolved or
+reviewed. Admission mechanics complete only when a current canonical independent auditor—distinct
+from maker and checker—approves a hash of the complete revalidated snapshot. Reviewer aliases use
+Unicode NFKC, whitespace folding and casefold collision detection; this is not universal homoglyph
+detection, while canonical actor IDs are constrained opaque ASCII identifiers. Declared scope
+dimensions and custody immutability fields remain declarations, never proof. No real historical
+provider is admitted. The real route is
 `QVM_NOT_READY`, global readiness is
 `INSUFFICIENT_REAL_DATA`, and backtesting is `NOT_AUTHORIZED`. All paths remain `NO_TRADE`, with
 signals and live execution disabled; no portfolio, target-price, broker, order, execution, or
