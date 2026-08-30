@@ -25,7 +25,8 @@ Phase 7F implements these synthetic governed contracts:
    registry hashes are recomputed at the consumer boundary.
 2. Each trust anchor binds the complete authority-registry identity, authority hash and provenance
    hash. Anchor IDs are globally unique, anchors are canonically ordered, and activation, expiry,
-   revocation, source identity and authorized artifact class are rechecked at verifier time.
+   revocation, source identity and authorized artifact class are rechecked at their use time and
+   verifier time.
 3. Onboarding binds candidate ID and timestamp, provider/dataset/version, a typed declared coverage
    scope, a governed policy artifact, all ten gates in their exact canonical order, and complete
    anchor identity tuples. A scope remains a declaration and cannot prove external completeness.
@@ -35,8 +36,8 @@ Phase 7F implements these synthetic governed contracts:
    onboarding, policy, anchor and authority registries.
 5. Reviewer registries bind their issuing authority and anchor, carry their own validity and
    revocation, and use stable opaque ASCII actor IDs. Maker and checker must be valid both at the
-   decision time and verifier time. Registry, authority and anchor must also be current at verifier
-   time. There is no grandfathering policy; the default is fail closed.
+   decision time and verifier time. Registry, authority and anchor must be valid at the decision
+   and verifier; audit dependencies must be valid at audit and verifier. There is no grandfathering.
 6. Alias collision detection applies Unicode NFKC, Unicode-whitespace folding and Unicode
    `casefold`, in that order. This closes compatibility/composed-form/case/whitespace collisions;
    it does not claim universal homoglyph detection.
@@ -45,10 +46,22 @@ Phase 7F implements these synthetic governed contracts:
    stops at the first failure. Result DTOs and stage records are non-authoritative and are never
    accepted back as evidence.
 8. Completion requires a current reviewer with `INDEPENDENT_AUDITOR`, distinct from maker and
-   checker. The audit must follow the decision, use `APPROVE`, and bind the exact authority, anchor,
+   checker. The auditor and its registry/authority/anchor are checked at audit time and verifier
+   time. The audit must follow the decision, use `APPROVE`, and bind the exact authority, anchor,
    onboarding, policy, request, artifact/custody, decision and reviewer snapshots plus verifier time
-   and Phase 7F policy version. Missing, rejected, stale, mismatched or caller-forged audits cannot
-   complete admission.
+   and both Phase 7F contract and temporal-policy versions. Missing, rejected, stale, mismatched or
+   caller-forged audits cannot complete admission.
+9. `phase7f-admission-temporal-order-v1` makes the stage machine causal. Candidate declaration and
+   request creation must precede the decision; policy, authority and anchor must already authorize
+   each event they support. The required evidence chain is
+   `custody.effective_at <= custody.available_at <= artifact.retrieved_at <= decision.decided_at <=
+   audit.audited_at <= verifier_time`, with `request.requested_at <= artifact.retrieved_at` and
+   `candidate.declared_at <= request.requested_at`. Equality is intentionally allowed at these
+   explicit boundaries because the contract timestamps have no finer causal ordering. No other
+   future-dated prerequisite can enable a consuming stage.
+10. The canonical audit snapshot includes every nested timestamp, `verifier_time`, the contract
+    version and the temporal-policy version. Changing chronology requires changing downstream
+    hashes and still cannot bypass the temporal predicates.
 
 ## Revalidation and failure semantics
 

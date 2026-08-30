@@ -8,6 +8,8 @@ from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 from governance.phase7f import (
     PHASE7F_CONTRACT_VERSION,
+    PHASE7F_TEMPORAL_POLICY_VERSION,
+    AdmissionStage,
     AnchorBinding,
     ArtifactClass,
     ArtifactRequest,
@@ -60,6 +62,7 @@ def universe():
         ("authority.custody", AuthorityClass.CUSTODY, AuthorityCapability.CUSTODY),
         ("authority.identity", AuthorityClass.IDENTITY, AuthorityCapability.REVIEWERS),
         ("authority.policy", AuthorityClass.GOVERNANCE, AuthorityCapability.POLICY),
+        ("authority.audit", AuthorityClass.AUDIT, AuthorityCapability.AUDIT),
     )
     for authority_id, authority_class, capability in specs:
         authorities.append(
@@ -78,7 +81,7 @@ def universe():
         "registry_hash",
         registry_id="registry.authority",
         valid_from=PAST,
-        authorities=tuple(authorities),
+        authorities=tuple(sorted(authorities, key=lambda item: item.authority_id)),
     )
 
     def authority_binding(authority_id):
@@ -97,7 +100,11 @@ def universe():
         anchor_id="anchor.evidence",
         source_system_id="source.custody",
         authority=authority_binding("authority.anchor"),
-        artifact_classes=(ArtifactClass.EVIDENCE, ArtifactClass.IDENTITY_REGISTRY),
+        artifact_classes=(
+            ArtifactClass.EVIDENCE,
+            ArtifactClass.IDENTITY_REGISTRY,
+            ArtifactClass.CUSTODY_AUDIT,
+        ),
         activated_at=PAST,
     )
     anchor_registry = seal(
@@ -194,6 +201,7 @@ def universe():
         policy_version=policy.policy_version,
         policy_hash=policy.policy_hash,
         as_of=NOW - dt.timedelta(days=1),
+        requested_at=NOW - dt.timedelta(hours=3),
     )
     source = b"synthetic contract evidence"
     custody = seal(
@@ -270,10 +278,13 @@ def universe():
         IndependentAuditRecord,
         "audit_hash",
         audit_id="audit.synthetic",
+        authority=authority_binding("authority.audit"),
+        anchor=anchor_binding,
         auditor_claim="Auditor Céline",
         audited_at=NOW - dt.timedelta(minutes=5),
         verifier_time=NOW,
         policy_version=PHASE7F_CONTRACT_VERSION,
+        temporal_policy_version=PHASE7F_TEMPORAL_POLICY_VERSION,
         snapshot_hash=snapshot,
         verdict="APPROVE",
     )
@@ -296,6 +307,80 @@ def refresh_audit(items):
         items[1], items[2], items[0], items[4], items[5], items[6], items[7], items[3], NOW
     )
     items[8] = seal(IndependentAuditRecord, "audit_hash", **values)
+
+
+def set_chronology(
+    items,
+    *,
+    requested_at=None,
+    custody_available_at=None,
+    retrieved_at=None,
+    decided_at=None,
+    audited_at=None,
+):
+    """Reseal every downstream binding after a deliberate chronology change."""
+    if requested_at is not None:
+        items[5] = items[5].model_copy(update={"requested_at": requested_at})
+    custody = items[6].custody
+    if custody_available_at is not None:
+        custody = reseal(
+            custody, CustodyRecord, "custody_hash", available_at=custody_available_at
+        )
+    artifact_updates = {"custody": custody, "request_hash": typed_hash(items[5].model_dump(mode="json"))}
+    if retrieved_at is not None:
+        artifact_updates["retrieved_at"] = retrieved_at
+    items[6] = items[6].model_copy(update=artifact_updates)
+    decision_updates = {
+        "request_hash": typed_hash(items[5].model_dump(mode="json")),
+        "artifact_hash": typed_hash(items[6].model_dump(mode="json")),
+    }
+    if decided_at is not None:
+        decision_updates["decided_at"] = decided_at
+    items[7] = reseal(items[7], ReviewDecision, "decision_hash", **decision_updates)
+    if audited_at is not None:
+        items[8] = reseal(
+            items[8], IndependentAuditRecord, "audit_hash", audited_at=audited_at
+        )
+    refresh_audit(items)
+
+
+def replace_anchor(items, **updates):
+    """Rebind the complete snapshot to a resealed anchor, preserving all local hashes."""
+    anchor = reseal(items[2].anchors[0], TrustAnchor, "anchor_hash", **updates)
+    items[2] = reseal(items[2], ContractTrustAnchorRegistry, "registry_hash", anchors=(anchor,))
+    binding = AnchorBinding(
+        anchor_id=anchor.anchor_id,
+        source_system_id=anchor.source_system_id,
+        anchor_version=anchor.version,
+        anchor_hash=anchor.anchor_hash,
+        anchor_registry_version=items[2].version,
+        anchor_registry_hash=items[2].registry_hash,
+    )
+    items[0] = reseal(
+        items[0], ProviderDatasetCandidate, "candidate_hash", required_anchors=(binding,)
+    )
+    items[5] = items[5].model_copy(
+        update={"candidate_hash": items[0].candidate_hash, "anchor": binding}
+    )
+    items[3] = reseal(items[3], ContractReviewerIdentityRegistry, "registry_hash", anchor=binding)
+    custody = reseal(items[6].custody, CustodyRecord, "custody_hash", anchor=binding)
+    items[6] = items[6].model_copy(
+        update={
+            "request_hash": typed_hash(items[5].model_dump(mode="json")),
+            "custody": custody,
+        }
+    )
+    items[7] = reseal(
+        items[7],
+        ReviewDecision,
+        "decision_hash",
+        candidate_hash=items[0].candidate_hash,
+        request_hash=typed_hash(items[5].model_dump(mode="json")),
+        artifact_hash=typed_hash(items[6].model_dump(mode="json")),
+        reviewer_registry_hash=items[3].registry_hash,
+    )
+    items[8] = reseal(items[8], IndependentAuditRecord, "audit_hash", anchor=binding)
+    refresh_audit(items)
 
 
 def test_valid_independent_admission_is_contract_only():
@@ -592,3 +677,140 @@ def test_gate_lists_missing_duplicate_conflicting_or_reordered_fail():
     ):
         with pytest.raises(ValidationError):
             reseal(items[0], ProviderDatasetCandidate, "candidate_hash", required_gates=gates)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"custody_available_at": NOW - dt.timedelta(minutes=20)},
+        {"retrieved_at": NOW - dt.timedelta(minutes=20)},
+        {
+            "custody_available_at": NOW - dt.timedelta(hours=1),
+            "retrieved_at": NOW - dt.timedelta(hours=2),
+        },
+        {"decided_at": NOW - dt.timedelta(minutes=1), "audited_at": NOW - dt.timedelta(minutes=5)},
+        {"audited_at": NOW + dt.timedelta(seconds=1)},
+        {"decided_at": NOW + dt.timedelta(seconds=1), "audited_at": NOW + dt.timedelta(seconds=1)},
+        {"requested_at": NOW - dt.timedelta(minutes=10)},
+    ],
+    ids=[
+        "decision-before-custody",
+        "decision-before-retrieval",
+        "retrieval-before-custody",
+        "audit-before-decision",
+        "audit-after-verifier",
+        "decision-after-verifier",
+        "request-after-retrieval",
+    ],
+)
+def test_resealed_invalid_causal_chronology_is_incomplete(changes):
+    items = universe()
+    set_chronology(items, **changes)
+    result = verify(items)
+    assert not result.admission_complete
+    assert AdmissionStage.ADMISSION_COMPLETE not in {x.stage for x in result.stage_records}
+
+
+def test_exact_equal_causal_boundaries_are_explicitly_allowed():
+    items = universe()
+    boundary = NOW - dt.timedelta(minutes=30)
+    set_chronology(
+        items,
+        custody_available_at=boundary,
+        retrieved_at=boundary,
+        decided_at=boundary,
+        audited_at=boundary,
+    )
+    assert verify(items).admission_complete
+
+
+def test_authority_registry_activated_after_decision_cannot_legitimize_it():
+    items = universe()
+    items[1] = reseal(
+        items[1],
+        ContractAuthorityRegistry,
+        "registry_hash",
+        valid_from=items[7].decided_at + dt.timedelta(seconds=1),
+    )
+    assert not verify(items).admission_complete
+
+
+def test_anchor_activated_after_decision_cannot_legitimize_it_even_fully_rebound():
+    items = universe()
+    replace_anchor(items, activated_at=items[7].decided_at + dt.timedelta(seconds=1))
+    assert not verify(items).admission_complete
+
+
+def test_anchor_valid_at_decision_but_revoked_before_verifier_is_incomplete():
+    items = universe()
+    replace_anchor(items, revoked_at=NOW - dt.timedelta(minutes=10))
+    assert not verify(items).admission_complete
+
+
+def test_candidate_declared_after_decision_is_incomplete_with_resealed_snapshot():
+    items = universe()
+    items[0] = reseal(
+        items[0],
+        ProviderDatasetCandidate,
+        "candidate_hash",
+        declared_at=items[7].decided_at + dt.timedelta(seconds=1),
+    )
+    assert not verify(items).admission_complete
+
+
+def test_policy_effective_after_decision_is_incomplete_with_valid_local_hash():
+    items = universe()
+    items[4] = reseal(
+        items[4],
+        ContractPolicy,
+        "policy_hash",
+        effective_from=items[7].decided_at + dt.timedelta(seconds=1),
+    )
+    assert not verify(items).admission_complete
+
+
+def test_auditor_valid_at_audit_but_revoked_before_verifier_is_incomplete():
+    items = universe()
+    identities = list(items[3].identities)
+    identities[2] = identities[2].model_copy(update={"revoked_at": NOW - dt.timedelta(minutes=1)})
+    items[3] = reseal(
+        items[3], ContractReviewerIdentityRegistry, "registry_hash", identities=tuple(identities)
+    )
+    assert not verify(items).admission_complete
+
+
+def test_timestamp_model_copy_with_stale_hash_is_rejected():
+    items = universe()
+    items[7] = items[7].model_copy(update={"decided_at": NOW - dt.timedelta(hours=3)})
+    with pytest.raises(Phase7FContractError, match="decision"):
+        verify(items)
+
+
+def test_model_construct_future_dated_nested_custody_is_incomplete():
+    items = universe()
+    values = items[6].custody.model_dump(mode="python")
+    values["available_at"] = NOW + dt.timedelta(hours=1)
+    values["custody_hash"] = typed_hash({k: v for k, v in values.items() if k != "custody_hash"})
+    items[6] = items[6].model_copy(update={"custody": CustodyRecord.model_construct(**values)})
+    with pytest.raises(Phase7FContractError, match="artifact"):
+        verify(items)
+
+
+def test_forged_primitive_dict_with_valid_hashes_but_bad_chronology_is_incomplete():
+    items = universe()
+    set_chronology(items, retrieved_at=items[7].decided_at + dt.timedelta(seconds=1))
+    primitive = [None if item is None else item.model_dump(mode="json") for item in items]
+    assert not verify(primitive).admission_complete
+
+
+def test_old_audit_snapshot_cannot_cover_mutated_decision_time():
+    items = universe()
+    old_audit = items[8]
+    items[7] = reseal(
+        items[7],
+        ReviewDecision,
+        "decision_hash",
+        decided_at=items[7].decided_at - dt.timedelta(minutes=1),
+    )
+    items[8] = old_audit
+    assert not verify(items).admission_complete

@@ -11,17 +11,21 @@ trust-anchor registry, policy, scope, reviewer registry, custody record and inde
 prove that a synthetic chain is internally consistent; they cannot prove external authenticity,
 WORM/object lock, real reviewer appointment, provider approval or evidence truth. No REAL trust
 root or caller-injectable resolver is implemented. Every sensitive input is revalidated from
-primitive snapshots and every semantic hash is recomputed. Current revocation and expiry are
-checked at verifier time with no grandfathering. Provider selection and all ten real-data gates
-remain `OPEN_EXTERNAL`.
+primitive snapshots and every semantic hash is recomputed. The versioned
+`phase7f-admission-temporal-order-v1` policy requires custody availability before retrieval,
+retrieval before maker-checker decision, decision before audit, and audit no later than verifier
+time. Authorities, anchors and reviewer identities are checked at their historical use time and
+again at verifier time, with no grandfathering. Equality is allowed only at the documented causal
+boundaries. Provider selection and all ten real-data gates remain `OPEN_EXTERNAL`.
 
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7E contractual foundations are merged.
 Phase 7E formalizes the evidence required before any future real-provider readiness review. Draft
 Phase 7F models the contract seam needed before authentic evidence could later be resolved or
-reviewed. Admission mechanics complete only when a current canonical independent auditor—distinct
-from maker and checker—approves a hash of the complete revalidated snapshot. Reviewer aliases use
+reviewed. Admission mechanics complete only when a canonical independent auditor—distinct from
+maker and checker and valid at audit and verifier time—approves a hash of the complete revalidated
+snapshot, including chronology, verifier time and temporal-policy version. Reviewer aliases use
 Unicode NFKC, whitespace folding and casefold collision detection; this is not universal homoglyph
 detection, while canonical actor IDs are constrained opaque ASCII identifiers. Declared scope
 dimensions and custody immutability fields remain declarations, never proof. No real historical

@@ -15,6 +15,7 @@ from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 
 PHASE7F_CONTRACT_VERSION = "phase7f-external-trust-boundary-v2"
+PHASE7F_TEMPORAL_POLICY_VERSION = "phase7f-admission-temporal-order-v1"
 SHA256 = r"^[0-9a-f]{64}$"
 OID = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
 
@@ -76,6 +77,10 @@ def _aware(value: dt.datetime, label: str) -> None:
 
 def _active(start, end, revoked, at):
     return start <= at and (end is None or at < end) and (revoked is None or at < revoked)
+
+
+def _registry_active(registry, at):
+    return _active(registry.valid_from, registry.valid_until, registry.revoked_at, at)
 
 
 def _alias(value: str) -> str:
@@ -390,10 +395,12 @@ class ArtifactRequest(ContractModel):
     policy_version: str = Field(pattern=OID)
     policy_hash: str = Field(pattern=SHA256)
     as_of: dt.datetime
+    requested_at: dt.datetime
 
     @model_validator(mode="after")
     def check(self):
         _aware(self.as_of, "request as_of")
+        _aware(self.requested_at, "request requested_at")
         return self
 
 
@@ -485,10 +492,15 @@ class IndependentAuditRecord(ContractModel):
     version: Literal["phase7f-audit-v1"] = "phase7f-audit-v1"
     trust_domain: Literal["CONTRACT_TEST_ONLY"] = "CONTRACT_TEST_ONLY"
     audit_id: str = Field(pattern=OID)
+    authority: AuthorityBinding
+    anchor: AnchorBinding
     auditor_claim: str
     audited_at: dt.datetime
     verifier_time: dt.datetime
     policy_version: str = Field(pattern=OID)
+    temporal_policy_version: Literal["phase7f-admission-temporal-order-v1"] = (
+        PHASE7F_TEMPORAL_POLICY_VERSION
+    )
     snapshot_hash: str = Field(pattern=SHA256)
     verdict: Literal["APPROVE", "REJECT"]
     audit_hash: str = Field(pattern=SHA256)
@@ -572,13 +584,14 @@ def _authority(registry, binding, capability, at):
         binding.authority_hash != item.authority_hash
         or binding.provenance_hash != item.provenance.provenance_hash
         or capability not in item.capabilities
+        or item.provenance.issued_at > at
         or not _active(item.valid_from, item.valid_until, item.revoked_at, at)
     ):
         return None
     return item
 
 
-def _anchor(registry, binding):
+def _anchor(registry, binding, at=None):
     if (
         binding.anchor_registry_version != registry.version
         or binding.anchor_registry_hash != registry.registry_hash
@@ -592,11 +605,11 @@ def _anchor(registry, binding):
     if len(found) != 1:
         return None
     item = found[0]
-    return (
-        item
-        if (binding.anchor_version, binding.anchor_hash) == (item.version, item.anchor_hash)
-        else None
-    )
+    if (binding.anchor_version, binding.anchor_hash) != (item.version, item.anchor_hash):
+        return None
+    if at is not None and not _active(item.activated_at, item.valid_until, item.revoked_at, at):
+        return None
+    return item
 
 
 def _actor(registry, claim, role, at):
@@ -632,6 +645,7 @@ def admission_snapshot_hash(
             "reviewer_registry": reviewers.model_dump(mode="json"),
             "verifier_time": verifier_time.isoformat(),
             "contract_version": PHASE7F_CONTRACT_VERSION,
+            "temporal_policy_version": PHASE7F_TEMPORAL_POLICY_VERSION,
         }
     )
 
@@ -672,27 +686,52 @@ def verify_contract_admission(
     decision = _revalidate(ReviewDecision, decision, "decision")
     audit = None if audit is None else _revalidate(IndependentAuditRecord, audit, "audit")
     stages = []
-    if not _active(
-        authorities.valid_from, authorities.valid_until, authorities.revoked_at, verifier_time
-    ):
+    authority_registry_at_decision = _registry_active(authorities, decision.decided_at)
+    authority_registry_now = _registry_active(authorities, verifier_time)
+    if not (authority_registry_at_decision and authority_registry_now):
         return _result(request.gate, stages)
     _stage(stages, AdmissionStage.AUTHORITY_REGISTRY_VERIFIED, authorities.registry_hash)
 
-    anchor = _anchor(anchors, request.anchor)
+    anchor_at_decision = _anchor(anchors, request.anchor, decision.decided_at)
+    anchor_now = _anchor(anchors, request.anchor, verifier_time)
     if not (
-        anchor
+        anchor_at_decision
+        and anchor_now
         and anchors.authority_registry_hash == authorities.registry_hash
-        and _authority(authorities, anchor.authority, AuthorityCapability.ANCHOR, verifier_time)
-        and _active(anchor.activated_at, anchor.valid_until, anchor.revoked_at, verifier_time)
-        and request.artifact_class in anchor.artifact_classes
+        and _registry_active(authorities, anchor_at_decision.activated_at)
+        and _authority(
+            authorities,
+            anchor_at_decision.authority,
+            AuthorityCapability.ANCHOR,
+            anchor_at_decision.activated_at,
+        )
+        and _authority(
+            authorities,
+            anchor_at_decision.authority,
+            AuthorityCapability.ANCHOR,
+            decision.decided_at,
+        )
+        and _authority(
+            authorities, anchor_now.authority, AuthorityCapability.ANCHOR, verifier_time
+        )
+        and request.artifact_class in anchor_at_decision.artifact_classes
     ):
         return _result(request.gate, stages)
     _stage(stages, AdmissionStage.TRUST_ANCHOR_VERIFIED, anchors.registry_hash)
 
     onboarding = (
-        _authority(authorities, policy.authority, AuthorityCapability.POLICY, verifier_time)
+        _authority(
+            authorities, policy.authority, AuthorityCapability.POLICY, policy.effective_from
+        )
+        and _registry_active(authorities, policy.effective_from)
+        and _authority(
+            authorities, policy.authority, AuthorityCapability.POLICY, decision.decided_at
+        )
+        and _authority(authorities, policy.authority, AuthorityCapability.POLICY, verifier_time)
+        and _active(policy.effective_from, policy.effective_until, None, decision.decided_at)
         and _active(policy.effective_from, policy.effective_until, None, verifier_time)
-        and candidate.declared_at <= request.as_of <= verifier_time
+        and candidate.declared_at <= request.requested_at <= decision.decided_at <= verifier_time
+        and request.as_of <= request.requested_at
         and candidate.scope.coverage_start <= request.as_of <= candidate.scope.coverage_end
         and request.anchor in candidate.required_anchors
         and request.gate in candidate.required_gates
@@ -731,8 +770,21 @@ def verify_contract_admission(
     request_hash = typed_hash(request.model_dump(mode="json"))
     artifact_hash = typed_hash(artifact.model_dump(mode="json"))
     custody_ok = (
-        _authority(authorities, custody.authority, AuthorityCapability.CUSTODY, verifier_time)
-        and _anchor(anchors, custody.anchor)
+        _authority(
+            authorities,
+            custody.authority,
+            AuthorityCapability.CUSTODY,
+            custody.available_at,
+        )
+        and _registry_active(authorities, custody.available_at)
+        and _authority(
+            authorities, custody.authority, AuthorityCapability.CUSTODY, decision.decided_at
+        )
+        and _authority(authorities, custody.authority, AuthorityCapability.CUSTODY, verifier_time)
+        and _anchor(anchors, custody.anchor, custody.available_at)
+        and _anchor(anchors, custody.anchor, artifact.retrieved_at)
+        and _anchor(anchors, custody.anchor, decision.decided_at)
+        and _anchor(anchors, custody.anchor, verifier_time)
         and custody.anchor == request.anchor
         and artifact.request_hash == request_hash
         and artifact.canonical_source_id == request.canonical_source_id
@@ -759,15 +811,37 @@ def verify_contract_admission(
             request.scope_id,
             request.as_of,
         )
-        and custody.available_at <= artifact.retrieved_at <= verifier_time
+        and request.requested_at <= artifact.retrieved_at
+        and custody.effective_at <= custody.available_at
+        and custody.available_at
+        <= artifact.retrieved_at
+        <= decision.decided_at
+        <= verifier_time
     )
     if not custody_ok:
         return _result(request.gate, stages)
     _stage(stages, AdmissionStage.ARTIFACT_CUSTODY_VERIFIED, custody.custody_hash)
 
     registry_ok = (
-        _authority(authorities, reviewers.authority, AuthorityCapability.REVIEWERS, verifier_time)
-        and _anchor(anchors, reviewers.anchor)
+        _authority(
+            authorities,
+            reviewers.authority,
+            AuthorityCapability.REVIEWERS,
+            reviewers.valid_from,
+        )
+        and _registry_active(authorities, reviewers.valid_from)
+        and _anchor(anchors, reviewers.anchor, reviewers.valid_from)
+        and _authority(
+            authorities,
+            reviewers.authority,
+            AuthorityCapability.REVIEWERS,
+            decision.decided_at,
+        )
+        and _authority(
+            authorities, reviewers.authority, AuthorityCapability.REVIEWERS, verifier_time
+        )
+        and _anchor(anchors, reviewers.anchor, decision.decided_at)
+        and _anchor(anchors, reviewers.anchor, verifier_time)
         and reviewers.anchor in candidate.required_anchors
         and _active(
             reviewers.valid_from, reviewers.valid_until, reviewers.revoked_at, decision.decided_at
@@ -827,7 +901,14 @@ def verify_contract_admission(
         return _result(request.gate, stages)
     _stage(stages, AdmissionStage.MAKER_CHECKER_VERIFIED, decision.decision_hash)
 
-    auditor = (
+    auditor_then = (
+        None
+        if audit is None
+        else _actor(
+            reviewers, audit.auditor_claim, ReviewerRole.INDEPENDENT_AUDITOR, audit.audited_at
+        )
+    )
+    auditor_now = (
         None
         if audit is None
         else _actor(reviewers, audit.auditor_claim, ReviewerRole.INDEPENDENT_AUDITOR, verifier_time)
@@ -845,12 +926,31 @@ def verify_contract_admission(
     )
     audit_ok = (
         audit
-        and auditor
-        and auditor not in {maker_now, checker_now}
+        and auditor_then
+        and auditor_now == auditor_then
+        and auditor_now not in {maker_now, checker_now}
         and audit.verdict == "APPROVE"
         and decision.decided_at <= audit.audited_at <= verifier_time
         and audit.verifier_time == verifier_time
         and audit.policy_version == PHASE7F_CONTRACT_VERSION
+        and audit.temporal_policy_version == PHASE7F_TEMPORAL_POLICY_VERSION
+        and audit.anchor == request.anchor
+        and _registry_active(authorities, audit.audited_at)
+        and _authority(
+            authorities, audit.authority, AuthorityCapability.AUDIT, audit.audited_at
+        )
+        and _authority(authorities, audit.authority, AuthorityCapability.AUDIT, verifier_time)
+        and _authority(
+            authorities,
+            reviewers.authority,
+            AuthorityCapability.REVIEWERS,
+            audit.audited_at,
+        )
+        and _anchor(anchors, audit.anchor, audit.audited_at)
+        and _anchor(anchors, audit.anchor, verifier_time)
+        and _active(
+            reviewers.valid_from, reviewers.valid_until, reviewers.revoked_at, audit.audited_at
+        )
         and audit.snapshot_hash == snapshot
     )
     if not audit_ok:
