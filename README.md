@@ -2,9 +2,11 @@
 
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
-Phases 6 and 7A/7B/7C/7D/7E are integrated. Phase 7E completed independent re-audit and was squash
-merged as PR #24. **Phase 7F — External Trust Boundary Architecture** is proposed in draft form as
-a contract-test-only boundary in
+Phases 6 and 7A/7B/7C/7D/7E/7F are integrated; Phase 7F was squash merged as PR #25.
+**Phase 7G — Governed External Provisioning Foundation** is proposed in draft form as a
+contract-test-only boundary in
+[`docs/adr/0002-phase7g-governed-external-provisioning.md`](docs/adr/0002-phase7g-governed-external-provisioning.md).
+It builds on the Phase 7F architecture in
 [`docs/adr/0001-phase7f-external-trust-boundary.md`](docs/adr/0001-phase7f-external-trust-boundary.md).
 It implements only synthetic, governed contract mechanics. Its typed authority registry,
 trust-anchor registry, policy, scope, reviewer registry, custody record and independent audit can
@@ -16,14 +18,17 @@ primitive snapshots and every semantic hash is recomputed. The versioned
 retrieval before maker-checker decision, decision before audit, and audit no later than verifier
 time. Authorities, anchors and reviewer identities are checked at their historical use time and
 again at verifier time, with no grandfathering. Equality is allowed only at the documented causal
-boundaries. Provider selection and all ten real-data gates remain `OPEN_EXTERNAL`.
+boundaries. Phase 7G selection is explicitly neither approval nor admission. External authority
+and object-lock verification remain unprovisioned, and all ten real-data gates remain
+`OPEN_EXTERNAL`.
 
 ## Current stage
 
-Phase 6's research-only QVM scoring engine and the Phase 7A–7E contractual foundations are merged.
-Phase 7E formalizes the evidence required before any future real-provider readiness review. Draft
-Phase 7F models the contract seam needed before authentic evidence could later be resolved or
-reviewed. Admission mechanics complete only when a canonical independent auditor—distinct from
+Phase 6's research-only QVM scoring engine and the Phase 7A–7F contractual foundations are merged.
+Phase 7E formalizes evidence requirements and Phase 7F models the synthetic trust seam. Draft
+Phase 7G adds governed provider/dataset selection and external-provisioning candidate contracts,
+without approval, admission or REAL verification. Phase 7F admission mechanics complete only when
+a canonical independent auditor—distinct from
 maker and checker and valid at audit and verifier time—approves a hash of the complete revalidated
 snapshot, including chronology, verifier time and temporal-policy version. Reviewer aliases use
 Unicode NFKC, whitespace folding and casefold collision detection; this is not universal homoglyph
