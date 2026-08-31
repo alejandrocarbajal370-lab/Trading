@@ -20,7 +20,11 @@ time. Authorities, anchors and reviewer identities are checked at their historic
 again at verifier time, with no grandfathering. Equality is allowed only at the documented causal
 boundaries. Phase 7G selection is explicitly neither approval nor admission. External authority
 and object-lock verification remain unprovisioned, and all ten real-data gates remain
-`OPEN_EXTERNAL`.
+`OPEN_EXTERNAL`. Phase 7G enforces its own versioned selection-to-evaluation chronology.
+Gate-specific envelopes, custody receipts and candidates are matched by gate identity, not
+collection position; structured credential capabilities and the complete contractual state chain
+are revalidated by the aggregate. Hash agreement remains internal consistency, never WORM or
+trust.
 
 ## Current stage
 

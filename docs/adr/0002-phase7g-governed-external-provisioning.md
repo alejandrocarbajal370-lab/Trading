@@ -10,29 +10,45 @@ fail-closed contract layer. It distinguishes selection, provisioning, external v
 gate closure; none implies another.
 
 A selection record binds provider, dataset, version, scope, temporal validity, legal/licensing
-state and a maker-checker decision. Selection is always `NOT_APPROVED` and `NOT_ADMITTED` here.
+state and a maker-checker decision. The versioned `phase7g-temporal-causality-v1` policy requires
+`valid_from ≤ selected_at ≤ provisioning ≤ retrieval ≤ custody receipt ≤ observation ≤ evidence
+pending ≤ verifier_time < expiry`. Selection and declared legal/licensing windows must be valid at
+historical use and verifier time; retroactive legitimation and expiry at the verifier boundary are
+rejected. Selection is always `NOT_APPROVED` and `NOT_ADMITTED` here.
 Commercial and contract metadata are declarations. `EXTERNALLY_VERIFIED` legal state is rejected.
 
-Credentials are indirect environment references or secret-manager handles only. No value is stored
-or logged. Artifact envelopes remain `CONTRACT_TEST_ONLY` and bind source identity, retrieval time,
-artifact digest, provenance, custody and credential-reference identity. There is no callable or
-duck-typed resolver and no fixture-to-REAL promotion.
+Credentials are structured capabilities only: provider/dataset/scope/purpose/adapter plus a
+restricted secret-store namespace and opaque `ref_` identifier. The aggregate receives and
+revalidates the records themselves; an ID without an exact record is rejected. The schema has no
+field capable of accepting free-form secret material, and the opaque locator is redacted from
+`repr`. Artifact envelopes remain `CONTRACT_TEST_ONLY` and bind an explicit gate, source identity,
+retrieval time, artifact digest, provenance, concrete custody receipt ID and credential identity.
+There is no callable or duck-typed resolver and no fixture-to-REAL promotion.
 
 External authorities remain `NOT_PROVISIONED`. Fingerprints, validity and revocation metadata are
 reserved for a later integration backed by real keys/certificates and an independently provisioned
 verifier. Self-declaration is rejected. Object-lock receipts distinguish declarations from proof:
-bucket/object/version, retention and legal-hold declarations plus a hash do not prove WORM.
+bucket/object/version, retention and legal-hold declarations plus a hash do not prove WORM. Each
+receipt binds gate, provider/dataset/version/scope, exact artifact digest and receipt time. Its ID
+must resolve from the envelope to that exact revalidated receipt.
 
 Each canonical Phase 7E gate receives exactly one bound evidence candidate. Candidates bind the
-selection, artifact, authority foundation, custody receipt, policy and validity window. Revalidation
-rejects stale/replayed data and provider, dataset, version, scope, gate or artifact swaps. A
+selection, gate, source, provenance, credential, artifact, authority foundation, custody receipt,
+policy and validity window. Collections are resolved by canonical gate identity rather than list
+position. Revalidation rejects stale/replayed data and fully re-sealed provider, dataset, version,
+scope, gate, source, provenance, custody or artifact swaps. A
 candidate can only be `EXTERNAL_EVIDENCE_PENDING`; every official gate remains `OPEN_EXTERNAL`.
 
 ## State machine
 
-The vocabulary is `UNSELECTED → SELECTED → PROVISIONING_PENDING → PROVISIONED_CONTRACT_ONLY →
-EXTERNAL_EVIDENCE_PENDING`. This phase never exposes `REAL_APPROVED`. Later transitions require a
-separately authorized, independently provisioned external verifier.
+The implemented contractual chain is `UNSELECTED → SELECTED → PROVISIONING_PENDING →
+PROVISIONED_CONTRACT_ONLY → EXTERNAL_EVIDENCE_PENDING`. Each adjacent transition contains
+previous/current state, causal time, selection hash and its own semantic hash. The aggregate
+reconstructs all records, requires the complete ordered chain and derives the terminal state;
+skips, reversals and caller-authored terminal states fail. `PROVISIONED_CONTRACT_ONLY` and
+`EXTERNAL_EVIDENCE_PENDING` never imply external verification, REAL admission or gate closure.
+This phase never exposes `REAL_APPROVED`. Later transitions require a separately authorized,
+independently provisioned external verifier.
 
 ## Permanent safety state
 

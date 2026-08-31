@@ -1,5 +1,4 @@
 """Phase 7G governed external-provisioning foundation; never REAL admission."""
-
 from __future__ import annotations
 
 import datetime as dt
@@ -12,9 +11,12 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 
-PHASE7G_CONTRACT_VERSION = "phase7g-provisioning-foundation-v1"
+PHASE7G_CONTRACT_VERSION = "phase7g-provisioning-foundation-v2"
+TEMPORAL_POLICY_VERSION = "phase7g-temporal-causality-v1"
 SHA256 = r"^[0-9a-f]{64}$"
 OID = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
+NAMESPACE = r"^[a-z][a-z0-9-]{2,31}(?:/[a-z][a-z0-9-]{2,31})*$"
+OPAQUE_HANDLE = r"^ref_[A-Za-z0-9_-]{16,96}$"
 
 
 class Phase7GContractError(ValueError):
@@ -45,16 +47,22 @@ class LegalState(StrEnum):
 
 
 class CredentialReference(ContractModel):
-    version: Literal["phase7g-credential-reference-v1"] = "phase7g-credential-reference-v1"
+    """A capability locator whose grammar cannot represent credential material."""
+
+    version: Literal["phase7g-credential-reference-v2"] = "phase7g-credential-reference-v2"
     reference_id: str = Field(pattern=OID)
-    backend: Literal["ENV_REFERENCE", "SECRET_MANAGER_HANDLE"]
-    handle: str = Field(pattern=r"^[A-Z][A-Z0-9_]{2,127}$|^[a-z0-9][a-z0-9/_:.-]{2,255}$")
+    provider_id: str = Field(pattern=OID)
+    dataset_id: str = Field(pattern=OID)
+    scope_id: str = Field(pattern=OID)
+    purpose: Literal["CONTRACT_ARTIFACT_RETRIEVAL"] = "CONTRACT_ARTIFACT_RETRIEVAL"
+    adapter_id: str = Field(pattern=OID)
+    secret_store_namespace: str = Field(pattern=NAMESPACE)
+    opaque_reference_id: str = Field(pattern=OPAQUE_HANDLE, repr=False)
+    reference_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
-    def reject_values(self):
-        lowered = self.handle.casefold()
-        if any(x in lowered for x in ("bearer ", "api_key=", "password=", "secret=")):
-            raise ValueError("credential values are forbidden")
+    def check(self):
+        _hash(self, "reference_hash")
         return self
 
 
@@ -78,7 +86,8 @@ class MakerCheckerDecision(ContractModel):
 
 
 class ProviderDatasetSelection(ContractModel):
-    version: Literal["phase7g-selection-v1"] = "phase7g-selection-v1"
+    version: Literal["phase7g-selection-v2"] = "phase7g-selection-v2"
+    temporal_policy_version: Literal["phase7g-temporal-causality-v1"] = TEMPORAL_POLICY_VERSION
     provider_id: str = Field(pattern=OID)
     dataset_id: str = Field(pattern=OID)
     dataset_version: str = Field(pattern=OID)
@@ -90,18 +99,29 @@ class ProviderDatasetSelection(ContractModel):
     license_artifact_reference: str | None = Field(default=None, pattern=OID)
     commercial_terms_declaration: str | None = None
     valid_from: dt.datetime
+    selected_at: dt.datetime
     valid_until: dt.datetime | None = None
+    legal_effective_from: dt.datetime
+    legal_effective_until: dt.datetime | None = None
     decision: MakerCheckerDecision
     selection_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def check(self):
-        _aware(self.valid_from, "valid_from")
-        if self.valid_until:
-            _aware(self.valid_until, "valid_until")
-            if self.valid_until <= self.valid_from:
-                raise ValueError("invalid selection window")
-        if self.decision.decision != "SELECT" or self.decision.checked_at > self.valid_from:
+        for label in ("valid_from", "selected_at", "legal_effective_from"):
+            _aware(getattr(self, label), label)
+        for label in ("valid_until", "legal_effective_until"):
+            if value := getattr(self, label):
+                _aware(value, label)
+        if self.valid_until and self.valid_until <= self.valid_from:
+            raise ValueError("invalid selection window")
+        if self.legal_effective_until and self.legal_effective_until <= self.legal_effective_from:
+            raise ValueError("invalid legal window")
+        if self.valid_from > self.selected_at:
+            raise ValueError("selection predates its valid_from")
+        if self.valid_until and self.selected_at >= self.valid_until:
+            raise ValueError("selection occurred outside its validity window")
+        if self.decision.decision != "SELECT" or self.decision.checked_at > self.selected_at:
             raise ValueError("selection lacks prior maker-checker authorization")
         if self.legal_state is LegalState.EXTERNALLY_VERIFIED:
             raise ValueError("external legal verification is unavailable")
@@ -117,18 +137,14 @@ class ExternalAuthorityProvisioning(ContractModel):
     valid_from: dt.datetime | None = None
     valid_until: dt.datetime | None = None
     revocation_evidence_id: str | None = Field(default=None, pattern=OID)
-    state: Literal[ExternalVerificationState.NOT_PROVISIONED] = (
-        ExternalVerificationState.NOT_PROVISIONED
-    )
+    state: Literal[ExternalVerificationState.NOT_PROVISIONED] = ExternalVerificationState.NOT_PROVISIONED
     self_declared: Literal[False] = False
     provisioning_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def check(self):
-        if self.valid_from:
-            _aware(self.valid_from, "authority valid_from")
-        if self.valid_until:
-            _aware(self.valid_until, "authority valid_until")
+        if self.valid_from or self.valid_until:
+            raise ValueError("unprovisioned authority cannot claim an effective window")
         if self.key_or_cert_fingerprint or self.revocation_evidence_id:
             raise ValueError("unprovisioned authority cannot claim verification metadata")
         _hash(self, "provisioning_hash")
@@ -136,22 +152,28 @@ class ExternalAuthorityProvisioning(ContractModel):
 
 
 class ObjectLockEvidenceReceipt(ContractModel):
-    version: Literal["phase7g-object-lock-receipt-v1"] = "phase7g-object-lock-receipt-v1"
+    version: Literal["phase7g-object-lock-receipt-v2"] = "phase7g-object-lock-receipt-v2"
+    receipt_id: str = Field(pattern=OID)
+    gate: EvidenceGate
     provider_id: str = Field(pattern=OID)
+    dataset_id: str = Field(pattern=OID)
+    dataset_version: str = Field(pattern=OID)
+    scope_id: str = Field(pattern=OID)
     bucket_id: str = Field(pattern=OID)
     object_id: str = Field(pattern=OID)
     object_version: str = Field(pattern=OID)
+    artifact_digest: str = Field(pattern=SHA256)
+    recorded_at: dt.datetime
     retention_mode: Literal["DECLARED_ONLY", "NOT_CONFIGURED"]
     retain_until: dt.datetime | None = None
     legal_hold: Literal["DECLARED_ONLY", "NOT_CONFIGURED"]
     provider_evidence_id: str | None = Field(default=None, pattern=OID)
-    verification_state: Literal[ExternalVerificationState.OPEN_EXTERNAL] = (
-        ExternalVerificationState.OPEN_EXTERNAL
-    )
+    verification_state: Literal[ExternalVerificationState.OPEN_EXTERNAL] = ExternalVerificationState.OPEN_EXTERNAL
     receipt_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def check(self):
+        _aware(self.recorded_at, "recorded_at")
         if self.retain_until:
             _aware(self.retain_until, "retain_until")
         if self.provider_evidence_id:
@@ -161,13 +183,15 @@ class ObjectLockEvidenceReceipt(ContractModel):
 
 
 class ProvisionedArtifactEnvelope(ContractModel):
-    version: Literal["phase7g-artifact-envelope-v1"] = "phase7g-artifact-envelope-v1"
+    version: Literal["phase7g-artifact-envelope-v2"] = "phase7g-artifact-envelope-v2"
     trust_domain: Literal["CONTRACT_TEST_ONLY"] = "CONTRACT_TEST_ONLY"
+    gate: EvidenceGate
     source_identity: str = Field(pattern=OID)
     provider_id: str = Field(pattern=OID)
     dataset_id: str = Field(pattern=OID)
     dataset_version: str = Field(pattern=OID)
     scope_id: str = Field(pattern=OID)
+    adapter_id: str = Field(pattern=OID)
     retrieved_at: dt.datetime
     artifact_digest: str = Field(pattern=SHA256)
     provenance_reference: str = Field(pattern=OID)
@@ -183,12 +207,15 @@ class ProvisionedArtifactEnvelope(ContractModel):
 
 
 class GateEvidenceCandidate(ContractModel):
-    version: Literal["phase7g-gate-candidate-v1"] = "phase7g-gate-candidate-v1"
+    version: Literal["phase7g-gate-candidate-v2"] = "phase7g-gate-candidate-v2"
     gate: EvidenceGate
     provider_id: str = Field(pattern=OID)
     dataset_id: str = Field(pattern=OID)
     dataset_version: str = Field(pattern=OID)
     scope_id: str = Field(pattern=OID)
+    source_identity: str = Field(pattern=OID)
+    provenance_reference: str = Field(pattern=OID)
+    credential_reference_id: str = Field(pattern=OID)
     selection_hash: str = Field(pattern=SHA256)
     artifact_digest: str = Field(pattern=SHA256)
     authority_provisioning_hash: str = Field(pattern=SHA256)
@@ -210,9 +237,27 @@ class GateEvidenceCandidate(ContractModel):
         return self
 
 
+class ProvisioningTransition(ContractModel):
+    version: Literal["phase7g-transition-v1"] = "phase7g-transition-v1"
+    previous_state: SelectionState
+    current_state: SelectionState
+    occurred_at: dt.datetime
+    selection_hash: str = Field(pattern=SHA256)
+    transition_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        _aware(self.occurred_at, "occurred_at")
+        allowed = dict(zip(tuple(SelectionState)[:-1], tuple(SelectionState)[1:], strict=True))
+        if allowed.get(self.previous_state) is not self.current_state:
+            raise ValueError("invalid provisioning transition")
+        _hash(self, "transition_hash")
+        return self
+
+
 class Phase7GFoundationResult(ContractModel):
-    contract_version: Literal["phase7g-provisioning-foundation-v1"] = PHASE7G_CONTRACT_VERSION
-    state: Literal["EXTERNAL_EVIDENCE_PENDING"] = "EXTERNAL_EVIDENCE_PENDING"
+    contract_version: Literal["phase7g-provisioning-foundation-v2"] = PHASE7G_CONTRACT_VERSION
+    state: Literal[SelectionState.EXTERNAL_EVIDENCE_PENDING] = SelectionState.EXTERNAL_EVIDENCE_PENDING
     candidates: tuple[GateEvidenceCandidate, ...]
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
     real_route: Literal["QVM_NOT_READY"] = "QVM_NOT_READY"
@@ -261,64 +306,98 @@ def _revalidate(expected: type[T], value: Any, label: str) -> T:
         raise Phase7GContractError(f"invalid {label}") from exc
 
 
-def assess_provisioning_foundation(
-    *,
-    selection: Any,
-    authority: Any,
-    custody: Any,
-    envelopes: Any,
-    candidates: Any,
-    verifier_time: dt.datetime,
-) -> Phase7GFoundationResult:
-    """Revalidate contract-only candidates without providing any REAL promotion path."""
+def _by_gate(items: tuple[T, ...], label: str) -> dict[EvidenceGate, T]:
+    mapped: dict[EvidenceGate, T] = {}
+    for item in items:
+        gate = item.gate
+        if gate in mapped:
+            raise Phase7GContractError(f"duplicate {label} gate")
+        mapped[gate] = item
+    if set(mapped) != set(EvidenceGate):
+        raise Phase7GContractError(f"{label} must cover ten canonical gates")
+    return mapped
+
+
+def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: Any,
+                                   credentials: Any, envelopes: Any, candidates: Any,
+                                   transitions: Any, verifier_time: dt.datetime) -> Phase7GFoundationResult:
+    """Derive contract-only state after reconstructing every caller-controlled input."""
     _aware(verifier_time, "verifier_time")
     selected = _revalidate(ProviderDatasetSelection, selection, "selection")
     authority_record = _revalidate(ExternalAuthorityProvisioning, authority, "authority")
-    custody_record = _revalidate(ObjectLockEvidenceReceipt, custody, "custody")
-    envelope_items = tuple(
-        _revalidate(ProvisionedArtifactEnvelope, x, "envelope") for x in envelopes
-    )
+    custody_items = tuple(_revalidate(ObjectLockEvidenceReceipt, x, "custody receipt") for x in custody)
+    credential_items = tuple(_revalidate(CredentialReference, x, "credential reference") for x in credentials)
+    envelope_items = tuple(_revalidate(ProvisionedArtifactEnvelope, x, "envelope") for x in envelopes)
     candidate_items = tuple(_revalidate(GateEvidenceCandidate, x, "candidate") for x in candidates)
-    if tuple(x.gate for x in candidate_items) != tuple(EvidenceGate):
-        raise Phase7GContractError("candidates must cover ten canonical gates")
-    if len(envelope_items) != len(EvidenceGate):
-        raise Phase7GContractError("one envelope per canonical gate is required")
-    for envelope, candidate in zip(envelope_items, candidate_items, strict=True):
-        selected_identity = (
-            selected.provider_id,
-            selected.dataset_id,
-            selected.dataset_version,
-            selected.scope_id,
-        )
-        if (
-            envelope.provider_id,
-            envelope.dataset_id,
-            envelope.dataset_version,
-            envelope.scope_id,
-        ) != selected_identity or (
-            candidate.provider_id,
-            candidate.dataset_id,
-            candidate.dataset_version,
-            candidate.scope_id,
-        ) != selected_identity:
+    transition_items = tuple(_revalidate(ProvisioningTransition, x, "transition") for x in transitions)
+
+    if not (selected.valid_from <= selected.selected_at <= verifier_time):
+        raise Phase7GContractError("selection temporal causality violation")
+    if selected.valid_until and verifier_time >= selected.valid_until:
+        raise Phase7GContractError("selection expired at verifier_time")
+    if selected.legal_effective_from > selected.selected_at:
+        raise Phase7GContractError("retroactive legal/licensing legitimation")
+    if selected.legal_effective_until and verifier_time >= selected.legal_effective_until:
+        raise Phase7GContractError("legal/licensing window expired at verifier_time")
+
+    expected_states = tuple(SelectionState)
+    if len(transition_items) != len(expected_states) - 1:
+        raise Phase7GContractError("incomplete provisioning transition chain")
+    for index, transition in enumerate(transition_items):
+        if (transition.previous_state is not expected_states[index]
+                or transition.current_state is not expected_states[index + 1]
+                or transition.selection_hash != selected.selection_hash
+                or transition.occurred_at > verifier_time
+                or (index and transition.occurred_at < transition_items[index - 1].occurred_at)):
+            raise Phase7GContractError("invalid provisioning transition chain")
+    if transition_items[0].occurred_at != selected.selected_at:
+        raise Phase7GContractError("SELECTED transition does not match selection")
+
+    custody_by_gate = _by_gate(custody_items, "custody receipts")
+    envelopes_by_gate = _by_gate(envelope_items, "envelopes")
+    candidates_by_gate = _by_gate(candidate_items, "candidates")
+    credentials_by_id = {item.reference_id: item for item in credential_items}
+    if len(credentials_by_id) != len(credential_items):
+        raise Phase7GContractError("duplicate credential reference")
+    selected_identity = (selected.provider_id, selected.dataset_id, selected.dataset_version, selected.scope_id)
+    provisioned_at = transition_items[2].occurred_at
+    evidence_pending_at = transition_items[3].occurred_at
+    for gate in EvidenceGate:
+        envelope, candidate, receipt = envelopes_by_gate[gate], candidates_by_gate[gate], custody_by_gate[gate]
+        credential = credentials_by_id.get(envelope.credential_reference_id)
+        envelope_identity = (envelope.provider_id, envelope.dataset_id, envelope.dataset_version, envelope.scope_id)
+        candidate_identity = (candidate.provider_id, candidate.dataset_id, candidate.dataset_version, candidate.scope_id)
+        receipt_identity = (receipt.provider_id, receipt.dataset_id, receipt.dataset_version, receipt.scope_id)
+        if envelope_identity != selected_identity or candidate_identity != selected_identity:
             raise Phase7GContractError("provider/dataset/version/scope binding mismatch")
-        if (
-            candidate.selection_hash != selected.selection_hash
-            or candidate.artifact_digest != envelope.artifact_digest
-            or candidate.authority_provisioning_hash != authority_record.provisioning_hash
-            or candidate.custody_receipt_hash != custody_record.receipt_hash
-            or envelope.retrieved_at > verifier_time
-            or candidate.observed_at > verifier_time
-            or candidate.expires_at <= verifier_time
-        ):
-            raise Phase7GContractError("stale, future, or swapped evidence candidate")
-    return Phase7GFoundationResult(
-        candidates=candidate_items,
-        gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
-    )
+        if receipt_identity != selected_identity:
+            raise Phase7GContractError("custody identity binding mismatch")
+        if credential is None:
+            raise Phase7GContractError("credential reference does not resolve")
+        if (credential.provider_id, credential.dataset_id, credential.scope_id, credential.adapter_id) != (
+                selected.provider_id, selected.dataset_id, selected.scope_id, envelope.adapter_id):
+            raise Phase7GContractError("credential capability binding mismatch")
+        if (envelope.custody_reference != receipt.receipt_id
+                or receipt.artifact_digest != envelope.artifact_digest
+                or candidate.custody_receipt_hash != receipt.receipt_hash
+                or candidate.selection_hash != selected.selection_hash
+                or candidate.artifact_digest != envelope.artifact_digest
+                or candidate.authority_provisioning_hash != authority_record.provisioning_hash
+                or candidate.source_identity != envelope.source_identity
+                or candidate.provenance_reference != envelope.provenance_reference
+                or candidate.credential_reference_id != envelope.credential_reference_id):
+            raise Phase7GContractError("gate artifact/custody/provenance binding mismatch")
+        if not (selected.valid_from <= selected.selected_at <= provisioned_at
+                <= envelope.retrieved_at <= receipt.recorded_at <= candidate.observed_at
+                <= evidence_pending_at <= verifier_time < candidate.expires_at):
+            raise Phase7GContractError("temporal causality violation")
+        if envelope.retrieved_at < selected.legal_effective_from:
+            raise Phase7GContractError("artifact predates legal/licensing effectiveness")
+
+    canonical_candidates = tuple(candidates_by_gate[gate] for gate in EvidenceGate)
+    return Phase7GFoundationResult(candidates=canonical_candidates,
+        gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate))
 
 
 def real_external_verification_unavailable(*_args: Any, **_kwargs: Any) -> None:
-    raise Phase7GContractError(
-        "REAL verification is unavailable: external trust is not provisioned"
-    )
+    raise Phase7GContractError("REAL verification is unavailable: external trust is not provisioned")
