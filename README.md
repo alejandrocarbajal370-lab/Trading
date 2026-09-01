@@ -34,6 +34,14 @@ revalidated selection, envelopes and canonical manifest. Reversible locators and
 remain outside auditable models and hashes. The digest does not prove credential validity or
 authentication. Authority remains `NOT_PROVISIONED`; 10/10 gates remain `OPEN_EXTERNAL`.
 
+The next repository-defined block is documented without an invented phase number as the
+**External Evidence Verification Acceptance Foundation** in
+[`docs/adr/0003-external-evidence-verification-acceptance.md`](docs/adr/0003-external-evidence-verification-acceptance.md).
+It separates observed receipts, technically checked but untrusted candidates, and official gate
+state; adds adapter identity, independent authority snapshots, signature/fingerprint hooks,
+replay/staleness controls and maker-checker binding; and still cannot close a gate. It remains
+`CONTRACT_TEST_ONLY`: authority is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`.
+
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7F contractual foundations are merged.
