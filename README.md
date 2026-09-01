@@ -25,6 +25,13 @@ Gate-specific envelopes, custody receipts and candidates are matched by gate ide
 collection position; structured credential capabilities and the complete contractual state chain
 are revalidated by the aggregate. Hash agreement remains internal consistency, never WORM or
 trust.
+Phase 7G uses a code-owned, versioned contract-test manifest to bind every gate to its expected
+source/provenance/evidence policy and exact custody bucket/object/version/digest. This prevents
+fully re-sealed cross-gate package swaps but does not verify external custody or WORM. Credential
+DTOs contain only a non-reversible SHA-256 identity and non-sensitive binding metadata; reversible
+locators and secret material remain outside auditable models and hashes. The digest does not prove
+credential validity or authentication. Authority remains `NOT_PROVISIONED`; 10/10 gates remain
+`OPEN_EXTERNAL`.
 
 ## Current stage
 

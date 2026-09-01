@@ -4,12 +4,15 @@ import json
 import pytest
 from pydantic import ValidationError
 
+from governance import phase7g
 from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 from governance.phase7g import (
     CredentialReference,
     ExternalAuthorityProvisioning,
     GateEvidenceCandidate,
+    GateEvidenceManifest,
+    GateProvisioningExpectation,
     LegalState,
     MakerCheckerDecision,
     ObjectLockEvidenceReceipt,
@@ -19,6 +22,7 @@ from governance.phase7g import (
     ProvisioningTransition,
     SelectionState,
     assess_provisioning_foundation,
+    canonical_gate_evidence_manifest,
     real_external_verification_unavailable,
 )
 
@@ -57,10 +61,10 @@ def foundation():
         legal_effective_until=FUTURE, decision=decision)
     authority = seal(ExternalAuthorityProvisioning, "provisioning_hash",
         authority_id="authority.pending", mechanism_version="verification.v1")
-    credential = seal(CredentialReference, "reference_hash", reference_id="credential.provider",
+    credential = seal(CredentialReference, "reference_hash",
+        credential_reference_digest=typed_hash({"credential": "sanitized-outside-contract"}),
         provider_id=selection.provider_id, dataset_id=selection.dataset_id,
-        scope_id=selection.scope_id, adapter_id="adapter.contract",
-        secret_store_namespace="trading/provider", opaque_reference_id="ref_0123456789abcdef")
+        scope_id=selection.scope_id, adapter_id="phase7g.adapter.contract")
     transitions = []
     times = (SELECTED, PROVISIONING, PROVISIONED, PENDING)
     states = tuple(SelectionState)
@@ -69,29 +73,34 @@ def foundation():
             previous_state=states[index], current_state=states[index + 1], occurred_at=when,
             selection_hash=selection.selection_hash))
     receipts, envelopes, candidates = [], [], []
-    for gate in EvidenceGate:
+    manifest = canonical_gate_evidence_manifest()
+    for expectation in manifest.expectations:
+        gate = expectation.gate
         slug = gate.value.casefold()
-        digest = typed_hash({"gate": gate.value, "source": f"source.{slug}"})
+        digest = expectation.expected_artifact_digest
         receipt = seal(ObjectLockEvidenceReceipt, "receipt_hash", receipt_id=f"receipt.{slug}",
             gate=gate, provider_id=selection.provider_id, dataset_id=selection.dataset_id,
             dataset_version=selection.dataset_version, scope_id=selection.scope_id,
-            bucket_id="bucket.candidate", object_id=f"object.{slug}", object_version="object.v1",
+            bucket_id=expectation.custody_bucket_id, object_id=expectation.custody_object_id,
+            object_version=expectation.custody_object_version,
             artifact_digest=digest, recorded_at=RECORDED, retention_mode="DECLARED_ONLY",
             retain_until=FUTURE, legal_hold="NOT_CONFIGURED")
         envelope = seal(ProvisionedArtifactEnvelope, "envelope_hash", gate=gate,
-            source_identity=f"source.{slug}", provider_id=selection.provider_id,
+            source_identity=expectation.source_identity, provider_id=selection.provider_id,
             dataset_id=selection.dataset_id, dataset_version=selection.dataset_version,
             scope_id=selection.scope_id, adapter_id=credential.adapter_id, retrieved_at=RETRIEVED,
-            artifact_digest=digest, provenance_reference=f"provenance.{slug}",
-            custody_reference=receipt.receipt_id, credential_reference_id=credential.reference_id)
+            artifact_digest=digest, provenance_reference=expectation.provenance_policy_id,
+            custody_reference=receipt.receipt_id,
+            credential_reference_digest=credential.credential_reference_digest)
         candidate = seal(GateEvidenceCandidate, "candidate_hash", gate=gate,
             provider_id=selection.provider_id, dataset_id=selection.dataset_id,
             dataset_version=selection.dataset_version, scope_id=selection.scope_id,
             source_identity=envelope.source_identity,
             provenance_reference=envelope.provenance_reference,
-            credential_reference_id=credential.reference_id, selection_hash=selection.selection_hash,
+            credential_reference_digest=credential.credential_reference_digest,
+            selection_hash=selection.selection_hash,
             artifact_digest=digest, authority_provisioning_hash=authority.provisioning_hash,
-            custody_receipt_hash=receipt.receipt_hash, policy_id=f"policy.{slug}",
+            custody_receipt_hash=receipt.receipt_hash, policy_id=expectation.evidence_policy_id,
             observed_at=OBSERVED, expires_at=FUTURE)
         receipts.append(receipt); envelopes.append(envelope); candidates.append(candidate)
     return (selection, authority, tuple(receipts), (credential,), tuple(envelopes),
@@ -126,20 +135,32 @@ def test_selection_cannot_claim_real_authority(field, value):
     with pytest.raises(ValidationError): ProviderDatasetSelection.model_validate(values)
 
 
-@pytest.mark.parametrize("value", ["sk-live-ThisLooksLikeAKey123", "ghp_abcdefghijk1234567890",
-    "eyJhbGciOiJIUzI1NiJ9.payload.signature", "hunter2-correct-horse-battery-staple"])
-def test_secret_looking_material_is_structurally_rejected(value):
+@pytest.mark.parametrize("value", [
+    "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+    "dXNlcjpwYXNzd29yZA==",
+    "0123456789abcdef" * 4,
+    "sk_live_0123456789abcdef",
+    "user:password",
+    "https://store.invalid/ref?token=secret",
+    "-----BEGIN PRIVATE KEY-----payload-----END PRIVATE KEY-----",
+])
+def test_secret_or_locator_material_cannot_occupy_credential_identity(value):
     values = foundation()[3][0].model_dump(mode="python")
-    values["opaque_reference_id"] = value; values["reference_hash"] = "0" * 64
+    values["credential_reference_digest"] = value
+    values["reference_hash"] = "0" * 64
     with pytest.raises(ValidationError): CredentialReference.model_validate(values)
 
 
-def test_credential_repr_hides_opaque_handle_but_dump_is_only_a_handle():
+def test_credential_dto_has_no_reversible_locator_field_or_output():
     credential = foundation()[3][0]
-    assert credential.opaque_reference_id not in repr(credential)
-    assert set(credential.model_dump()) == {"version", "reference_id", "provider_id", "dataset_id",
-        "scope_id", "purpose", "adapter_id", "secret_store_namespace", "opaque_reference_id",
-        "reference_hash"}
+    assert set(credential.model_dump()) == {"version", "credential_reference_digest",
+        "provider_id", "dataset_id", "scope_id", "purpose", "adapter_id", "reference_hash"}
+    serialized = credential.model_dump_json()
+    for forbidden in ("locator", "secret", "handle", "namespace", "password", "sk_live"):
+        assert forbidden not in serialized.casefold()
+    values = credential.model_dump(mode="python")
+    values["locator"] = "user:password"
+    with pytest.raises(ValidationError): CredentialReference.model_validate(values)
 
 
 def test_expired_selection_fully_resealed_fails():
@@ -164,8 +185,9 @@ def test_custody_provider_mismatch_fully_resealed_fails():
 
 def test_arbitrary_credential_id_without_record_fails():
     items = foundation(); envelopes = list(items[4]); candidates = list(items[5])
-    envelopes[0] = reseal(envelopes[0], "envelope_hash", credential_reference_id="credential.arbitrary")
-    candidates[0] = reseal(candidates[0], "candidate_hash", credential_reference_id="credential.arbitrary")
+    arbitrary = "a" * 64
+    envelopes[0] = reseal(envelopes[0], "envelope_hash", credential_reference_digest=arbitrary)
+    candidates[0] = reseal(candidates[0], "candidate_hash", credential_reference_digest=arbitrary)
     with pytest.raises(Phase7GContractError, match="does not resolve"):
         assess(replace(replace(items, 4, tuple(envelopes)), 5, tuple(candidates)))
 
@@ -173,7 +195,7 @@ def test_arbitrary_credential_id_without_record_fails():
 def test_envelope_custody_reference_to_other_receipt_fails():
     items = foundation(); envelopes = list(items[4])
     envelopes[0] = reseal(envelopes[0], "envelope_hash", custody_reference=items[2][1].receipt_id)
-    with pytest.raises(Phase7GContractError, match="custody/provenance"):
+    with pytest.raises(Phase7GContractError, match="manifest"):
         assess(replace(items, 4, tuple(envelopes)))
 
 
@@ -187,8 +209,69 @@ def test_two_gate_fully_resealed_artifact_swap_fails():
         candidates[index] = reseal(candidates[index], "candidate_hash",
             source_identity=other.source_identity, provenance_reference=other.provenance_reference,
             artifact_digest=other.artifact_digest)
-    with pytest.raises(Phase7GContractError, match="custody/provenance"):
+    with pytest.raises(Phase7GContractError, match="manifest"):
         assess(replace(replace(items, 4, tuple(envelopes)), 5, tuple(candidates)))
+
+
+@pytest.mark.parametrize("changes", [
+    {"bucket_id": "bucket.unrelated"},
+    {"object_id": "object.unrelated"},
+    {"object_version": "object.v999"},
+    {"artifact_digest": "a" * 64},
+])
+def test_custody_object_identity_fully_resealed_fails(changes):
+    items = foundation(); receipts = list(items[2]); candidates = list(items[5])
+    receipts[0] = reseal(receipts[0], "receipt_hash", **changes)
+    candidates[0] = reseal(candidates[0], "candidate_hash",
+        custody_receipt_hash=receipts[0].receipt_hash,
+        **({"artifact_digest": changes["artifact_digest"]} if "artifact_digest" in changes else {}))
+    with pytest.raises(Phase7GContractError, match="manifest"):
+        assess(replace(replace(items, 2, tuple(receipts)), 5, tuple(candidates)))
+
+
+def test_complete_cross_gate_packages_fully_resealed_still_fail():
+    items = foundation(); receipts = list(items[2]); envelopes = list(items[4]); candidates = list(items[5])
+    old_receipts, old_envelopes, old_candidates = receipts[:2], envelopes[:2], candidates[:2]
+    for target, source in ((0, 1), (1, 0)):
+        gate = old_receipts[target].gate
+        receipt_id = old_receipts[target].receipt_id
+        receipts[target] = reseal(old_receipts[source], "receipt_hash", gate=gate, receipt_id=receipt_id)
+        envelopes[target] = reseal(old_envelopes[source], "envelope_hash", gate=gate,
+            custody_reference=receipt_id)
+        candidates[target] = reseal(old_candidates[source], "candidate_hash", gate=gate,
+            custody_receipt_hash=receipts[target].receipt_hash)
+    swapped = replace(replace(replace(items, 2, tuple(receipts)), 4, tuple(envelopes)),
+        5, tuple(candidates))
+    with pytest.raises(Phase7GContractError, match="manifest"):
+        assess(swapped)
+
+
+def test_manifest_is_code_owned_and_forged_versions_hashes_fail():
+    manifest = canonical_gate_evidence_manifest()
+    forged_expectation = manifest.expectations[0].model_copy(
+        update={"source_identity": "phase7g.source.forged"})
+    values = manifest.model_dump(mode="python")
+    values["expectations"] = (forged_expectation, *manifest.expectations[1:])
+    with pytest.raises(ValidationError): GateEvidenceManifest.model_validate(values)
+    with pytest.raises(ValidationError): GateEvidenceManifest.model_validate(
+        {**manifest.model_dump(mode="python"), "version": "phase7g-manifest-swapped"})
+    with pytest.raises(TypeError):
+        phase7g.assess_provisioning_foundation(manifest=manifest, selection=None, authority=None,
+            custody=(), credentials=(), envelopes=(), candidates=(), transitions=(),
+            verifier_time=NOW)
+
+
+@pytest.mark.parametrize("forge", ["copy", "construct", "dict", "json"])
+def test_manifest_expectation_primitive_hardening(forge):
+    valid = canonical_gate_evidence_manifest().expectations[0]
+    values = valid.model_dump(mode="python")
+    values["custody_object_version"] = "phase7g.object.version.forged"
+    if forge == "copy": forged = valid.model_copy(update=values)
+    elif forge == "construct": forged = GateProvisioningExpectation.model_construct(**values)
+    elif forge == "json": forged = json.loads(json.dumps(values, default=str))
+    else: forged = values
+    with pytest.raises((ValidationError, Phase7GContractError)):
+        phase7g._revalidate(GateProvisioningExpectation, forged, "manifest expectation")
 
 
 def test_collections_are_order_independent_and_result_is_canonical():
@@ -196,6 +279,22 @@ def test_collections_are_order_independent_and_result_is_canonical():
     reordered = replace(replace(replace(items, 2, tuple(reversed(items[2]))), 4,
         tuple(reversed(items[4]))), 5, tuple(reversed(items[5])))
     assert tuple(x.gate for x in assess(reordered).candidates) == tuple(EvidenceGate)
+
+
+@pytest.mark.parametrize("index", [2, 4, 5])
+def test_duplicate_and_missing_gate_coverage_fail(index):
+    items = foundation(); collection = list(items[index])
+    with pytest.raises(Phase7GContractError, match="duplicate|cover ten"):
+        assess(replace(items, index, tuple(collection[:-1] + [collection[0]])))
+    with pytest.raises(Phase7GContractError, match="cover ten"):
+        assess(replace(items, index, tuple(collection[:-1])))
+
+
+def test_extra_unknown_gate_fails_during_primitive_revalidation():
+    items = foundation(); extra = items[4][0].model_dump(mode="python")
+    extra["gate"] = "UNRECOGNIZED_GATE"
+    with pytest.raises(Phase7GContractError, match="invalid envelope"):
+        assess(replace(items, 4, (*items[4], extra)))
 
 
 def test_state_skip_and_reverse_are_rejected_at_boundary():

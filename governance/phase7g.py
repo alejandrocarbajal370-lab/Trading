@@ -11,12 +11,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 
-PHASE7G_CONTRACT_VERSION = "phase7g-provisioning-foundation-v2"
+PHASE7G_CONTRACT_VERSION = "phase7g-provisioning-foundation-v3"
 TEMPORAL_POLICY_VERSION = "phase7g-temporal-causality-v1"
+GATE_MANIFEST_VERSION = "phase7g-canonical-gate-manifest-v1"
 SHA256 = r"^[0-9a-f]{64}$"
 OID = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
-NAMESPACE = r"^[a-z][a-z0-9-]{2,31}(?:/[a-z][a-z0-9-]{2,31})*$"
-OPAQUE_HANDLE = r"^ref_[A-Za-z0-9_-]{16,96}$"
 
 
 class Phase7GContractError(ValueError):
@@ -47,22 +46,57 @@ class LegalState(StrEnum):
 
 
 class CredentialReference(ContractModel):
-    """A capability locator whose grammar cannot represent credential material."""
+    """Non-reversible credential identity; locators and secrets remain outside this DTO."""
 
-    version: Literal["phase7g-credential-reference-v2"] = "phase7g-credential-reference-v2"
-    reference_id: str = Field(pattern=OID)
+    version: Literal["phase7g-credential-reference-v3"] = "phase7g-credential-reference-v3"
+    credential_reference_digest: str = Field(pattern=SHA256)
     provider_id: str = Field(pattern=OID)
     dataset_id: str = Field(pattern=OID)
     scope_id: str = Field(pattern=OID)
     purpose: Literal["CONTRACT_ARTIFACT_RETRIEVAL"] = "CONTRACT_ARTIFACT_RETRIEVAL"
     adapter_id: str = Field(pattern=OID)
-    secret_store_namespace: str = Field(pattern=NAMESPACE)
-    opaque_reference_id: str = Field(pattern=OPAQUE_HANDLE, repr=False)
     reference_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def check(self):
         _hash(self, "reference_hash")
+        return self
+
+
+class GateProvisioningExpectation(ContractModel):
+    """Code-owned, contract-test-only semantics for one Phase 7E gate."""
+
+    version: Literal["phase7g-gate-expectation-v1"] = "phase7g-gate-expectation-v1"
+    gate: EvidenceGate
+    source_identity: str = Field(pattern=OID)
+    provenance_policy_id: str = Field(pattern=OID)
+    evidence_policy_id: str = Field(pattern=OID)
+    custody_bucket_id: str = Field(pattern=OID)
+    custody_object_id: str = Field(pattern=OID)
+    custody_object_version: str = Field(pattern=OID)
+    expected_artifact_digest: str = Field(pattern=SHA256)
+    adapter_id: str = Field(pattern=OID)
+    expectation_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        _hash(self, "expectation_hash")
+        return self
+
+
+class GateEvidenceManifest(ContractModel):
+    """Canonical manifest. Hash agreement is contract integrity, not external truth."""
+
+    version: Literal["phase7g-canonical-gate-manifest-v1"] = GATE_MANIFEST_VERSION
+    trust_domain: Literal["CONTRACT_TEST_ONLY"] = "CONTRACT_TEST_ONLY"
+    expectations: tuple[GateProvisioningExpectation, ...]
+    manifest_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        if tuple(item.gate for item in self.expectations) != tuple(EvidenceGate):
+            raise ValueError("manifest must cover ten canonical gates in canonical order")
+        _hash(self, "manifest_hash")
         return self
 
 
@@ -183,7 +217,7 @@ class ObjectLockEvidenceReceipt(ContractModel):
 
 
 class ProvisionedArtifactEnvelope(ContractModel):
-    version: Literal["phase7g-artifact-envelope-v2"] = "phase7g-artifact-envelope-v2"
+    version: Literal["phase7g-artifact-envelope-v3"] = "phase7g-artifact-envelope-v3"
     trust_domain: Literal["CONTRACT_TEST_ONLY"] = "CONTRACT_TEST_ONLY"
     gate: EvidenceGate
     source_identity: str = Field(pattern=OID)
@@ -196,7 +230,7 @@ class ProvisionedArtifactEnvelope(ContractModel):
     artifact_digest: str = Field(pattern=SHA256)
     provenance_reference: str = Field(pattern=OID)
     custody_reference: str = Field(pattern=OID)
-    credential_reference_id: str = Field(pattern=OID)
+    credential_reference_digest: str = Field(pattern=SHA256)
     envelope_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
@@ -207,7 +241,7 @@ class ProvisionedArtifactEnvelope(ContractModel):
 
 
 class GateEvidenceCandidate(ContractModel):
-    version: Literal["phase7g-gate-candidate-v2"] = "phase7g-gate-candidate-v2"
+    version: Literal["phase7g-gate-candidate-v3"] = "phase7g-gate-candidate-v3"
     gate: EvidenceGate
     provider_id: str = Field(pattern=OID)
     dataset_id: str = Field(pattern=OID)
@@ -215,7 +249,7 @@ class GateEvidenceCandidate(ContractModel):
     scope_id: str = Field(pattern=OID)
     source_identity: str = Field(pattern=OID)
     provenance_reference: str = Field(pattern=OID)
-    credential_reference_id: str = Field(pattern=OID)
+    credential_reference_digest: str = Field(pattern=SHA256)
     selection_hash: str = Field(pattern=SHA256)
     artifact_digest: str = Field(pattern=SHA256)
     authority_provisioning_hash: str = Field(pattern=SHA256)
@@ -256,7 +290,7 @@ class ProvisioningTransition(ContractModel):
 
 
 class Phase7GFoundationResult(ContractModel):
-    contract_version: Literal["phase7g-provisioning-foundation-v2"] = PHASE7G_CONTRACT_VERSION
+    contract_version: Literal["phase7g-provisioning-foundation-v3"] = PHASE7G_CONTRACT_VERSION
     state: Literal[SelectionState.EXTERNAL_EVIDENCE_PENDING] = SelectionState.EXTERNAL_EVIDENCE_PENDING
     candidates: tuple[GateEvidenceCandidate, ...]
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
@@ -318,6 +352,37 @@ def _by_gate(items: tuple[T, ...], label: str) -> dict[EvidenceGate, T]:
     return mapped
 
 
+def _seal(expected: type[T], hash_field: str, **values: Any) -> T:
+    raw = expected.model_construct(**values, **{hash_field: "0" * 64})
+    values[hash_field] = typed_hash(raw.model_dump(mode="json", exclude={hash_field}, warnings=False))
+    return expected(**values)
+
+
+def canonical_gate_evidence_manifest() -> GateEvidenceManifest:
+    """Build the immutable code-owned Phase 7G contract-test policy."""
+    expectations = []
+    for gate in EvidenceGate:
+        slug = gate.value.casefold()
+        expectations.append(_seal(
+            GateProvisioningExpectation,
+            "expectation_hash",
+            gate=gate,
+            source_identity=f"phase7g.source.{slug}",
+            provenance_policy_id=f"phase7g.provenance.{slug}.v1",
+            evidence_policy_id=f"phase7g.evidence.{slug}.v1",
+            custody_bucket_id="phase7g.contract.bucket",
+            custody_object_id=f"phase7g.object.{slug}",
+            custody_object_version="phase7g.object.version.v1",
+            expected_artifact_digest=typed_hash({
+                "manifest": GATE_MANIFEST_VERSION,
+                "gate": gate.value,
+                "artifact": "CONTRACT_TEST_ONLY",
+            }),
+            adapter_id="phase7g.adapter.contract",
+        ))
+    return _seal(GateEvidenceManifest, "manifest_hash", expectations=tuple(expectations))
+
+
 def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: Any,
                                    credentials: Any, envelopes: Any, candidates: Any,
                                    transitions: Any, verifier_time: dt.datetime) -> Phase7GFoundationResult:
@@ -330,6 +395,7 @@ def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: A
     envelope_items = tuple(_revalidate(ProvisionedArtifactEnvelope, x, "envelope") for x in envelopes)
     candidate_items = tuple(_revalidate(GateEvidenceCandidate, x, "candidate") for x in candidates)
     transition_items = tuple(_revalidate(ProvisioningTransition, x, "transition") for x in transitions)
+    manifest = _revalidate(GateEvidenceManifest, canonical_gate_evidence_manifest(), "canonical manifest")
 
     if not (selected.valid_from <= selected.selected_at <= verifier_time):
         raise Phase7GContractError("selection temporal causality violation")
@@ -356,15 +422,17 @@ def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: A
     custody_by_gate = _by_gate(custody_items, "custody receipts")
     envelopes_by_gate = _by_gate(envelope_items, "envelopes")
     candidates_by_gate = _by_gate(candidate_items, "candidates")
-    credentials_by_id = {item.reference_id: item for item in credential_items}
-    if len(credentials_by_id) != len(credential_items):
+    credentials_by_digest = {item.credential_reference_digest: item for item in credential_items}
+    if len(credentials_by_digest) != len(credential_items):
         raise Phase7GContractError("duplicate credential reference")
+    expectations_by_gate = _by_gate(manifest.expectations, "manifest expectations")
     selected_identity = (selected.provider_id, selected.dataset_id, selected.dataset_version, selected.scope_id)
     provisioned_at = transition_items[2].occurred_at
     evidence_pending_at = transition_items[3].occurred_at
     for gate in EvidenceGate:
         envelope, candidate, receipt = envelopes_by_gate[gate], candidates_by_gate[gate], custody_by_gate[gate]
-        credential = credentials_by_id.get(envelope.credential_reference_id)
+        expectation = expectations_by_gate[gate]
+        credential = credentials_by_digest.get(envelope.credential_reference_digest)
         envelope_identity = (envelope.provider_id, envelope.dataset_id, envelope.dataset_version, envelope.scope_id)
         candidate_identity = (candidate.provider_id, candidate.dataset_id, candidate.dataset_version, candidate.scope_id)
         receipt_identity = (receipt.provider_id, receipt.dataset_id, receipt.dataset_version, receipt.scope_id)
@@ -377,7 +445,16 @@ def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: A
         if (credential.provider_id, credential.dataset_id, credential.scope_id, credential.adapter_id) != (
                 selected.provider_id, selected.dataset_id, selected.scope_id, envelope.adapter_id):
             raise Phase7GContractError("credential capability binding mismatch")
-        if (envelope.custody_reference != receipt.receipt_id
+        if ((envelope.source_identity, envelope.provenance_reference, envelope.artifact_digest,
+                envelope.adapter_id, candidate.policy_id) != (
+                expectation.source_identity, expectation.provenance_policy_id,
+                expectation.expected_artifact_digest, expectation.adapter_id,
+                expectation.evidence_policy_id)
+                or (receipt.bucket_id, receipt.object_id, receipt.object_version,
+                    receipt.artifact_digest) != (
+                    expectation.custody_bucket_id, expectation.custody_object_id,
+                    expectation.custody_object_version, expectation.expected_artifact_digest)
+                or envelope.custody_reference != receipt.receipt_id
                 or receipt.artifact_digest != envelope.artifact_digest
                 or candidate.custody_receipt_hash != receipt.receipt_hash
                 or candidate.selection_hash != selected.selection_hash
@@ -385,8 +462,8 @@ def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: A
                 or candidate.authority_provisioning_hash != authority_record.provisioning_hash
                 or candidate.source_identity != envelope.source_identity
                 or candidate.provenance_reference != envelope.provenance_reference
-                or candidate.credential_reference_id != envelope.credential_reference_id):
-            raise Phase7GContractError("gate artifact/custody/provenance binding mismatch")
+                or candidate.credential_reference_digest != envelope.credential_reference_digest):
+            raise Phase7GContractError("canonical gate manifest binding mismatch")
         if not (selected.valid_from <= selected.selected_at <= provisioned_at
                 <= envelope.retrieved_at <= receipt.recorded_at <= candidate.observed_at
                 <= evidence_pending_at <= verifier_time < candidate.expires_at):

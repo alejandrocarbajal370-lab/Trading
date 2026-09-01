@@ -17,27 +17,32 @@ historical use and verifier time; retroactive legitimation and expiry at the ver
 rejected. Selection is always `NOT_APPROVED` and `NOT_ADMITTED` here.
 Commercial and contract metadata are declarations. `EXTERNALLY_VERIFIED` legal state is rejected.
 
-Credentials are structured capabilities only: provider/dataset/scope/purpose/adapter plus a
-restricted secret-store namespace and opaque `ref_` identifier. The aggregate receives and
-revalidates the records themselves; an ID without an exact record is rejected. The schema has no
-field capable of accepting free-form secret material, and the opaque locator is redacted from
-`repr`. Artifact envelopes remain `CONTRACT_TEST_ONLY` and bind an explicit gate, source identity,
-retrieval time, artifact digest, provenance, concrete custody receipt ID and credential identity.
-There is no callable or duck-typed resolver and no fixture-to-REAL promotion.
+Credentials are auditable, non-secret identities only: a fixed SHA-256
+`credential_reference_digest` produced outside this contract plus non-sensitive
+provider/dataset/scope/purpose/adapter metadata. Secret material and the reversible secret-store
+locator live outside every Phase 7G DTO and hash; no locator field exists. The digest is neither
+credential validity nor authentication. The aggregate reconstructs the record and binds its digest
+and metadata to the envelope and candidate. There is no callable or duck-typed resolver and no
+fixture-to-REAL promotion.
 
 External authorities remain `NOT_PROVISIONED`. Fingerprints, validity and revocation metadata are
 reserved for a later integration backed by real keys/certificates and an independently provisioned
 verifier. Self-declaration is rejected. Object-lock receipts distinguish declarations from proof:
-bucket/object/version, retention and legal-hold declarations plus a hash do not prove WORM. Each
-receipt binds gate, provider/dataset/version/scope, exact artifact digest and receipt time. Its ID
-must resolve from the envelope to that exact revalidated receipt.
+bucket/object/version, retention and legal-hold declarations plus a hash do not prove WORM. A
+code-owned, versioned `phase7g-canonical-gate-manifest-v1` independently fixes the expected
+contract-test bucket, object, version, source, provenance policy, evidence policy, adapter and
+artifact digest for every gate. Each receipt must match that expectation and the selected
+provider/dataset/version/scope; its ID must resolve from the envelope to that exact receipt. This is
+object/version binding only, never provider-originated WORM verification.
 
-Each canonical Phase 7E gate receives exactly one bound evidence candidate. Candidates bind the
-selection, gate, source, provenance, credential, artifact, authority foundation, custody receipt,
-policy and validity window. Collections are resolved by canonical gate identity rather than list
-position. Revalidation rejects stale/replayed data and fully re-sealed provider, dataset, version,
-scope, gate, source, provenance, custody or artifact swaps. A
-candidate can only be `EXTERNAL_EVIDENCE_PENDING`; every official gate remains `OPEN_EXTERNAL`.
+Each canonical Phase 7E gate receives exactly one bound evidence candidate. The canonical manifest
+is internal to the assessor, cannot be supplied alongside a caller package, and is contractual—not
+external truth or knowledge of a REAL provider. Candidates bind selection, gate, canonical source,
+provenance and evidence policies, credential digest, artifact, authority foundation, exact custody
+object and validity window. Collections are resolved by canonical gate identity rather than list
+position. Duplicate/missing/extra gates and fully re-sealed cross-gate package swaps fail against
+the independent manifest. A candidate can only be `EXTERNAL_EVIDENCE_PENDING`; every official gate
+remains `OPEN_EXTERNAL`.
 
 ## State machine
 
@@ -62,6 +67,9 @@ independently provisioned external verifier.
 
 No scoring/ranking, portfolio construction/sizing, target prices, broker/orders/execution or
 dashboard/Excel capability is authorized.
+
+The authority/trust root remains `NOT_PROVISIONED`. Selection and provisioning are not provider
+approval, external verification or gate closure, and all ten gates remain `OPEN_EXTERNAL`.
 
 ## Next external integration acceptance criteria
 
