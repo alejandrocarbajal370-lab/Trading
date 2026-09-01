@@ -38,9 +38,16 @@ The next repository-defined block is documented without an invented phase number
 **External Evidence Verification Acceptance Foundation** in
 [`docs/adr/0003-external-evidence-verification-acceptance.md`](docs/adr/0003-external-evidence-verification-acceptance.md).
 It separates observed receipts, technically checked but untrusted candidates, and official gate
-state; adds adapter identity, independent authority snapshots, signature/fingerprint hooks,
-replay/staleness controls and maker-checker binding; and still cannot close a gate. It remains
-`CONTRACT_TEST_ONLY`: authority is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`.
+state; and still cannot close a gate. A code-owned contract-test manifest binds each gate to exact
+provider, dataset/version, adapter/release, receipt/evidence policy and artifact identities. Public
+intake carries only manifest and SHA-256 references, not caller-authored provider metadata.
+Gate-specific authority snapshots and explicit revocation reviews bind the receipt, assessment,
+four fixed independent actor roles, decision and verifier time. Code-owned 24-hour receipt and
+authority windows plus a one-hour revocation-review window fail closed; `ACTIVE_UNTRUSTED` remains
+a technical contract state, never trusted authority. A single result-consumption boundary rebuilds
+primitives, validates literals and recomputes the result hash, so alternate Pydantic constructors
+cannot promote readiness. The foundation remains `CONTRACT_TEST_ONLY`: external authority/trust
+root is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`.
 
 ## Current stage
 

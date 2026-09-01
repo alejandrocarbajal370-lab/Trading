@@ -10,11 +10,18 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "external-evidence-verification-acceptance-v1"
-TEMPORAL_POLICY_VERSION = "external-verifier-causality-replay-v1"
+CONTRACT_VERSION = "external-evidence-verification-acceptance-v2"
+TEMPORAL_POLICY_VERSION = "external-verifier-causality-replay-v2"
+MANIFEST_VERSION = "external-verification-canonical-manifest-v1"
 MAX_EVIDENCE_AGE = dt.timedelta(hours=24)
+MAX_AUTHORITY_AGE = dt.timedelta(hours=24)
+MAX_REVOCATION_AGE = dt.timedelta(hours=1)
 SHA256 = r"^[0-9a-f]{64}$"
-OID = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
+
+Observer = Literal["actor.external.observer"]
+Maker = Literal["actor.external.maker"]
+Checker = Literal["actor.external.checker"]
+Reviewer = Literal["actor.external.reviewer"]
 
 
 class ExternalEvidenceVerificationError(ValueError):
@@ -25,15 +32,47 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-class ProviderAdapterIdentity(ContractModel):
-    """Public adapter identity only. Credentials and secret locators are not representable."""
+class GateVerificationExpectation(ContractModel):
+    """Code-owned contract identity; internal consistency, not external truth."""
 
-    version: Literal["provider-adapter-identity-v1"] = "provider-adapter-identity-v1"
-    provider_id: str = Field(pattern=OID)
-    dataset_id: str = Field(pattern=OID)
-    dataset_version: str = Field(pattern=OID)
-    adapter_id: str = Field(pattern=OID)
-    adapter_release: str = Field(pattern=OID)
+    version: Literal["gate-verification-expectation-v1"] = "gate-verification-expectation-v1"
+    gate: EvidenceGate
+    provider_ref: str
+    dataset_ref: str
+    dataset_version_ref: str
+    adapter_ref: str
+    adapter_release_ref: str
+    evidence_policy_ref: str
+    receipt_policy_ref: str
+    expected_artifact_digest: str = Field(pattern=SHA256)
+    expectation_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        _hash(self, "expectation_hash")
+        return self
+
+
+class GateVerificationManifest(ContractModel):
+    version: Literal["external-verification-canonical-manifest-v1"] = MANIFEST_VERSION
+    trust_domain: Literal["CONTRACT_TEST_ONLY"] = "CONTRACT_TEST_ONLY"
+    expectations: tuple[GateVerificationExpectation, ...]
+    manifest_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        if tuple(item.gate for item in self.expectations) != tuple(EvidenceGate):
+            raise ValueError("manifest must cover canonical gates in canonical order")
+        _hash(self, "manifest_hash")
+        return self
+
+
+class ProviderAdapterIdentity(ContractModel):
+    """Code-owned manifest reference; no caller-authored provider metadata."""
+
+    version: Literal["provider-adapter-identity-v2"] = "provider-adapter-identity-v2"
+    manifest_version: Literal["external-verification-canonical-manifest-v1"] = MANIFEST_VERSION
+    manifest_hash: str = Field(pattern=SHA256)
     identity_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
@@ -42,35 +81,16 @@ class ProviderAdapterIdentity(ContractModel):
         return self
 
 
-class VerifierAuthoritySnapshot(ContractModel):
-    version: Literal["verifier-authority-snapshot-v1"] = "verifier-authority-snapshot-v1"
-    authority_id: str = Field(pattern=OID)
-    observer_id: str = Field(pattern=OID)
-    captured_at: dt.datetime
-    fingerprint: str = Field(pattern=SHA256)
-    revocation_checked_at: dt.datetime
-    trust_state: Literal["NOT_PROVISIONED"] = "NOT_PROVISIONED"
-    independently_observed: Literal[True] = True
-    snapshot_hash: str = Field(pattern=SHA256)
-
-    @model_validator(mode="after")
-    def check(self):
-        _aware(self.captured_at, "captured_at")
-        _aware(self.revocation_checked_at, "revocation_checked_at")
-        if self.revocation_checked_at < self.captured_at:
-            raise ValueError("revocation check predates authority observation")
-        _hash(self, "snapshot_hash")
-        return self
-
-
 class ExternalEvidenceReceipt(ContractModel):
-    """What the verifier observed; observation is not authentication or acceptance."""
+    """Observed contract-test evidence; never authentication or acceptance."""
 
-    version: Literal["external-evidence-receipt-v1"] = "external-evidence-receipt-v1"
+    version: Literal["external-evidence-receipt-v2"] = "external-evidence-receipt-v2"
     gate: EvidenceGate
+    expectation_hash: str = Field(pattern=SHA256)
     adapter_identity_hash: str = Field(pattern=SHA256)
+    assessment_identity: str = Field(pattern=SHA256)
     artifact_digest: str = Field(pattern=SHA256)
-    provider_receipt_id: str = Field(pattern=OID)
+    provider_receipt_digest: str = Field(pattern=SHA256)
     provider_sequence: int = Field(ge=0)
     replay_nonce_digest: str = Field(pattern=SHA256)
     provider_issued_at: dt.datetime
@@ -91,40 +111,111 @@ class ExternalEvidenceReceipt(ContractModel):
         return self
 
 
-class IndependentVerifierDecision(ContractModel):
-    version: Literal["independent-verifier-decision-v1"] = "independent-verifier-decision-v1"
+class VerifierAuthoritySnapshot(ContractModel):
+    version: Literal["verifier-authority-snapshot-v2"] = "verifier-authority-snapshot-v2"
     gate: EvidenceGate
+    expectation_hash: str = Field(pattern=SHA256)
     receipt_hash: str = Field(pattern=SHA256)
-    maker_id: str = Field(pattern=OID)
-    checker_id: str = Field(pattern=OID)
+    assessment_identity: str = Field(pattern=SHA256)
+    observer_id: Observer = "actor.external.observer"
+    maker_id: Maker = "actor.external.maker"
+    checker_id: Checker = "actor.external.checker"
+    reviewer_id: Reviewer = "actor.external.reviewer"
+    captured_at: dt.datetime
+    valid_from: dt.datetime
+    valid_until: dt.datetime
+    verifier_time: dt.datetime
+    fingerprint: str = Field(pattern=SHA256)
+    authority_status: Literal["ACTIVE_UNTRUSTED", "REVOKED", "UNKNOWN", "NOT_PROVISIONED"]
+    independently_observed: Literal[True] = True
+    snapshot_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        for label in ("captured_at", "valid_from", "valid_until", "verifier_time"):
+            _aware(getattr(self, label), label)
+        if not self.valid_from <= self.captured_at < self.valid_until:
+            raise ValueError("invalid authority validity window")
+        _hash(self, "snapshot_hash")
+        return self
+
+
+class IndependentVerifierDecision(ContractModel):
+    version: Literal["independent-verifier-decision-v2"] = "independent-verifier-decision-v2"
+    gate: EvidenceGate
+    expectation_hash: str = Field(pattern=SHA256)
+    receipt_hash: str = Field(pattern=SHA256)
+    assessment_identity: str = Field(pattern=SHA256)
+    observer_id: Observer = "actor.external.observer"
+    maker_id: Maker = "actor.external.maker"
+    checker_id: Checker = "actor.external.checker"
+    reviewer_id: Reviewer = "actor.external.reviewer"
     authority_snapshot_hash: str = Field(pattern=SHA256)
+    verifier_time: dt.datetime
     made_at: dt.datetime
     checked_at: dt.datetime
+    reviewed_at: dt.datetime
     outcome: Literal["CANDIDATE", "REJECT"]
     decision_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def check(self):
-        _aware(self.made_at, "made_at")
-        _aware(self.checked_at, "checked_at")
-        if self.maker_id == self.checker_id or self.checked_at < self.made_at:
-            raise ValueError("invalid maker-checker decision")
+        for label in ("verifier_time", "made_at", "checked_at", "reviewed_at"):
+            _aware(getattr(self, label), label)
+        if not self.made_at <= self.checked_at <= self.reviewed_at <= self.verifier_time:
+            raise ValueError("invalid maker-checker-reviewer chronology")
         _hash(self, "decision_hash")
+        return self
+
+
+class RevocationReview(ContractModel):
+    version: Literal["revocation-review-v1"] = "revocation-review-v1"
+    gate: EvidenceGate
+    expectation_hash: str = Field(pattern=SHA256)
+    receipt_hash: str = Field(pattern=SHA256)
+    assessment_identity: str = Field(pattern=SHA256)
+    authority_snapshot_hash: str = Field(pattern=SHA256)
+    decision_hash: str = Field(pattern=SHA256)
+    observer_id: Observer = "actor.external.observer"
+    maker_id: Maker = "actor.external.maker"
+    checker_id: Checker = "actor.external.checker"
+    reviewer_id: Reviewer = "actor.external.reviewer"
+    observed_at: dt.datetime
+    made_at: dt.datetime
+    checked_at: dt.datetime
+    verifier_time: dt.datetime
+    reviewed_at: dt.datetime
+    status: Literal["ACTIVE_UNTRUSTED", "REVOKED", "UNKNOWN", "NOT_PROVISIONED"]
+    revoked_at: dt.datetime | None = None
+    review_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def check(self):
+        for label in ("observed_at", "made_at", "checked_at", "verifier_time", "reviewed_at"):
+            _aware(getattr(self, label), label)
+        if self.revoked_at is not None:
+            _aware(self.revoked_at, "revoked_at")
+        if self.reviewed_at > self.verifier_time:
+            raise ValueError("revocation review is in the future")
+        _hash(self, "review_hash")
         return self
 
 
 class GateVerificationCandidate(ContractModel):
     gate: EvidenceGate
+    expectation_hash: str = Field(pattern=SHA256)
     receipt_hash: str = Field(pattern=SHA256)
     decision_hash: str = Field(pattern=SHA256)
+    authority_snapshot_hash: str = Field(pattern=SHA256)
+    revocation_review_hash: str = Field(pattern=SHA256)
     state: Literal["TECHNICALLY_CHECKED_NOT_TRUSTED"] = "TECHNICALLY_CHECKED_NOT_TRUSTED"
     gate_state: Literal[GateState.OPEN_EXTERNAL] = GateState.OPEN_EXTERNAL
     reason: Literal["EXTERNAL_TRUST_ROOT_NOT_PROVISIONED"] = "EXTERNAL_TRUST_ROOT_NOT_PROVISIONED"
 
 
 class ExternalVerificationFoundationResult(ContractModel):
-    contract_version: Literal["external-evidence-verification-acceptance-v1"] = CONTRACT_VERSION
-    temporal_policy_version: Literal["external-verifier-causality-replay-v1"] = TEMPORAL_POLICY_VERSION
+    contract_version: Literal["external-evidence-verification-acceptance-v2"] = CONTRACT_VERSION
+    temporal_policy_version: Literal["external-verifier-causality-replay-v2"] = TEMPORAL_POLICY_VERSION
     candidates: tuple[GateVerificationCandidate, ...]
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
     authority_state: Literal["NOT_PROVISIONED"] = "NOT_PROVISIONED"
@@ -134,6 +225,7 @@ class ExternalVerificationFoundationResult(ContractModel):
     live_execution_enabled: Literal[False] = False
     signals_generated: Literal[False] = False
     backtesting: Literal["NOT_AUTHORIZED"] = "NOT_AUTHORIZED"
+    result_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def check(self):
@@ -142,6 +234,7 @@ class ExternalVerificationFoundationResult(ContractModel):
         expected = tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate)
         if self.gate_states != expected:
             raise ValueError("official gates must remain OPEN_EXTERNAL")
+        _hash(self, "result_hash")
         return self
 
 
@@ -177,58 +270,139 @@ def _revalidate(expected: type[T], value: Any, label: str) -> T:
 
 
 def seal(expected: type[T], hash_field: str, **values: Any) -> T:
-    """Construct a validated contract object for adapters and contract tests."""
+    """Construct a hash-sealed contract object for contract tests."""
     raw = expected.model_construct(**values, **{hash_field: "0" * 64})
     values[hash_field] = typed_hash(raw.model_dump(mode="json", exclude={hash_field}, warnings=False))
     return expected(**values)
 
 
+def canonical_gate_verification_manifest() -> GateVerificationManifest:
+    """Reconstruct the immutable code-owned contract-test expectation registry."""
+    expectations = []
+    for gate in EvidenceGate:
+        slug = gate.value.casefold()
+        expectations.append(seal(
+            GateVerificationExpectation, "expectation_hash", gate=gate,
+            provider_ref=f"registry.provider.{slug}", dataset_ref=f"registry.dataset.{slug}",
+            dataset_version_ref="registry.dataset.version.v1",
+            adapter_ref=f"registry.adapter.{slug}", adapter_release_ref="registry.adapter.release.v1",
+            evidence_policy_ref=f"registry.evidence.{slug}.v1",
+            receipt_policy_ref=f"registry.receipt.{slug}.v1",
+            expected_artifact_digest=typed_hash({
+                "manifest": MANIFEST_VERSION, "gate": gate.value, "artifact": "CONTRACT_TEST_ONLY",
+            }),
+        ))
+    return seal(GateVerificationManifest, "manifest_hash", expectations=tuple(expectations))
+
+
+def validate_external_verification_result(value: Any) -> ExternalVerificationFoundationResult:
+    """Mandatory public truth boundary: rebuild primitives and revalidate derived safe state."""
+    return _revalidate(ExternalVerificationFoundationResult, value, "foundation result")
+
+
 def assess_external_evidence_verification(
-    *, adapter: Any, authority: Any, receipts: Any, decisions: Any, verifier_time: dt.datetime,
+    *, adapter: Any, authorities: Any, receipts: Any, decisions: Any, revocations: Any,
+    verifier_time: dt.datetime,
 ) -> ExternalVerificationFoundationResult:
-    """Validate intake and produce non-closing candidates while external trust is absent."""
+    """Validate intake and derive non-closing candidates while external trust is absent."""
     _aware(verifier_time, "verifier_time")
+    manifest = canonical_gate_verification_manifest()
     adapter_record = _revalidate(ProviderAdapterIdentity, adapter, "adapter identity")
-    authority_record = _revalidate(VerifierAuthoritySnapshot, authority, "authority snapshot")
-    receipt_items = tuple(_revalidate(ExternalEvidenceReceipt, item, "receipt") for item in receipts)
-    decision_items = tuple(_revalidate(IndependentVerifierDecision, item, "decision") for item in decisions)
-    receipt_by_gate = _canonical(receipt_items, "receipts")
-    decision_by_gate = _canonical(decision_items, "decisions")
+    if (adapter_record.manifest_version, adapter_record.manifest_hash) != (
+            manifest.version, manifest.manifest_hash):
+        raise ExternalEvidenceVerificationError("adapter manifest binding mismatch")
+    receipt_by_gate = _canonical(tuple(_revalidate(ExternalEvidenceReceipt, x, "receipt")
+                                       for x in receipts), "receipts")
+    authority_by_gate = _canonical(tuple(_revalidate(VerifierAuthoritySnapshot, x, "authority")
+                                         for x in authorities), "authorities")
+    decision_by_gate = _canonical(tuple(_revalidate(IndependentVerifierDecision, x, "decision")
+                                        for x in decisions), "decisions")
+    revocation_by_gate = _canonical(tuple(_revalidate(RevocationReview, x, "revocation review")
+                                          for x in revocations), "revocations")
+    expectation_by_gate = {item.gate: item for item in manifest.expectations}
     nonces: set[str] = set()
     provider_receipts: set[str] = set()
     candidates = []
     for gate in EvidenceGate:
-        receipt = receipt_by_gate[gate]
-        decision = decision_by_gate[gate]
+        expectation = expectation_by_gate[gate]
+        receipt, authority = receipt_by_gate[gate], authority_by_gate[gate]
+        decision, revocation = decision_by_gate[gate], revocation_by_gate[gate]
+        expected_assessment = typed_hash({
+            "contract": CONTRACT_VERSION, "gate": gate.value,
+            "expectation_hash": expectation.expectation_hash,
+            "provider_receipt_digest": receipt.provider_receipt_digest,
+            "verifier_time": verifier_time.isoformat(),
+        })
+        common = (gate, expectation.expectation_hash, receipt.receipt_hash, expected_assessment)
+        if (receipt.gate, receipt.expectation_hash, receipt.receipt_hash,
+                receipt.assessment_identity) != common:
+            raise ExternalEvidenceVerificationError("canonical gate expectation mismatch")
+        if receipt.artifact_digest != expectation.expected_artifact_digest:
+            raise ExternalEvidenceVerificationError("canonical artifact identity mismatch")
         if receipt.adapter_identity_hash != adapter_record.identity_hash:
             raise ExternalEvidenceVerificationError("adapter identity binding mismatch")
-        if receipt.replay_nonce_digest in nonces or receipt.provider_receipt_id in provider_receipts:
+        if receipt.replay_nonce_digest in nonces or receipt.provider_receipt_digest in provider_receipts:
             raise ExternalEvidenceVerificationError("replayed evidence receipt")
         nonces.add(receipt.replay_nonce_digest)
-        provider_receipts.add(receipt.provider_receipt_id)
-        if receipt.signature_fingerprint != authority_record.fingerprint:
-            raise ExternalEvidenceVerificationError("signature fingerprint mismatch")
+        provider_receipts.add(receipt.provider_receipt_digest)
         if receipt.signature_check != "MATCHED_UNTRUSTED":
             raise ExternalEvidenceVerificationError("signature check did not produce a candidate")
-        if not (receipt.observed_at <= decision.made_at <= decision.checked_at <= verifier_time):
+        authority_common = (authority.gate, authority.expectation_hash, authority.receipt_hash,
+                            authority.assessment_identity)
+        decision_common = (decision.gate, decision.expectation_hash, decision.receipt_hash,
+                           decision.assessment_identity)
+        revocation_common = (revocation.gate, revocation.expectation_hash, revocation.receipt_hash,
+                             revocation.assessment_identity)
+        if authority_common != common or decision_common != common or revocation_common != common:
+            raise ExternalEvidenceVerificationError("gate assessment binding mismatch")
+        actors = (authority.observer_id, authority.maker_id, authority.checker_id,
+                  authority.reviewer_id)
+        if len(set(actors)) != 4 or actors != (
+                decision.observer_id, decision.maker_id, decision.checker_id, decision.reviewer_id
+        ) or actors != (
+                revocation.observer_id, revocation.maker_id, revocation.checker_id,
+                revocation.reviewer_id):
+            raise ExternalEvidenceVerificationError("actor independence or binding mismatch")
+        if authority.fingerprint != receipt.signature_fingerprint:
+            raise ExternalEvidenceVerificationError("signature fingerprint mismatch")
+        if authority.verifier_time != verifier_time or decision.verifier_time != verifier_time:
+            raise ExternalEvidenceVerificationError("verifier-time binding mismatch")
+        if authority.authority_status != "ACTIVE_UNTRUSTED" or revocation.status != "ACTIVE_UNTRUSTED":
+            raise ExternalEvidenceVerificationError("authority or revocation status is fail-closed")
+        if revocation.revoked_at is not None and revocation.revoked_at <= verifier_time:
+            raise ExternalEvidenceVerificationError("authority revoked at a relevant time")
+        if not (authority.valid_from <= authority.captured_at <= receipt.provider_issued_at
+                <= receipt.observed_at <= decision.made_at <= decision.checked_at
+                <= decision.reviewed_at <= revocation.reviewed_at <= verifier_time
+                < authority.valid_until):
             raise ExternalEvidenceVerificationError("verification causality violation")
-        if (verifier_time >= receipt.expires_at
-                or verifier_time - receipt.observed_at > MAX_EVIDENCE_AGE):
-            raise ExternalEvidenceVerificationError("stale external evidence")
-        if authority_record.revocation_checked_at > verifier_time:
-            raise ExternalEvidenceVerificationError("future revocation observation")
-        if decision.receipt_hash != receipt.receipt_hash:
-            raise ExternalEvidenceVerificationError("decision receipt binding mismatch")
-        if decision.authority_snapshot_hash != authority_record.snapshot_hash:
+        if authority.captured_at < verifier_time - MAX_AUTHORITY_AGE:
+            raise ExternalEvidenceVerificationError("stale authority snapshot")
+        if revocation.reviewed_at < verifier_time - MAX_REVOCATION_AGE:
+            raise ExternalEvidenceVerificationError("stale revocation review")
+        if (revocation.observed_at, revocation.made_at, revocation.checked_at,
+                revocation.verifier_time) != (
+                receipt.observed_at, decision.made_at, decision.checked_at, verifier_time):
+            raise ExternalEvidenceVerificationError("revocation relevant-time binding mismatch")
+        if revocation.authority_snapshot_hash != authority.snapshot_hash:
+            raise ExternalEvidenceVerificationError("revocation authority binding mismatch")
+        if decision.authority_snapshot_hash != authority.snapshot_hash:
             raise ExternalEvidenceVerificationError("decision authority binding mismatch")
+        if revocation.decision_hash != decision.decision_hash:
+            raise ExternalEvidenceVerificationError("revocation decision binding mismatch")
         if decision.outcome != "CANDIDATE":
             raise ExternalEvidenceVerificationError("rejected evidence cannot become a candidate")
-        candidates.append(GateVerificationCandidate(gate=gate, receipt_hash=receipt.receipt_hash,
-                                                     decision_hash=decision.decision_hash))
-    return ExternalVerificationFoundationResult(
-        candidates=tuple(candidates),
-        gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
-    )
+        if verifier_time >= receipt.expires_at or verifier_time - receipt.observed_at > MAX_EVIDENCE_AGE:
+            raise ExternalEvidenceVerificationError("stale external evidence")
+        candidates.append(GateVerificationCandidate(
+            gate=gate, expectation_hash=expectation.expectation_hash,
+            receipt_hash=receipt.receipt_hash, decision_hash=decision.decision_hash,
+            authority_snapshot_hash=authority.snapshot_hash,
+            revocation_review_hash=revocation.review_hash,
+        ))
+    result = seal(ExternalVerificationFoundationResult, "result_hash", candidates=tuple(candidates),
+                  gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate))
+    return validate_external_verification_result(result)
 
 
 def _canonical(items: tuple[T, ...], label: str) -> dict[EvidenceGate, T]:
