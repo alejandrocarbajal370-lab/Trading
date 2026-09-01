@@ -17,13 +17,14 @@ historical use and verifier time; retroactive legitimation and expiry at the ver
 rejected. Selection is always `NOT_APPROVED` and `NOT_ADMITTED` here.
 Commercial and contract metadata are declarations. `EXTERNALLY_VERIFIED` legal state is rejected.
 
-Credentials are auditable, non-secret identities only: a fixed SHA-256
-`credential_reference_digest` produced outside this contract plus non-sensitive
-provider/dataset/scope/purpose/adapter metadata. Secret material and the reversible secret-store
-locator live outside every Phase 7G DTO and hash; no locator field exists. The digest is neither
-credential validity nor authentication. The aggregate reconstructs the record and binds its digest
-and metadata to the envelope and candidate. There is no callable or duck-typed resolver and no
-fixture-to-REAL promotion.
+Credentials are auditable, non-secret identities only: `CredentialReference` contains a fixed
+SHA-256 `credential_reference_digest` produced outside this contract, code-owned version/purpose
+literals and its structural hash. It accepts no caller-controlled provider, dataset, scope, adapter
+or locator metadata, so those fields cannot be repurposed as a secret channel. Provider, dataset,
+scope and adapter bindings instead come from the revalidated selection, gate envelopes and the
+code-owned canonical manifest. Secret material and the reversible secret-store locator live outside
+every Phase 7G DTO and hash. The digest is neither credential validity nor authentication. There is
+no callable or duck-typed resolver and no fixture-to-REAL promotion.
 
 External authorities remain `NOT_PROVISIONED`. Fingerprints, validity and revocation metadata are
 reserved for a later integration backed by real keys/certificates and an independently provisioned

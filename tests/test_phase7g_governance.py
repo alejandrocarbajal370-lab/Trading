@@ -62,9 +62,7 @@ def foundation():
     authority = seal(ExternalAuthorityProvisioning, "provisioning_hash",
         authority_id="authority.pending", mechanism_version="verification.v1")
     credential = seal(CredentialReference, "reference_hash",
-        credential_reference_digest=typed_hash({"credential": "sanitized-outside-contract"}),
-        provider_id=selection.provider_id, dataset_id=selection.dataset_id,
-        scope_id=selection.scope_id, adapter_id="phase7g.adapter.contract")
+        credential_reference_digest=typed_hash({"credential": "sanitized-outside-contract"}))
     transitions = []
     times = (SELECTED, PROVISIONING, PROVISIONED, PENDING)
     states = tuple(SelectionState)
@@ -88,7 +86,7 @@ def foundation():
         envelope = seal(ProvisionedArtifactEnvelope, "envelope_hash", gate=gate,
             source_identity=expectation.source_identity, provider_id=selection.provider_id,
             dataset_id=selection.dataset_id, dataset_version=selection.dataset_version,
-            scope_id=selection.scope_id, adapter_id=credential.adapter_id, retrieved_at=RETRIEVED,
+            scope_id=selection.scope_id, adapter_id=expectation.adapter_id, retrieved_at=RETRIEVED,
             artifact_digest=digest, provenance_reference=expectation.provenance_policy_id,
             custody_reference=receipt.receipt_id,
             credential_reference_digest=credential.credential_reference_digest)
@@ -154,13 +152,58 @@ def test_secret_or_locator_material_cannot_occupy_credential_identity(value):
 def test_credential_dto_has_no_reversible_locator_field_or_output():
     credential = foundation()[3][0]
     assert set(credential.model_dump()) == {"version", "credential_reference_digest",
-        "provider_id", "dataset_id", "scope_id", "purpose", "adapter_id", "reference_hash"}
+        "purpose", "reference_hash"}
     serialized = credential.model_dump_json()
     for forbidden in ("locator", "secret", "handle", "namespace", "password", "sk_live"):
         assert forbidden not in serialized.casefold()
     values = credential.model_dump(mode="python")
     values["locator"] = "user:password"
     with pytest.raises(ValidationError): CredentialReference.model_validate(values)
+
+
+SECRET_METADATA = (
+    "sk_live_0123456789abcdef",
+    "user:password",
+    "0123456789abcdef" * 4,
+    "opaque_secret_token_123456789",
+    "eyJhbGciOiJIUzI1NiJ9.payload.signature",
+    "dXNlcjpwYXNzd29yZA==",
+    "https://user:password@store.invalid/ref?token=secret",
+    "-----BEGIN PRIVATE KEY-----payload-----END PRIVATE KEY-----",
+    "opaque" + "a" * 512,
+)
+
+
+@pytest.mark.parametrize("field", ["provider_id", "dataset_id", "scope_id", "adapter_id"])
+@pytest.mark.parametrize("value", SECRET_METADATA)
+def test_credential_rejects_every_caller_controlled_metadata_channel(field, value):
+    values = foundation()[3][0].model_dump(mode="python")
+    values[field] = value
+    with pytest.raises(ValidationError):
+        CredentialReference.model_validate(values)
+
+
+@pytest.mark.parametrize("forge", ["copy", "construct", "same_class", "dict", "json"])
+def test_credential_primitive_hardening_and_no_metadata_channel(forge):
+    items = foundation()
+    valid = items[3][0]
+    values = valid.model_dump(mode="python")
+    values["provider_id"] = "sk_live_0123456789abcdef"
+    if forge == "copy":
+        forged = valid.model_copy(update={"provider_id": values["provider_id"]})
+    elif forge == "construct":
+        forged = CredentialReference.model_construct(**values)
+        assert "provider_id" not in forged.model_dump()
+        assert "sk_live" not in repr(forged)
+        return
+    elif forge == "same_class":
+        forged = valid.model_copy(update={"reference_hash": "0" * 64})
+    elif forge == "json":
+        forged = json.loads(json.dumps(values))
+    else:
+        forged = values
+    with pytest.raises((ValidationError, Phase7GContractError)):
+        assess(replace(items, 3, (forged,)))
 
 
 def test_expired_selection_fully_resealed_fails():

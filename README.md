@@ -28,10 +28,11 @@ trust.
 Phase 7G uses a code-owned, versioned contract-test manifest to bind every gate to its expected
 source/provenance/evidence policy and exact custody bucket/object/version/digest. This prevents
 fully re-sealed cross-gate package swaps but does not verify external custody or WORM. Credential
-DTOs contain only a non-reversible SHA-256 identity and non-sensitive binding metadata; reversible
-locators and secret material remain outside auditable models and hashes. The digest does not prove
-credential validity or authentication. Authority remains `NOT_PROVISIONED`; 10/10 gates remain
-`OPEN_EXTERNAL`.
+DTOs contain only a non-reversible SHA-256 identity, code-owned literals and a structural hash;
+caller-controlled provider/dataset/scope/adapter metadata is excluded. Those bindings come from the
+revalidated selection, envelopes and canonical manifest. Reversible locators and secret material
+remain outside auditable models and hashes. The digest does not prove credential validity or
+authentication. Authority remains `NOT_PROVISIONED`; 10/10 gates remain `OPEN_EXTERNAL`.
 
 ## Current stage
 

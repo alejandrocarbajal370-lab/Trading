@@ -46,15 +46,11 @@ class LegalState(StrEnum):
 
 
 class CredentialReference(ContractModel):
-    """Non-reversible credential identity; locators and secrets remain outside this DTO."""
+    """Opaque digest only; credential capability metadata is bound by governed records."""
 
-    version: Literal["phase7g-credential-reference-v3"] = "phase7g-credential-reference-v3"
+    version: Literal["phase7g-credential-reference-v4"] = "phase7g-credential-reference-v4"
     credential_reference_digest: str = Field(pattern=SHA256)
-    provider_id: str = Field(pattern=OID)
-    dataset_id: str = Field(pattern=OID)
-    scope_id: str = Field(pattern=OID)
     purpose: Literal["CONTRACT_ARTIFACT_RETRIEVAL"] = "CONTRACT_ARTIFACT_RETRIEVAL"
-    adapter_id: str = Field(pattern=OID)
     reference_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
@@ -326,6 +322,8 @@ def _hash(value: BaseModel, field: str) -> None:
 
 def _primitive(value: Any) -> Any:
     if isinstance(value, BaseModel):
+        if set(value.__dict__) - set(type(value).model_fields):
+            raise Phase7GContractError("model contains undeclared fields")
         value = value.model_dump(mode="json", warnings=False)
     try:
         return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
@@ -442,9 +440,6 @@ def assess_provisioning_foundation(*, selection: Any, authority: Any, custody: A
             raise Phase7GContractError("custody identity binding mismatch")
         if credential is None:
             raise Phase7GContractError("credential reference does not resolve")
-        if (credential.provider_id, credential.dataset_id, credential.scope_id, credential.adapter_id) != (
-                selected.provider_id, selected.dataset_id, selected.scope_id, envelope.adapter_id):
-            raise Phase7GContractError("credential capability binding mismatch")
         if ((envelope.source_identity, envelope.provenance_reference, envelope.artifact_digest,
                 envelope.adapter_id, candidate.policy_id) != (
                 expectation.source_identity, expectation.provenance_policy_id,
