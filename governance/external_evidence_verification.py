@@ -7,7 +7,9 @@ import datetime as dt
 import hashlib
 import json
 import re
+import secrets
 import threading
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from typing import Any, Literal, TypeVar
@@ -161,6 +163,79 @@ class InMemoryContractTestReplayLedger(ReplayLedger):
             if any(identity in self._consumed for identity in batch):
                 raise ExternalEvidenceVerificationError("material evidence replayed")
             self._consumed.update(batch)
+
+
+_CONTEXT_FACTORY_TOKEN = object()
+_CONTEXT_REGISTRY_LOCK = threading.Lock()
+_CONTEXT_REGISTRY: weakref.WeakKeyDictionary[
+    ExternalEvidenceVerifierContext, InMemoryContractTestReplayLedger
+] = weakref.WeakKeyDictionary()
+
+
+class ExternalEvidenceVerifierContext:
+    """Explicit CONTRACT_TEST_ONLY verifier lifecycle; never REAL authority."""
+
+    __slots__ = ("__weakref__", "_ledger", "_lifecycle_namespace", "_sealed")
+
+    def __init__(self, factory_token: object) -> None:
+        if factory_token is not _CONTEXT_FACTORY_TOKEN:
+            raise ExternalEvidenceVerificationError(
+                "contract-test verifier context must be created by its explicit factory"
+            )
+        ledger = InMemoryContractTestReplayLedger()
+        namespace = typed_hash(
+            {
+                "contract": CONTRACT_VERSION,
+                "manifest": MANIFEST_VERSION,
+                "replay_identity": REPLAY_IDENTITY_VERSION,
+                "lifecycle_entropy": secrets.token_hex(32),
+            }
+        )
+        object.__setattr__(self, "_ledger", ledger)
+        object.__setattr__(self, "_lifecycle_namespace", namespace)
+        object.__setattr__(self, "_sealed", True)
+        with _CONTEXT_REGISTRY_LOCK:
+            _CONTEXT_REGISTRY[self] = ledger
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if getattr(self, "_sealed", False):
+            raise AttributeError("verifier context is immutable")
+        object.__setattr__(self, name, value)
+
+    @property
+    def lifecycle_namespace(self) -> str:
+        """Opaque code-created identity for this isolated contract-test lifecycle."""
+        return self._lifecycle_namespace
+
+    def assess_external_evidence_verification(
+        self, **intake: Any
+    ) -> ExternalVerificationFoundationResult:
+        """Assess within this context's stable process-local replay lifecycle."""
+        return assess_external_evidence_verification(verifier_context=self, **intake)
+
+
+def build_contract_test_verifier_context() -> ExternalEvidenceVerifierContext:
+    """Start a new, explicitly isolated CONTRACT_TEST_ONLY verifier lifecycle."""
+    return ExternalEvidenceVerifierContext(_CONTEXT_FACTORY_TOKEN)
+
+
+def _context_ledger(value: Any) -> InMemoryContractTestReplayLedger:
+    if type(value) is not ExternalEvidenceVerifierContext:
+        raise ExternalEvidenceVerificationError("valid verifier-owned context required")
+    with _CONTEXT_REGISTRY_LOCK:
+        ledger = _CONTEXT_REGISTRY.get(value)
+    try:
+        valid = (
+            type(ledger) is InMemoryContractTestReplayLedger
+            and value._ledger is ledger
+            and re.fullmatch(SHA256, value._lifecycle_namespace) is not None
+            and value._sealed is True
+        )
+    except (AttributeError, TypeError):
+        valid = False
+    if not valid:
+        raise ExternalEvidenceVerificationError("valid verifier-owned context required")
+    return ledger
 
 
 class ExternalEvidenceReceipt(ContractModel):
@@ -457,9 +532,9 @@ def validate_external_verification_result(value: Any) -> ExternalVerificationFou
 
 def assess_external_evidence_verification(
     *,
+    verifier_context: Any = None,
     adapter: Any,
     observed_materials: Any,
-    replay_ledger: ReplayLedger,
     authorities: Any,
     receipts: Any,
     decisions: Any,
@@ -468,6 +543,7 @@ def assess_external_evidence_verification(
 ) -> ExternalVerificationFoundationResult:
     """Validate intake and derive non-closing candidates while external trust is absent."""
     _aware(verifier_time, "verifier_time")
+    replay_ledger = _context_ledger(verifier_context)
     manifest = canonical_gate_verification_manifest()
     adapter_record = _revalidate(ProviderAdapterIdentity, adapter, "adapter identity")
     if (adapter_record.manifest_version, adapter_record.manifest_hash) != (
@@ -475,10 +551,6 @@ def assess_external_evidence_verification(
         manifest.manifest_hash,
     ):
         raise ExternalEvidenceVerificationError("adapter manifest binding mismatch")
-    if type(replay_ledger) is not InMemoryContractTestReplayLedger or (
-        replay_ledger.provisioning_state != "CONTRACT_TEST_ONLY"
-    ):
-        raise ExternalEvidenceVerificationError("valid verifier-owned replay ledger required")
     observed_by_gate = _canonical(
         tuple(
             _revalidate(MaterializedObservedEvidence, x, "observed material")

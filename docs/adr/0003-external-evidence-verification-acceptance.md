@@ -57,13 +57,23 @@ open; expiry equality fails closed. `UNKNOWN`, `REVOKED` and `NOT_PROVISIONED` t
 retroactivity, future observations and revocation at or before a relevant time all fail.
 
 The aggregate reconstructs every caller input from primitives, recomputes hashes and requires
-exactly ten unique gates. It also requires an explicit verifier-owned replay ledger external to the
-aggregate. Replay identity is recomputed internally from material digest, canonical gate
-expectation, provider/dataset/version, adapter/release and the versioned temporal policy; receipt IDs
-and nonces are not replay authority. The in-memory `CONTRACT_TEST_ONLY` ledger atomically consumes a
-complete validated batch within one process, so identical cross-call evidence and fully re-sealed
-receipt/nonce renames fail. It does not claim distributed, crash-safe or durable guarantees. A REAL
-persistent/atomic backend is `NOT_PROVISIONED`, and omission or invalid provisioning fails closed.
+exactly ten unique gates. Evaluation is a method of an explicit `CONTRACT_TEST_ONLY` verifier
+context. That context creates and owns one in-memory ledger for its stable lifecycle; public intake
+cannot receive or substitute a caller-created ledger, and missing, forged, copied, subclassed or
+duck-typed contexts fail closed at the sensitive boundary. Its opaque namespace is created from
+code-owned contract configuration plus internal lifecycle entropy, never a caller-provided string.
+Replay identity is recomputed internally from material digest, canonical gate expectation,
+provider/dataset/version, adapter/release and the versioned temporal policy; receipt IDs and nonces
+are not replay authority. The owned ledger atomically consumes a complete validated batch within
+one process, so identical calls and fully re-sealed receipt/nonce renames fail within the same
+context.
+
+Calling `build_contract_test_verifier_context()` explicitly starts a new, isolated test lifecycle
+and namespace. Separate contexts intentionally do not share replay state and must not be described
+as a bypass within one lifecycle or as REAL continuity. There is no reset/clear operation and no
+silent per-evaluation context creation in the public boundary. Cross-context, cross-process and
+restart persistence are not guaranteed; distributed, crash-safe and durable REAL replay storage
+remains `NOT_PROVISIONED`.
 
 `validate_external_verification_result` is the sole public result truth boundary:
 it again reconstructs primitives, enforces code-owned literals, canonical gate coverage and the

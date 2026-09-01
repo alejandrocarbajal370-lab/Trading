@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import threading
+from unittest.mock import Mock
 
 import pytest
 from pydantic import ValidationError
@@ -11,6 +13,7 @@ from governance.external_evidence_verification import (
     CONTRACT_VERSION,
     ExternalEvidenceReceipt,
     ExternalEvidenceVerificationError,
+    ExternalEvidenceVerifierContext,
     ExternalVerificationFoundationResult,
     IndependentVerifierDecision,
     InMemoryContractTestReplayLedger,
@@ -18,6 +21,7 @@ from governance.external_evidence_verification import (
     RevocationReview,
     VerifierAuthoritySnapshot,
     assess_external_evidence_verification,
+    build_contract_test_verifier_context,
     canonical_gate_verification_manifest,
     contract_test_material_for_gate,
     observe_contract_test_material,
@@ -126,18 +130,18 @@ def valid_inputs(
     return adapter, authorities, receipts, decisions, revocations, observed_materials
 
 
-def assess(values=None, *, verifier_time=NOW, replay_ledger=None):
+def assess(values=None, *, verifier_time=NOW, verifier_context=None):
     adapter, authorities, receipts, decisions, revocations, observed_materials = (
         values or valid_inputs()
     )
-    return assess_external_evidence_verification(
+    context = verifier_context or build_contract_test_verifier_context()
+    return context.assess_external_evidence_verification(
         adapter=adapter,
         authorities=authorities,
         receipts=receipts,
         decisions=decisions,
         revocations=revocations,
         observed_materials=observed_materials,
-        replay_ledger=replay_ledger or InMemoryContractTestReplayLedger(),
         verifier_time=verifier_time,
     )
 
@@ -328,18 +332,47 @@ def test_changed_bytes_with_wrong_canonical_provenance_fails():
         assess(tuple(values))
 
 
-def test_identical_cross_call_replay_fails_with_same_ledger():
-    ledger = InMemoryContractTestReplayLedger()
+def test_auditor_fresh_ledger_substitution_is_absent_and_same_context_replays():
+    context = build_contract_test_verifier_context()
     values = valid_inputs()
-    assert len(assess(values, replay_ledger=ledger).candidates) == 10
+    assert len(assess(values, verifier_context=context).candidates) == 10
     with pytest.raises(ExternalEvidenceVerificationError, match="replayed"):
-        assess(values, replay_ledger=ledger)
+        assess(values, verifier_context=context)
+    with pytest.raises(TypeError, match="replay_ledger"):
+        assess_external_evidence_verification(
+            replay_ledger=InMemoryContractTestReplayLedger(),
+            verifier_context=context,
+            adapter=values[0], authorities=values[1], receipts=values[2],
+            decisions=values[3], revocations=values[4], observed_materials=values[5],
+            verifier_time=NOW,
+        )
+
+
+def test_two_fresh_ledgers_cannot_be_passed_to_public_intake():
+    values = valid_inputs()
+    for ledger in (InMemoryContractTestReplayLedger(), InMemoryContractTestReplayLedger()):
+        with pytest.raises(TypeError, match="replay_ledger"):
+            assess_external_evidence_verification(
+                replay_ledger=ledger,
+                adapter=values[0], authorities=values[1], receipts=values[2],
+                decisions=values[3], revocations=values[4], observed_materials=values[5],
+                verifier_time=NOW,
+            )
+
+
+def test_two_explicit_contract_test_contexts_are_separate_lifecycles():
+    first = build_contract_test_verifier_context()
+    second = build_contract_test_verifier_context()
+    assert first.lifecycle_namespace != second.lifecycle_namespace
+    values = valid_inputs()
+    assert len(assess(values, verifier_context=first).candidates) == 10
+    assert len(assess(values, verifier_context=second).candidates) == 10
 
 
 def test_same_material_renamed_and_fully_resealed_is_still_replay():
-    ledger = InMemoryContractTestReplayLedger()
+    context = build_contract_test_verifier_context()
     first = valid_inputs()
-    assert len(assess(first, replay_ledger=ledger).candidates) == 10
+    assert len(assess(first, verifier_context=context).candidates) == 10
     second = valid_inputs()
     for index in range(len(tuple(EvidenceGate))):
         second = reseal_chain(
@@ -349,7 +382,7 @@ def test_same_material_renamed_and_fully_resealed_is_still_replay():
             replay_nonce_digest=typed_hash({"renamed-nonce": index}),
         )
     with pytest.raises(ExternalEvidenceVerificationError, match="replayed"):
-        assess(second, replay_ledger=ledger)
+        assess(second, verifier_context=context)
 
 
 def test_genuinely_distinct_canonically_registered_material_passes():
@@ -374,14 +407,14 @@ def test_genuinely_distinct_canonically_registered_material_passes():
     assert len(assess(tuple(values)).candidates) == 10
 
 
-@pytest.mark.parametrize("ledger", [None, object()])
-def test_replay_ledger_absent_or_invalid_fails_closed(ledger):
+@pytest.mark.parametrize("context", [None, object(), Mock()])
+def test_verifier_context_absent_or_invalid_fails_closed(context):
     adapter, authorities, receipts, decisions, revocations, observed_materials = valid_inputs()
-    with pytest.raises(ExternalEvidenceVerificationError, match="replay ledger"):
+    with pytest.raises(ExternalEvidenceVerificationError, match="context"):
         assess_external_evidence_verification(
             adapter=adapter,
             observed_materials=observed_materials,
-            replay_ledger=ledger,
+            verifier_context=context,
             authorities=authorities,
             receipts=receipts,
             decisions=decisions,
@@ -390,18 +423,68 @@ def test_replay_ledger_absent_or_invalid_fails_closed(ledger):
         )
 
 
-def test_caller_defined_replay_ledger_cannot_bypass_consumption():
-    class NoOpLedger(InMemoryContractTestReplayLedger):
-        def consume_many(self, identities, verifier_time):
-            return None
+def test_subclass_duck_and_forged_contexts_fail_sensitive_boundary():
+    class SubContext(ExternalEvidenceVerifierContext):
+        pass
+
+    class DuckContext:
+        lifecycle_namespace = "f" * 64
+        _ledger = InMemoryContractTestReplayLedger()
 
     adapter, authorities, receipts, decisions, revocations, observed_materials = valid_inputs()
-    with pytest.raises(ExternalEvidenceVerificationError, match="replay ledger"):
-        assess_external_evidence_verification(
-            adapter=adapter, observed_materials=observed_materials,
-            replay_ledger=NoOpLedger(), authorities=authorities, receipts=receipts,
-            decisions=decisions, revocations=revocations, verifier_time=NOW,
-        )
+    genuine = build_contract_test_verifier_context()
+    forged = object.__new__(ExternalEvidenceVerifierContext)
+    object.__setattr__(forged, "_ledger", InMemoryContractTestReplayLedger())
+    object.__setattr__(forged, "_lifecycle_namespace", genuine.lifecycle_namespace)
+    object.__setattr__(forged, "_sealed", True)
+    for context in (SubContext.__new__(SubContext), DuckContext(), forged, Mock()):
+        with pytest.raises(ExternalEvidenceVerificationError, match="context"):
+            assess_external_evidence_verification(
+                verifier_context=context, adapter=adapter,
+                observed_materials=observed_materials, authorities=authorities,
+                receipts=receipts, decisions=decisions, revocations=revocations,
+                verifier_time=NOW,
+            )
+
+
+def test_context_has_no_pydantic_copy_or_construct_forgery_surface():
+    context = build_contract_test_verifier_context()
+    assert not hasattr(context, "model_copy")
+    assert not hasattr(ExternalEvidenceVerifierContext, "model_construct")
+
+
+def test_context_owned_direct_consume_and_aggregate_share_one_ledger():
+    values = valid_inputs()
+    aggregate_first = build_contract_test_verifier_context()
+    assert len(assess(values, verifier_context=aggregate_first).candidates) == 10
+    consumed = tuple(aggregate_first._ledger._consumed)
+    with pytest.raises(ExternalEvidenceVerificationError, match="replayed"):
+        aggregate_first._ledger.consume_many(consumed, NOW)
+
+    direct_first = build_contract_test_verifier_context()
+    direct_first._ledger.consume_many(consumed, NOW)
+    with pytest.raises(ExternalEvidenceVerificationError, match="replayed"):
+        assess(values, verifier_context=direct_first)
+
+
+def test_context_owned_ledger_consume_is_atomic_under_concurrency():
+    context = build_contract_test_verifier_context()
+    identity = typed_hash({"concurrent": "identity"})
+    outcomes = []
+
+    def consume():
+        try:
+            context._ledger.consume_many((identity,), NOW)
+            outcomes.append("PASS")
+        except ExternalEvidenceVerificationError:
+            outcomes.append("DUPLICATE")
+
+    threads = [threading.Thread(target=consume) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(outcomes) == ["DUPLICATE", "PASS"]
 
 
 def test_forged_nested_observation_and_sequential_atomic_consume_fail():

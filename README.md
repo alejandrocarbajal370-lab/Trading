@@ -51,10 +51,14 @@ authority windows plus a one-hour revocation-review window fail closed; `ACTIVE_
 a technical contract state, never trusted authority. A single result-consumption boundary rebuilds
 primitives, validates literals and recomputes the result hash, so alternate Pydantic constructors
 cannot promote readiness. The foundation remains `CONTRACT_TEST_ONLY`: external authority/trust
-root is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`. Every assessment also requires an
-explicit verifier-owned replay ledger. Its in-memory implementation provides process-local atomic
-contract semantics and derives identities from material plus canonical provenance, independent of
-caller-renamable receipt IDs and nonces. Durable/atomic REAL storage is `NOT_PROVISIONED`.
+root is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`. Every assessment runs through an
+explicit `CONTRACT_TEST_ONLY` verifier context that owns one non-substitutable in-memory ledger for
+its lifecycle. The public intake does not accept a caller-provided ledger. Replay continuity is
+process-local and exists only while that same context is retained; the explicit contract-test
+factory starts a separate test lifecycle and namespace, so cross-context continuity is neither
+provided nor claimed. Identities derive from material plus canonical provenance, independent of
+caller-renamable receipt IDs and nonces. Cross-process/restart persistence and durable/atomic REAL
+storage are `NOT_PROVISIONED`.
 Content binding is not provider authentication, signature verification, legal/licensing validity,
 WORM custody or external trust; all remain unprovisioned.
 
