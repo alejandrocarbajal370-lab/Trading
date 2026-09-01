@@ -39,15 +39,24 @@ The next repository-defined block is documented without an invented phase number
 [`docs/adr/0003-external-evidence-verification-acceptance.md`](docs/adr/0003-external-evidence-verification-acceptance.md).
 It separates observed receipts, technically checked but untrusted candidates, and official gate
 state; and still cannot close a gate. A code-owned contract-test manifest binds each gate to exact
-provider, dataset/version, adapter/release, receipt/evidence policy and artifact identities. Public
-intake carries only manifest and SHA-256 references, not caller-authored provider metadata.
+provider, dataset/version, adapter/release, receipt/evidence policy and an explicit set of synthetic
+artifact identities. An adapter-facing `CONTRACT_TEST_ONLY` observation boundary requires material
+bytes, computes SHA-256 internally, and binds the resulting observation to those canonical values.
+The assessor revalidates the object, decodes the material and recomputes its digest; a caller cannot
+establish content truth merely by supplying a self-consistent gate, expectation and digest. Public
+receipt intake carries only manifest and SHA-256 references, not caller-authored provider metadata.
 Gate-specific authority snapshots and explicit revocation reviews bind the receipt, assessment,
 four fixed independent actor roles, decision and verifier time. Code-owned 24-hour receipt and
 authority windows plus a one-hour revocation-review window fail closed; `ACTIVE_UNTRUSTED` remains
 a technical contract state, never trusted authority. A single result-consumption boundary rebuilds
 primitives, validates literals and recomputes the result hash, so alternate Pydantic constructors
 cannot promote readiness. The foundation remains `CONTRACT_TEST_ONLY`: external authority/trust
-root is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`.
+root is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`. Every assessment also requires an
+explicit verifier-owned replay ledger. Its in-memory implementation provides process-local atomic
+contract semantics and derives identities from material plus canonical provenance, independent of
+caller-renamable receipt IDs and nonces. Durable/atomic REAL storage is `NOT_PROVISIONED`.
+Content binding is not provider authentication, signature verification, legal/licensing validity,
+WORM custody or external trust; all remain unprovisioned.
 
 ## Current stage
 

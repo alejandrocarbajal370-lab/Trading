@@ -18,10 +18,19 @@ provider approval, immutable custody proof, or gate closure.
 
 A code-owned, `CONTRACT_TEST_ONLY` manifest is reconstructed inside the assessor. For every gate it
 fixes provider, dataset and dataset-version references, adapter and adapter-release references,
-receipt and evidence policies, and expected artifact digest. The caller cannot supply or replace
-this manifest. Receipt, authority, decision, revocation review and candidate objects bind the
-gate-specific expectation hash. Complete package swaps, including re-labelling and re-sealing, fail
-against this independent expectation; collection position is never semantic authority.
+receipt and evidence policies, and the accepted synthetic artifact digests. The caller cannot
+supply or replace this manifest. Receipt, authority, decision, revocation review and candidate
+objects bind the gate-specific expectation hash.
+
+The manifest alone is not enough: a separate adapter-facing material-observation boundary requires
+bytes, computes SHA-256 internally, and emits a `CONTRACT_TEST_ONLY` observation bound to canonical
+gate, provider, dataset/version, adapter/release, policies, observer and observation time. The
+aggregate rebuilds that object from primitives, strictly decodes the embedded material and
+recomputes its digest. It requires both canonical expectation and material observation, and fails
+closed if material is absent. Consequently, changing every declared gate, expectation, digest,
+receipt ID, nonce, assessment identity and dependent hash without changing the underlying bytes
+fails. Changing the bytes while retaining mismatched provenance also fails. Collection position is
+never semantic authority. This is internal content binding only, not evidence authentication.
 
 Provider/dataset/adapter/version strings are absent from public intake and result DTOs. Intake uses
 only the code-owned manifest reference and fixed-format SHA-256 identities. This structurally
@@ -48,11 +57,21 @@ open; expiry equality fails closed. `UNKNOWN`, `REVOKED` and `NOT_PROVISIONED` t
 retroactivity, future observations and revocation at or before a relevant time all fail.
 
 The aggregate reconstructs every caller input from primitives, recomputes hashes and requires
-exactly ten unique gates. `validate_external_verification_result` is the sole public truth boundary:
+exactly ten unique gates. It also requires an explicit verifier-owned replay ledger external to the
+aggregate. Replay identity is recomputed internally from material digest, canonical gate
+expectation, provider/dataset/version, adapter/release and the versioned temporal policy; receipt IDs
+and nonces are not replay authority. The in-memory `CONTRACT_TEST_ONLY` ledger atomically consumes a
+complete validated batch within one process, so identical cross-call evidence and fully re-sealed
+receipt/nonce renames fail. It does not claim distributed, crash-safe or durable guarantees. A REAL
+persistent/atomic backend is `NOT_PROVISIONED`, and omission or invalid provisioning fails closed.
+
+`validate_external_verification_result` is the sole public result truth boundary:
 it again reconstructs primitives, enforces code-owned literals, canonical gate coverage and the
 result hash. `model_copy` or `model_construct` can create an invalid in-memory Pydantic object, but
 that object, nested variants and promoted JSON cannot cross this boundary as trusted state.
-A real provider-specific verifier and external trust root remain absent.
+A real provider-specific verifier and external trust root remain absent. Material digest agreement
+does not prove provider authenticity, cryptographic signature validity, legal/licensing validity,
+WORM retention or external trust.
 
 ## Frozen safety state
 
