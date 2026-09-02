@@ -3,6 +3,7 @@ import datetime as dt
 import pytest
 from pydantic import ValidationError
 
+from governance.canonical import typed_hash
 from governance.durable_replay import build_contract_test_persistent_replay, derive_replay_identity
 from governance.external_custody import (
     CustodyBoundaryAssessment,
@@ -26,9 +27,9 @@ ASSESSED = OBSERVED + dt.timedelta(minutes=1)
 RAW_EVIDENCE = b"synthetic custody control export"
 
 
-def receipt(tmp_path, *, committed_at=COMMITTED):
+def receipt(tmp_path, *, committed_at=COMMITTED, gate=EvidenceGate.RETENTION_WORM):
     material = observe_material(
-        ProviderRegistry.resolve(EvidenceGate.RETENTION_WORM),
+        ProviderRegistry.resolve(gate),
         b"raw-material",
         b"provider-lineage",
         COMMITTED,
@@ -126,6 +127,30 @@ def test_temporal_causality_and_retention_fail_closed(tmp_path):
             raw_evidence=RAW_EVIDENCE,
             assessed_at=OBSERVED - dt.timedelta(seconds=1),
         )
+    fifth = tmp_path / "fifth"
+    fifth.mkdir()
+    with pytest.raises((FoundationError, ValidationError), match="outside retention"):
+        assess_contract_test_custody(
+            observation(fifth),
+            raw_evidence=RAW_EVIDENCE,
+            assessed_at=COMMITTED + dt.timedelta(days=30),
+        )
+
+
+def test_fully_resealed_retention_start_before_commit_fails(tmp_path):
+    item = observation(tmp_path)
+    forged = item.model_dump(mode="json")
+    forged["retention"]["retained_from"] = (
+        COMMITTED - dt.timedelta(seconds=1)
+    ).isoformat().replace("+00:00", "Z")
+    forged["retention"]["declaration_hash"] = typed_hash(
+        {key: value for key, value in forged["retention"].items() if key != "declaration_hash"}
+    )
+    forged["observation_hash"] = typed_hash(
+        {key: value for key, value in forged.items() if key != "observation_hash"}
+    )
+    with pytest.raises(ValidationError, match="retention start precedes"):
+        RawCustodyObservation.model_validate(forged)
 
 
 def test_unknown_fields_empty_evidence_and_model_construct_bypass_fail(tmp_path):
@@ -202,6 +227,14 @@ def test_non_utc_nested_receipt_swap_fails_deep_revalidation(tmp_path):
         assess_contract_test_custody(
             bypass, raw_evidence=RAW_EVIDENCE, assessed_at=ASSESSED
         )
+
+
+@pytest.mark.parametrize(
+    "gate", [gate for gate in EvidenceGate if gate is not EvidenceGate.RETENTION_WORM]
+)
+def test_cross_gate_receipt_swap_matrix_fails_closed(tmp_path, gate):
+    with pytest.raises(FoundationError, match="retention gate"):
+        observation(tmp_path, persistence_receipt=receipt(tmp_path, gate=gate))
 
 
 def test_real_route_is_sealed_and_cannot_accept_fake_backend_or_authority():

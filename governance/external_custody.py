@@ -12,7 +12,11 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from governance.canonical import typed_hash
 from governance.durable_replay import PersistenceReceipt
-from governance.external_provider_foundation import FoundationError, ProvisioningState
+from governance.external_provider_foundation import (
+    FoundationError,
+    ProviderRegistry,
+    ProvisioningState,
+)
 from governance.phase7e import EvidenceGate, GateState
 
 CONTRACT_VERSION = "external-custody-retention-boundary-v1"
@@ -81,11 +85,14 @@ class RawCustodyObservation(_ContractModel):
     def validate_observation(self):
         receipt = _revalidate(PersistenceReceipt, self.persistence_receipt, "persistence receipt")
         _utc(receipt.committed_at, "committed_at")
+        _retention_receipt(receipt)
         _revalidate(CustodyLocation, self.location, "custody location")
         _revalidate(RetentionDeclaration, self.retention, "retention declaration")
         _utc(self.observed_at, "observed_at")
         if self.observed_at < receipt.committed_at:
             raise ValueError("custody observation precedes durable replay commit")
+        if self.retention.retained_from < receipt.committed_at:
+            raise ValueError("retention start precedes durable replay commit")
         if self.observed_at < self.retention.retained_from:
             raise ValueError("custody observation precedes retention start")
         if self.observed_at >= self.retention.retain_until:
@@ -116,6 +123,8 @@ class CustodyBoundaryAssessment(_ContractModel):
         _utc(self.assessed_at, "assessed_at")
         if self.assessed_at < self.observation.observed_at:
             raise ValueError("assessment precedes custody observation")
+        if self.assessed_at >= self.observation.retention.retain_until:
+            raise ValueError("assessment is outside retention interval")
         _check_hash(self, "assessment_hash")
         return self
 
@@ -138,6 +147,7 @@ def observe_contract_test_custody(
     receipt = _revalidate(PersistenceReceipt, persistence_receipt, "persistence receipt")
     if receipt.adapter_mode is not ProvisioningState.CONTRACT_TEST_ONLY:
         raise FoundationError("only contract-test persistence receipts are accepted")
+    _retention_receipt(receipt)
     if not isinstance(raw_evidence, bytes) or not raw_evidence:
         raise FoundationError("raw custody evidence must be non-empty bytes")
     _utc(receipt.committed_at, "committed_at")
@@ -259,6 +269,12 @@ def _utc(value: dt.datetime, label: str) -> None:
         raise ValueError(f"{label} must be timezone-aware")
     if value.utcoffset() != dt.timedelta(0):
         raise ValueError(f"{label} must use canonical UTC")
+
+
+def _retention_receipt(receipt: PersistenceReceipt) -> None:
+    expected = ProviderRegistry.resolve(EvidenceGate.RETENTION_WORM).route_hash
+    if receipt.replay_identity.route_hash != expected:
+        raise FoundationError("persistence receipt is not bound to the retention gate")
 
 
 def _unambiguous_identifier(value: str, label: str) -> None:
