@@ -73,6 +73,18 @@ provider activation, external attestation trust, authority/trust-root provisioni
 readiness changes, signals, backtesting or trading; it does not block implementation of this
 `CONTRACT_TEST_ONLY` foundation.
 
+That interface foundation is now proposed in
+[`docs/adr/0004-external-provider-adapter-durable-verification-interface-foundation.md`](docs/adr/0004-external-provider-adapter-durable-verification-interface-foundation.md).
+It is stacked on PR #27 because its authorization and canonical scope exist only there. PR #27
+must merge first; this draft must then be rebased or retargeted and revalidated. The implementation
+adds closed provider/dataset/adapter identities, a code-owned per-gate registry, byte-level
+material/provenance observation, and explicit attestation, durable replay and independent-verifier
+ports. The REAL implementations remain `NOT_PROVISIONED`. Its process-local replay fake is
+factory-owned and `CONTRACT_TEST_ONLY`, and the REAL route rejects it. Handoffs can emit only
+`OBSERVED`; hashes remain integrity rather than authenticity, and `VERIFIED`, `TRUSTED` and
+`CLOSED` remain unavailable without external authority. This stacked draft must not merge before
+PR #27.
+
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7F contractual foundations are merged.
