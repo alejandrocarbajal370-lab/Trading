@@ -62,6 +62,17 @@ storage are `NOT_PROVISIONED`.
 Content binding is not provider authentication, signature verification, legal/licensing validity,
 WORM custody or external trust; all remain unprovisioned.
 
+The next implementable block is **External Provider Adapter & Durable Verification Interface
+Foundation**. The repository marks its non-REAL foundation work `AUTHORIZED_TO_IMPLEMENT` in
+`governance.roadmap.NEXT_BLOCK`. Its scope is interfaces and fail-closed scaffolding for provider
+adapters, canonical identities, material observation, signature/attestation verification, durable
+replay storage, independent verification and gate-specific evidence handoff, with `OBSERVED`,
+`VERIFIED`, `TRUSTED` and `CLOSED` kept distinct. REAL activation remains `NOT_AUTHORIZED` and
+durable replay/trust roots remain `NOT_PROVISIONED`. Independent audit is required before REAL
+provider activation, external attestation trust, authority/trust-root provisioning, gate closure,
+readiness changes, signals, backtesting or trading; it does not block implementation of this
+`CONTRACT_TEST_ONLY` foundation.
+
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7F contractual foundations are merged.

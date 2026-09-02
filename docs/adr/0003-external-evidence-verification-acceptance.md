@@ -96,4 +96,28 @@ still unavailable, and gate closure is a separate unavailable state transition.
 
 No fixture-to-REAL promotion, provider approval, WORM proof, scoring/ranking, portfolio, target,
 broker, order, execution, backtest, dashboard or Excel capability is introduced. Independent audit
-is required before adding any real adapter, trust root, legal authority or gate-state transition.
+is required before activating any REAL provider adapter, trusting an external signature or
+attestation, provisioning a trust root or legal authority, closing a gate, changing readiness, or
+enabling signals, backtesting or trading. It is not a prerequisite for designing or implementing a
+fail-closed, non-REAL foundation.
+
+## Next implementable block and authorization boundary
+
+The next repository-defined block is **External Provider Adapter & Durable Verification Interface
+Foundation**. Its foundation implementation is `AUTHORIZED_TO_IMPLEMENT` in
+`CONTRACT_TEST_ONLY` / `NOT_PROVISIONED` mode; REAL external activation is `NOT_AUTHORIZED`.
+`governance.roadmap.NEXT_BLOCK` is the machine-readable source of this authorization and frozen
+safety state.
+
+The authorized scope is limited to provider-adapter interfaces; canonical provider, dataset and
+adapter identity resolution; material fetch/observation contracts; an unimplemented, fail-closed
+signature/attestation verification hook; a durable replay storage interface with a
+`NOT_PROVISIONED` stub; an independent verifier interface; gate-specific acceptance-evidence
+handoff; and explicit separation of `OBSERVED`, `VERIFIED`, `TRUSTED` and `CLOSED` states. Skeletons
+must not silently promote one state to another, and the absence of provisioning must fail closed.
+
+This authorization permits the next foundation to be designed and tested without a REAL provider.
+It does not attest that any provider, credential, signature, authority, legal entitlement, WORM
+store, durable replay service or independent verifier exists. Independent audit and the applicable
+authorization gate remain mandatory before any REAL activation or safety-state transition listed
+above.
