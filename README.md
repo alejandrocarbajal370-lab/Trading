@@ -81,11 +81,21 @@ custody-control evidence, canonical object/version identity, retention declarati
 causality, while emitting only `OBSERVED_UNTRUSTED`. No local receipt, location, retention value,
 hash or legal-hold declaration proves external custody, WORM, legal approval or trust. The sealed
 REAL boundary accepts no caller backend, authority or trust root and remains `NOT_PROVISIONED`.
-It is a new PR based on integrated PR #29. `governance.roadmap.NEXT_BLOCK` now records the true next
-non-REAL dependency as **Trust-Anchor & Authority Provisioning Contract Foundation** with
+PR #30 is integrated. The current Draft foundation is **Trust-Anchor & Authority Provisioning
+Contract Foundation**, documented in
+[`docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md`](docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md).
+It defines closed authority, role, capability, scope, trust-anchor, evidence-reference and temporal
+revocation contracts, but provisions no real trust root or authority. Trust-anchor identity is
+immutable and content-addressed separately from its provider/gate/scope registration lifecycle;
+authority and anchor availability/revocation are resolved independently and must both be valid at
+verifier time. Non-overlapping rotations are explicit, while duplicate or overlapping registrations
+fail closed. `governance.roadmap.NEXT_BLOCK`
+now records the true posterior dependency as **External Trust-Anchor Evidence Verification &
+Admission Foundation** with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and
 `AFTER_CURRENT_BLOCK_MERGED`; REAL activation remains `NOT_AUTHORIZED`. All evidence gates remain
-`OPEN_EXTERNAL`.
+`OPEN_EXTERNAL`. It must be implemented in a new PR after this Draft is independently authorized
+and merged.
 
 The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
 dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated
