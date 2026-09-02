@@ -62,16 +62,35 @@ storage are `NOT_PROVISIONED`.
 Content binding is not provider authentication, signature verification, legal/licensing validity,
 WORM custody or external trust; all remain unprovisioned.
 
-The next implementable block is **External Provider Adapter & Durable Verification Interface
-Foundation**. The repository marks its non-REAL foundation work `AUTHORIZED_TO_IMPLEMENT` in
-`governance.roadmap.NEXT_BLOCK`. Its scope is interfaces and fail-closed scaffolding for provider
-adapters, canonical identities, material observation, signature/attestation verification, durable
-replay storage, independent verification and gate-specific evidence handoff, with `OBSERVED`,
-`VERIFIED`, `TRUSTED` and `CLOSED` kept distinct. REAL activation remains `NOT_AUTHORIZED` and
-durable replay/trust roots remain `NOT_PROVISIONED`. Independent audit is required before REAL
-provider activation, external attestation trust, authority/trust-root provisioning, gate closure,
-readiness changes, signals, backtesting or trading; it does not block implementation of this
-`CONTRACT_TEST_ONLY` foundation.
+The external provider interface foundation is now proposed in
+[`docs/adr/0004-external-provider-adapter-durable-verification-interface-foundation.md`](docs/adr/0004-external-provider-adapter-durable-verification-interface-foundation.md).
+It builds on the integrated PR #27 authorization and canonical scope. The implementation
+adds closed provider/dataset/adapter identities, a code-owned per-gate registry, byte-level
+material/provenance observation, and explicit attestation, durable replay and independent-verifier
+ports. The REAL implementations remain `NOT_PROVISIONED`. Its process-local replay fake is
+factory-owned and `CONTRACT_TEST_ONLY`, and the REAL route rejects it. Handoffs can emit only
+`OBSERVED`; hashes remain integrity rather than authenticity, and `VERIFIED`, `TRUSTED` and
+`CLOSED` remain unavailable without external authority. This foundation remains a draft pending
+complete validation and explicit merge authorization.
+
+After that foundation is merged, the next implementable block is **Durable Replay Persistence &
+Custody Boundary Foundation**, formalized in
+[`docs/adr/0005-durable-replay-persistence-custody-boundary-foundation.md`](docs/adr/0005-durable-replay-persistence-custody-boundary-foundation.md).
+`governance.roadmap.NEXT_BLOCK` marks only its non-REAL contract work
+`AUTHORIZED_TO_IMPLEMENT`; REAL activation is `NOT_AUTHORIZED`. Its exact scope is replay identity,
+atomic consume-if-new behavior, restart/cross-process continuity, custody/retention boundaries,
+failure/concurrency semantics and a `CONTRACT_TEST_ONLY` persistence adapter. It must be opened in a
+new PR after PR #28 is merged and the new branch is based on that integrated head. It must not be
+stacked on this still-draft PR (`successor_pr=NEW_PR_REQUIRED`;
+`merge_order=AFTER_CURRENT_BLOCK_MERGED`). Trust root, REAL durable replay and independent verifier
+remain `NOT_PROVISIONED`; all evidence remains `OBSERVED` and all ten gates remain `OPEN_EXTERNAL`.
+
+The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
+dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated
+backtesting, but before portfolio optimization or live rebalancing. Its machine-readable scope is
+`governance.roadmap.FUTURE_TAX_AWARE_CAPABILITY`; it is `FUTURE_AUTHORIZED`, is not the current
+`NEXT_BLOCK`, and authorizes neither implementation, trading nor REAL activation. The architecture
+is documented in [`docs/tax_aware_portfolio_governance.md`](docs/tax_aware_portfolio_governance.md).
 
 ## Current stage
 
