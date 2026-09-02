@@ -85,6 +85,13 @@ stacked on this still-draft PR (`successor_pr=NEW_PR_REQUIRED`;
 `merge_order=AFTER_CURRENT_BLOCK_MERGED`). Trust root, REAL durable replay and independent verifier
 remain `NOT_PROVISIONED`; all evidence remains `OBSERVED` and all ten gates remain `OPEN_EXTERNAL`.
 
+The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
+dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated
+backtesting, but before portfolio optimization or live rebalancing. Its machine-readable scope is
+`governance.roadmap.FUTURE_TAX_AWARE_CAPABILITY`; it is `FUTURE_AUTHORIZED`, is not the current
+`NEXT_BLOCK`, and authorizes neither implementation, trading nor REAL activation. The architecture
+is documented in [`docs/tax_aware_portfolio_governance.md`](docs/tax_aware_portfolio_governance.md).
+
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7F contractual foundations are merged.

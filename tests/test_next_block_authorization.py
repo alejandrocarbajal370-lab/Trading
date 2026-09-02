@@ -5,11 +5,15 @@ from pydantic import ValidationError
 
 from governance.phase7e import EvidenceGate, GateState
 from governance.roadmap import (
+    FUTURE_TAX_AWARE_CAPABILITY,
     NEXT_BLOCK,
     ImplementationAuthorization,
     MergeOrder,
     NextBlockScope,
     RoadmapBlock,
+    TaxAwareDependency,
+    TaxAwareScope,
+    TaxLotContractField,
     validate_next_block,
 )
 
@@ -93,3 +97,53 @@ def test_next_foundation_preserves_all_frozen_safety_states():
     assert NEXT_BLOCK.signals_generated is False
     assert NEXT_BLOCK.live_execution_enabled is False
     assert NEXT_BLOCK.backtesting == "NOT_AUTHORIZED"
+
+
+def test_tax_aware_governance_is_future_only_and_does_not_replace_next_block():
+    capability = FUTURE_TAX_AWARE_CAPABILITY
+    assert capability.name == RoadmapBlock.TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE
+    assert capability.current_next_block is False
+    assert capability.name != NEXT_BLOCK.name
+    assert capability.implementation_authorized is False
+    assert capability.activation_authorized is False
+    assert capability.dependencies == tuple(TaxAwareDependency)
+    assert capability.scope == tuple(TaxAwareScope)
+    assert capability.contract_fields == tuple(TaxLotContractField)
+
+
+def test_tax_aware_governance_cannot_precede_readiness_or_enable_trading():
+    capability = FUTURE_TAX_AWARE_CAPABILITY
+    assert capability.dependencies == (
+        TaxAwareDependency.REAL_PROVIDER_DATA_OBSERVED_VERIFIED_ADMITTED,
+        TaxAwareDependency.REAL_QVM_SCORING_GOVERNED_READY,
+        TaxAwareDependency.BACKTESTING_AUTHORIZED_VALIDATED,
+    )
+    assert capability.required_before == ("PORTFOLIO_OPTIMIZER_REBALANCE_LIVE",)
+    assert capability.enables_trading is False
+    assert capability.trade_decision == "NO_TRADE"
+    assert capability.signals_generated is False
+    assert capability.live_execution_enabled is False
+
+    raw = capability.model_dump(mode="python")
+    raw["dependencies"] = raw["dependencies"][:-1]
+    with pytest.raises(ValidationError):
+        type(capability).model_validate(raw)
+
+    raw = capability.model_dump(mode="python")
+    raw["activation_authorized"] = True
+    with pytest.raises(ValidationError):
+        type(capability).model_validate(raw)
+
+
+def test_tax_aware_documentation_matches_machine_readable_scope():
+    document = (ROOT / "docs/tax_aware_portfolio_governance.md").read_text()
+    normalized = " ".join(document.split())
+    assert FUTURE_TAX_AWARE_CAPABILITY.name.value in normalized
+    assert FUTURE_TAX_AWARE_CAPABILITY.status.value in document
+    for dependency in TaxAwareDependency:
+        assert f"`{dependency.value}`" in document
+    for scope in TaxAwareScope:
+        assert f"`{scope.value}`" in document
+    for field in TaxLotContractField:
+        assert f"`{field.value}`" in document
+    assert "tax_estimate" in document and "tax_filing_truth" in document
