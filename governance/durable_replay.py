@@ -94,6 +94,8 @@ class ContractTestPersistentReplay:
         if _factory_token is not _FACTORY_TOKEN:
             raise FoundationError("persistent replay must be factory-created")
         self._database = database
+        connection = self._connect(initialize=not database.exists())
+        connection.close()
 
     def consume_if_new(
         self, identities: tuple[ReplayIdentity, ...], *, committed_at: dt.datetime
@@ -160,37 +162,48 @@ class ContractTestPersistentReplay:
             raise FoundationError("persistence receipt binding mismatch")
         return receipt
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self, *, initialize: bool = False) -> sqlite3.Connection:
+        connection: sqlite3.Connection | None = None
         try:
             connection = sqlite3.connect(self._database, timeout=5, isolation_level=None)
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
-                raise FoundationError("unknown replay schema version")
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS replay_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
-            )
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS replay_consumption ("
-                "identity_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, receipt_json TEXT NOT NULL)"
-            )
-            stored = connection.execute(
-                "SELECT value FROM replay_metadata WHERE key = 'schema_version'"
-            ).fetchone()
-            if stored is None:
+            if initialize:
+                if version != 0:
+                    raise FoundationError("new replay storage has unexpected schema version")
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "CREATE TABLE replay_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE replay_consumption ("
+                    "identity_hash TEXT PRIMARY KEY, identity_json TEXT NOT NULL, receipt_json TEXT NOT NULL)"
+                )
                 connection.execute(
                     "INSERT INTO replay_metadata(key, value) VALUES ('schema_version', ?)",
                     (SCHEMA_VERSION,),
                 )
                 connection.execute("PRAGMA user_version=1")
-            elif stored[0] != SCHEMA_VERSION or version != 1:
+                connection.commit()
+            elif version != 1:
+                raise FoundationError("unknown replay schema version")
+            stored = connection.execute(
+                "SELECT value FROM replay_metadata WHERE key = 'schema_version'"
+            ).fetchone()
+            if stored is None or stored[0] != SCHEMA_VERSION:
                 raise FoundationError("replay schema metadata mismatch")
             integrity = connection.execute("PRAGMA integrity_check").fetchone()
             if integrity != ("ok",):
                 raise FoundationError("replay storage integrity check failed")
             return connection
+        except FoundationError:
+            if connection is not None:
+                connection.close()
+            raise
         except (OSError, sqlite3.Error) as exc:
+            if connection is not None:
+                connection.close()
             raise FoundationError("durable replay storage unavailable") from exc
 
     @staticmethod

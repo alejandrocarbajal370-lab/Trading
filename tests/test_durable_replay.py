@@ -143,6 +143,19 @@ def test_unknown_or_inconsistent_schema_fails_closed(tmp_path):
         build_contract_test_persistent_replay(database).receipt_for(identity())
 
 
+def test_truncated_or_replaced_storage_cannot_be_reinitialized(tmp_path):
+    database = tmp_path / "replay.sqlite3"
+    build_contract_test_persistent_replay(database).consume_if_new((identity(),), committed_at=NOW)
+    database.write_bytes(database.read_bytes()[:137])
+    with pytest.raises(FoundationError, match="schema|storage"):
+        build_contract_test_persistent_replay(database)
+
+    replacement = tmp_path / "replacement.sqlite3"
+    sqlite3.connect(replacement).close()
+    with pytest.raises(FoundationError, match="schema"):
+        build_contract_test_persistent_replay(replacement)
+
+
 def test_empty_duplicate_naive_time_and_invalid_storage_are_rejected(tmp_path):
     replay = build_contract_test_persistent_replay(tmp_path / "replay.sqlite3")
     item = identity()
