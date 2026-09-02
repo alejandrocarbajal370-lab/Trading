@@ -99,6 +99,17 @@ def test_stale_or_recomputed_hash_never_creates_authenticity():
         validate_foundation_result(value.model_copy(update={"handoffs": (forged, *value.handoffs[1:])}))
 
 
+@pytest.mark.parametrize("field", ["observation_hash", "material_digest", "provenance_digest"])
+def test_resealed_handoff_cannot_break_observation_binding(field):
+    value = result()
+    handoff = value.handoffs[0]
+    raw = handoff.model_dump(mode="python")
+    raw[field] = "f" * 64
+    raw.pop("handoff_hash")
+    with pytest.raises(ValidationError, match="observation_hash does not bind"):
+        _seal(type(handoff), "handoff_hash", **raw)
+
+
 def test_attestation_hook_cannot_be_caller_promoted():
     observed = observe_material(ProviderRegistry.resolve(EvidenceGate.REAL_FX), b"m", b"p", NOW)
     attestation = NotProvisionedAttestationVerifier().verify(observed)

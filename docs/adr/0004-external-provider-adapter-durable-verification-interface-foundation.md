@@ -37,6 +37,10 @@ closed literals and canonical gate order, and recompute hashes. Direct construct
 `model_validate`, JSON, `model_copy`, `model_construct`, nested forged values and fully recomputed
 cross-gate packages cannot promote authority.
 
+Handoff validation independently reconstructs the observation binding from the canonical route,
+material digest, provenance digest and observation time. Re-sealing an outer handoff cannot replace
+any one of those values while retaining an unrelated observation identity.
+
 ## Explicit non-capabilities
 
 No REAL provider, adapter, credential, signature, attestation, trust root, legal approval, WORM
@@ -60,3 +64,17 @@ unavailable states. External evidence and authority are required for every trans
 - `live_execution_enabled=false`
 - `signals_generated=false`
 - backtesting: `NOT_AUTHORIZED`
+
+## Successor and merge order
+
+The next minimum block is **Durable Replay Persistence & Custody Boundary Foundation**. This block
+exposes a replay port but intentionally supplies only process-local `CONTRACT_TEST_ONLY` behavior;
+restart/cross-process continuity, atomic persistence and a custody/retention boundary are therefore
+the first unimplemented prerequisite owned directly by this interface.
+
+`governance.roadmap.NEXT_BLOCK` is the machine-readable authorization. The successor's non-REAL
+foundation implementation is `AUTHORIZED_TO_IMPLEMENT`, while REAL activation is
+`NOT_AUTHORIZED`. PR #28 remains independently mergeable and must not contain the successor
+implementation. After PR #28 is explicitly authorized and merged, the successor must start in a
+new PR based on the integrated PR #28 head. No successor PR is authorized while PR #28 remains
+unmerged.

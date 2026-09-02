@@ -148,6 +148,16 @@ class EvidenceHandoff(ContractModel):
             raise ValueError("handoff cannot precede observation")
         if route.gate not in EvidenceGate or attestation.state not in AttestationState:
             raise ValueError("non-canonical handoff")
+        expected_observation = _seal(
+            MaterialObservation,
+            "observation_hash",
+            route=route,
+            material_digest=self.material_digest,
+            provenance_digest=self.provenance_digest,
+            observed_at=self.observed_at,
+        )
+        if self.observation_hash != expected_observation.observation_hash:
+            raise ValueError("observation_hash does not bind handoff material and provenance")
         _check_hash(self, "handoff_hash")
         return self
 
