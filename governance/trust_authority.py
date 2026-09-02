@@ -69,11 +69,38 @@ class TrustAnchorIdentity(_Model):
     anchor_kind: Literal["X509_CERTIFICATE", "PUBLIC_KEY", "TRANSPARENCY_LOG_ROOT"]
     credential_reference: EvidenceReference
     fingerprint: str = Field(pattern=SHA256)
+    identity_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def canonical(self):
         _id(self.anchor_id, "anchor_id")
         _deep(EvidenceReference, self.credential_reference, "credential reference")
+        _hash(self, "identity_hash")
+        return self
+
+
+class TrustAnchorRegistration(_Model):
+    """Independent temporal registration of immutable trust-anchor material."""
+
+    contract_version: Literal["trust-anchor-authority-contract-v1"] = CONTRACT_VERSION
+    mode: Literal[ContractMode.CONTRACT_TEST_ONLY]
+    anchor: TrustAnchorIdentity
+    provider_id: str = Field(pattern=IDENTIFIER)
+    gate: EvidenceGate
+    scope_id: str = Field(pattern=IDENTIFIER)
+    policy_version: str = Field(pattern=IDENTIFIER)
+    effective_at: dt.datetime
+    available_at: dt.datetime
+    revoked_at: dt.datetime | None = None
+    registration_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_registration(self):
+        for name in ("provider_id", "scope_id", "policy_version"):
+            _id(getattr(self, name), name)
+        _deep(TrustAnchorIdentity, self.anchor, "trust anchor identity")
+        _validate_lifecycle(self.effective_at, self.available_at, self.revoked_at, "anchor")
+        _hash(self, "registration_hash")
         return self
 
 
@@ -93,7 +120,8 @@ class AuthorityContract(_Model):
     contract_version: Literal["trust-anchor-authority-contract-v1"] = CONTRACT_VERSION
     mode: Literal[ContractMode.CONTRACT_TEST_ONLY]
     authority_id: str = Field(pattern=IDENTIFIER)
-    trust_anchor: TrustAnchorIdentity
+    trust_anchor_identity_hash: str = Field(pattern=SHA256)
+    trust_anchor_registration_hash: str = Field(pattern=SHA256)
     provider_id: str = Field(pattern=IDENTIFIER)
     gate: EvidenceGate
     scope_id: str = Field(pattern=IDENTIFIER)
@@ -110,14 +138,7 @@ class AuthorityContract(_Model):
     def validate_contract(self):
         for name in ("authority_id", "provider_id", "scope_id", "policy_version"):
             _id(getattr(self, name), name)
-        _deep(TrustAnchorIdentity, self.trust_anchor, "trust anchor")
-        _utc(self.effective_at, "effective_at")
-        _utc(self.available_at, "available_at")
-        _utc(self.revoked_at, "revoked_at")
-        if self.available_at < self.effective_at:
-            raise ValueError("availability precedes effective time")
-        if self.revoked_at is not None and self.revoked_at <= self.effective_at:
-            raise ValueError("revocation must follow effective time")
+        _validate_lifecycle(self.effective_at, self.available_at, self.revoked_at, "authority")
         if not self.capabilities or len(set(self.capabilities)) != len(self.capabilities):
             raise ValueError("capabilities must be non-empty and unique")
         approvals = tuple(_deep(Approval, item, "approval") for item in self.approvals)
@@ -135,18 +156,50 @@ class AuthorityContract(_Model):
 class AuthorityRegistryContract(_Model):
     contract_version: Literal["trust-anchor-authority-contract-v1"] = CONTRACT_VERSION
     mode: Literal[ContractMode.CONTRACT_TEST_ONLY]
+    anchor_registrations: tuple[TrustAnchorRegistration, ...]
     authorities: tuple[AuthorityContract, ...]
     registry_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def validate_registry(self):
+        registrations = tuple(
+            _deep(TrustAnchorRegistration, item, "trust anchor registration")
+            for item in self.anchor_registrations
+        )
         authorities = tuple(
             _deep(AuthorityContract, item, "authority contract") for item in self.authorities
         )
-        if not authorities:
-            raise ValueError("authority registry cannot be empty")
+        if not authorities or not registrations:
+            raise ValueError("authority and anchor registries cannot be empty")
+        if len({item.registration_hash for item in registrations}) != len(registrations):
+            raise ValueError("duplicate anchor registration")
+        for index, left in enumerate(registrations):
+            for right in registrations[index + 1 :]:
+                subject = (left.provider_id, left.gate, left.scope_id)
+                other = (right.provider_id, right.gate, right.scope_id)
+                if subject == other and _overlap(left, right):
+                    raise ValueError("overlapping anchor registration validity windows")
         if len({item.contract_hash for item in authorities}) != len(authorities):
             raise ValueError("duplicate authority contract")
+        registrations_by_hash = {item.registration_hash: item for item in registrations}
+        for authority in authorities:
+            registration = registrations_by_hash.get(authority.trust_anchor_registration_hash)
+            if registration is None:
+                raise ValueError("authority references an unregistered trust anchor lifecycle")
+            if authority.trust_anchor_identity_hash != registration.anchor.identity_hash:
+                raise ValueError("authority trust anchor identity binding mismatch")
+            if (
+                authority.provider_id,
+                authority.gate,
+                authority.scope_id,
+                authority.policy_version,
+            ) != (
+                registration.provider_id,
+                registration.gate,
+                registration.scope_id,
+                registration.policy_version,
+            ):
+                raise ValueError("authority trust anchor scope or policy binding mismatch")
         for index, left in enumerate(authorities):
             for right in authorities[index + 1 :]:
                 subject = (left.authority_id, left.provider_id, left.gate, left.scope_id)
@@ -159,6 +212,7 @@ class AuthorityRegistryContract(_Model):
 
 class ProvisioningObservation(_Model):
     contract: AuthorityContract
+    anchor_registration: TrustAnchorRegistration
     evidence: EvidenceReference
     observed_at: dt.datetime
     verified_at: dt.datetime
@@ -171,15 +225,23 @@ class ProvisioningObservation(_Model):
     @model_validator(mode="after")
     def validate_observation(self):
         contract = _deep(AuthorityContract, self.contract, "authority contract")
+        registration = _deep(
+            TrustAnchorRegistration, self.anchor_registration, "trust anchor registration"
+        )
+        _match_authority_anchor(contract, registration)
         _deep(EvidenceReference, self.evidence, "provisioning evidence")
         _utc(self.observed_at, "observed_at")
         _utc(self.verified_at, "verified_at")
-        if self.observed_at < contract.effective_at:
-            raise ValueError("evidence predates authority effectiveness")
+        if self.observed_at < contract.available_at:
+            raise ValueError("evidence predates authority availability")
+        if self.observed_at < registration.available_at:
+            raise ValueError("evidence predates anchor availability")
         if self.verified_at < self.observed_at:
             raise ValueError("verification precedes observation")
         if contract.revoked_at is not None and self.verified_at >= contract.revoked_at:
             raise ValueError("authority was revoked at verifier time")
+        if registration.revoked_at is not None and self.verified_at >= registration.revoked_at:
+            raise ValueError("trust anchor was revoked at verifier time")
         _hash(self, "observation_hash")
         return self
 
@@ -191,33 +253,61 @@ def build_contract_test_authority(**values: Any) -> AuthorityContract:
     return _seal(AuthorityContract, "contract_hash", **values)
 
 
-def build_contract_test_registry(*authorities: Any) -> AuthorityRegistryContract:
+def build_trust_anchor_identity(**values: Any) -> TrustAnchorIdentity:
+    """Seal immutable, content-addressed anchor identity and public material references."""
+    return _seal(TrustAnchorIdentity, "identity_hash", **values)
+
+
+def build_contract_test_anchor_registration(**values: Any) -> TrustAnchorRegistration:
+    """Build an independently sealed anchor lifecycle for contract tests only."""
+    values["mode"] = ContractMode.CONTRACT_TEST_ONLY
+    return _seal(TrustAnchorRegistration, "registration_hash", **values)
+
+
+def build_contract_test_registry(
+    *authorities: Any, anchor_registrations: tuple[Any, ...]
+) -> AuthorityRegistryContract:
     canonical = tuple(_deep(AuthorityContract, item, "authority contract") for item in authorities)
+    anchors = tuple(
+        _deep(TrustAnchorRegistration, item, "trust anchor registration")
+        for item in anchor_registrations
+    )
     return _seal(
         AuthorityRegistryContract,
         "registry_hash",
         contract_version=CONTRACT_VERSION,
         mode=ContractMode.CONTRACT_TEST_ONLY,
+        anchor_registrations=anchors,
         authorities=canonical,
     )
 
 
 def observe_contract_test_provisioning(
     contract: Any,
+    anchor_registration: Any,
     evidence: Any,
     *,
     expected_contract_hash: str,
+    expected_anchor_registration_hash: str,
     observed_at: dt.datetime,
     verified_at: dt.datetime,
 ) -> ProvisioningObservation:
     canonical = _deep(AuthorityContract, contract, "authority contract")
     if canonical.contract_hash != expected_contract_hash:
         raise FoundationError("authority contract binding mismatch")
+    registration = _deep(TrustAnchorRegistration, anchor_registration, "trust anchor registration")
+    if registration.registration_hash != expected_anchor_registration_hash:
+        raise FoundationError("trust anchor registration binding mismatch")
+    try:
+        _match_authority_anchor(canonical, registration)
+    except ValueError as exc:
+        raise FoundationError("authority and trust anchor binding mismatch") from exc
     reference = _deep(EvidenceReference, evidence, "provisioning evidence")
     return _seal(
         ProvisioningObservation,
         "observation_hash",
         contract=canonical,
+        anchor_registration=registration,
         evidence=reference,
         observed_at=observed_at,
         verified_at=verified_at,
@@ -255,7 +345,9 @@ def _deep(expected: type[T], value: Any, label: str) -> T:
 
 def _seal(expected: type[T], hash_field: str, **values: Any) -> T:
     raw = expected.model_construct(**values, **{hash_field: "0" * 64})
-    values[hash_field] = typed_hash(raw.model_dump(mode="json", exclude={hash_field}, warnings=False))
+    values[hash_field] = typed_hash(
+        raw.model_dump(mode="json", exclude={hash_field}, warnings=False)
+    )
     return expected(**values)
 
 
@@ -265,7 +357,44 @@ def _hash(value: BaseModel, field: str) -> None:
         raise ValueError(f"{field} mismatch")
 
 
-def _overlap(left: AuthorityContract, right: AuthorityContract) -> bool:
+def _validate_lifecycle(
+    effective_at: dt.datetime,
+    available_at: dt.datetime,
+    revoked_at: dt.datetime | None,
+    label: str,
+) -> None:
+    _utc(effective_at, f"{label} effective_at")
+    _utc(available_at, f"{label} available_at")
+    _utc(revoked_at, f"{label} revoked_at")
+    if available_at < effective_at:
+        raise ValueError(f"{label} availability precedes effective time")
+    if revoked_at is not None and revoked_at <= available_at:
+        raise ValueError(f"{label} revocation must follow effectiveness and availability")
+
+
+def _match_authority_anchor(
+    authority: AuthorityContract, registration: TrustAnchorRegistration
+) -> None:
+    if (
+        authority.trust_anchor_registration_hash != registration.registration_hash
+        or authority.trust_anchor_identity_hash != registration.anchor.identity_hash
+    ):
+        raise ValueError("authority trust anchor hash binding mismatch")
+    if (
+        authority.provider_id,
+        authority.gate,
+        authority.scope_id,
+        authority.policy_version,
+    ) != (
+        registration.provider_id,
+        registration.gate,
+        registration.scope_id,
+        registration.policy_version,
+    ):
+        raise ValueError("authority trust anchor scope or policy binding mismatch")
+
+
+def _overlap(left: Any, right: Any) -> bool:
     left_end = left.revoked_at or dt.datetime.max.replace(tzinfo=dt.UTC)
     right_end = right.revoked_at or dt.datetime.max.replace(tzinfo=dt.UTC)
     return left.effective_at < right_end and right.effective_at < left_end

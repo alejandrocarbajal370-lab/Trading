@@ -85,7 +85,11 @@ PR #30 is integrated. The current Draft foundation is **Trust-Anchor & Authority
 Contract Foundation**, documented in
 [`docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md`](docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md).
 It defines closed authority, role, capability, scope, trust-anchor, evidence-reference and temporal
-revocation contracts, but provisions no real trust root or authority. `governance.roadmap.NEXT_BLOCK`
+revocation contracts, but provisions no real trust root or authority. Trust-anchor identity is
+immutable and content-addressed separately from its provider/gate/scope registration lifecycle;
+authority and anchor availability/revocation are resolved independently and must both be valid at
+verifier time. Non-overlapping rotations are explicit, while duplicate or overlapping registrations
+fail closed. `governance.roadmap.NEXT_BLOCK`
 now records the true posterior dependency as **External Trust-Anchor Evidence Verification &
 Admission Foundation** with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and
