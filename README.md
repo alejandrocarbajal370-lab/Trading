@@ -34,6 +34,45 @@ revalidated selection, envelopes and canonical manifest. Reversible locators and
 remain outside auditable models and hashes. The digest does not prove credential validity or
 authentication. Authority remains `NOT_PROVISIONED`; 10/10 gates remain `OPEN_EXTERNAL`.
 
+The next repository-defined block is documented without an invented phase number as the
+**External Evidence Verification Acceptance Foundation** in
+[`docs/adr/0003-external-evidence-verification-acceptance.md`](docs/adr/0003-external-evidence-verification-acceptance.md).
+It separates observed receipts, technically checked but untrusted candidates, and official gate
+state; and still cannot close a gate. A code-owned contract-test manifest binds each gate to exact
+provider, dataset/version, adapter/release, receipt/evidence policy and an explicit set of synthetic
+artifact identities. An adapter-facing `CONTRACT_TEST_ONLY` observation boundary requires material
+bytes, computes SHA-256 internally, and binds the resulting observation to those canonical values.
+The assessor revalidates the object, decodes the material and recomputes its digest; a caller cannot
+establish content truth merely by supplying a self-consistent gate, expectation and digest. Public
+receipt intake carries only manifest and SHA-256 references, not caller-authored provider metadata.
+Gate-specific authority snapshots and explicit revocation reviews bind the receipt, assessment,
+four fixed independent actor roles, decision and verifier time. Code-owned 24-hour receipt and
+authority windows plus a one-hour revocation-review window fail closed; `ACTIVE_UNTRUSTED` remains
+a technical contract state, never trusted authority. A single result-consumption boundary rebuilds
+primitives, validates literals and recomputes the result hash, so alternate Pydantic constructors
+cannot promote readiness. The foundation remains `CONTRACT_TEST_ONLY`: external authority/trust
+root is `NOT_PROVISIONED` and 10/10 gates are `OPEN_EXTERNAL`. Every assessment runs through an
+explicit `CONTRACT_TEST_ONLY` verifier context that owns one non-substitutable in-memory ledger for
+its lifecycle. The public intake does not accept a caller-provided ledger. Replay continuity is
+process-local and exists only while that same context is retained; the explicit contract-test
+factory starts a separate test lifecycle and namespace, so cross-context continuity is neither
+provided nor claimed. Identities derive from material plus canonical provenance, independent of
+caller-renamable receipt IDs and nonces. Cross-process/restart persistence and durable/atomic REAL
+storage are `NOT_PROVISIONED`.
+Content binding is not provider authentication, signature verification, legal/licensing validity,
+WORM custody or external trust; all remain unprovisioned.
+
+The next implementable block is **External Provider Adapter & Durable Verification Interface
+Foundation**. The repository marks its non-REAL foundation work `AUTHORIZED_TO_IMPLEMENT` in
+`governance.roadmap.NEXT_BLOCK`. Its scope is interfaces and fail-closed scaffolding for provider
+adapters, canonical identities, material observation, signature/attestation verification, durable
+replay storage, independent verification and gate-specific evidence handoff, with `OBSERVED`,
+`VERIFIED`, `TRUSTED` and `CLOSED` kept distinct. REAL activation remains `NOT_AUTHORIZED` and
+durable replay/trust roots remain `NOT_PROVISIONED`. Independent audit is required before REAL
+provider activation, external attestation trust, authority/trust-root provisioning, gate closure,
+readiness changes, signals, backtesting or trading; it does not block implementation of this
+`CONTRACT_TEST_ONLY` foundation.
+
 ## Current stage
 
 Phase 6's research-only QVM scoring engine and the Phase 7A–7F contractual foundations are merged.
