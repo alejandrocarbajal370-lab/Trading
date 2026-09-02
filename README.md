@@ -549,4 +549,10 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
+`governance/durable_replay.py` implements the next contract-only foundation: canonical replay
+identities and an atomic SQLite-backed consume-if-new adapter used only by adversarial contract
+tests. It demonstrates restart and concurrent-process semantics without claiming external custody,
+WORM retention, legal approval, a trust root, or REAL provisioning. Corrupt or incompatible storage,
+duplicates, partial batches, and ambiguous persistence failures stop closed.
+
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
