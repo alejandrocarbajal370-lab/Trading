@@ -1,14 +1,12 @@
 # ADR 0004 — External Provider Adapter & Durable Verification Interface Foundation
 
-Status: **DRAFT; STACKED ON PR #27; CONTRACT_TEST_ONLY; NO REAL ACTIVATION**
+Status: **DRAFT; PR #27 INTEGRATED; CONTRACT_TEST_ONLY; NO REAL ACTIVATION**
 
 ## Dependency and merge order
 
-This block is stacked on commit `64e228feaa17f20d2bd89277c4de3dfe59975e2e` from PR #27.
-Its name, implementation authorization, scope and frozen safety state are defined by
-`governance.roadmap.NEXT_BLOCK` and ADR 0003, which are not present on `main`. PR #27 must merge
-first. This PR must then be rebased or retargeted onto the merged result and revalidated; it must
-not merge before PR #27.
+This block depends on the authorization and frozen safety state integrated from PR #27 in
+`governance.roadmap.NEXT_BLOCK` and ADR 0003. PR #28 is retargeted to the resulting `main` and
+remains draft pending complete validation and explicit merge authorization.
 
 ## Decision
 
