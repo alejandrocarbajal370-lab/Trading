@@ -7,10 +7,12 @@ from governance.phase7e import EvidenceGate, GateState
 from governance.roadmap import (
     FUTURE_TAX_AWARE_CAPABILITY,
     NEXT_BLOCK,
+    SUBSEQUENT_BLOCK,
     ImplementationAuthorization,
     MergeOrder,
     NextBlockScope,
     RoadmapBlock,
+    SubsequentBlockScope,
     TaxAwareDependency,
     TaxAwareScope,
     TaxLotContractField,
@@ -23,11 +25,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_next_foundation_is_authorized_but_real_activation_is_not():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION
+        == RoadmapBlock.EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.EXTERNAL_PROVIDER_ADAPTER_DURABLE_VERIFICATION_INTERFACE_FOUNDATION
+        == RoadmapBlock.DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -70,7 +72,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
     adr = (
         ROOT
-        / "docs/adr/0005-durable-replay-persistence-custody-boundary-foundation.md"
+        / "docs/adr/0006-external-custody-retention-verification-boundary-foundation.md"
     ).read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
@@ -81,6 +83,19 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
         assert NEXT_BLOCK.merge_order.value in document
         assert NEXT_BLOCK.successor_pr in document
     assert "new PR" in readme and "new PR" in adr
+
+
+def test_subsequent_block_is_realistic_and_not_self_referential():
+    assert SUBSEQUENT_BLOCK.current_block == NEXT_BLOCK.name
+    assert (
+        SUBSEQUENT_BLOCK.name
+        == RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION
+    )
+    assert SUBSEQUENT_BLOCK.scope == tuple(SubsequentBlockScope)
+    assert SUBSEQUENT_BLOCK.real_external_activation is ImplementationAuthorization.NOT_AUTHORIZED
+    assert SUBSEQUENT_BLOCK.trust_root == "NOT_PROVISIONED"
+    assert SUBSEQUENT_BLOCK.independent_verifier == "NOT_PROVISIONED"
+    assert SUBSEQUENT_BLOCK.real_provider_promotion is False
 
 
 def test_next_foundation_preserves_all_frozen_safety_states():

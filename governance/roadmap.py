@@ -24,6 +24,12 @@ class RoadmapBlock(StrEnum):
     DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION = (
         "Durable Replay Persistence & Custody Boundary Foundation"
     )
+    EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION = (
+        "External Custody & Retention Verification Boundary Foundation"
+    )
+    TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION = (
+        "Trust-Anchor & Authority Provisioning Contract Foundation"
+    )
     TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE = (
         "Tax Lot & Tax-Aware Portfolio Governance"
     )
@@ -80,16 +86,20 @@ class TaxAwareScope(StrEnum):
 
 
 class NextBlockScope(StrEnum):
-    REPLAY_IDENTITY_CONTRACT = "REPLAY_IDENTITY_CONTRACT"
-    ATOMIC_CONSUME_IF_NEW_SEMANTICS = "ATOMIC_CONSUME_IF_NEW_SEMANTICS"
-    RESTART_AND_CROSS_PROCESS_CONTINUITY_CONTRACT = (
-        "RESTART_AND_CROSS_PROCESS_CONTINUITY_CONTRACT"
-    )
-    CUSTODY_RETENTION_BOUNDARY = "CUSTODY_RETENTION_BOUNDARY"
-    FAILURE_RECOVERY_AND_CONCURRENCY_SEMANTICS = (
-        "FAILURE_RECOVERY_AND_CONCURRENCY_SEMANTICS"
-    )
-    CONTRACT_TEST_PERSISTENCE_ADAPTER = "CONTRACT_TEST_PERSISTENCE_ADAPTER"
+    DURABLE_REPLAY_RECEIPT_BINDING = "DURABLE_REPLAY_RECEIPT_BINDING"
+    CONTENT_ADDRESSED_RAW_CUSTODY_EVIDENCE = "CONTENT_ADDRESSED_RAW_CUSTODY_EVIDENCE"
+    CUSTODY_LOCATION_AND_VERSION_IDENTITY = "CUSTODY_LOCATION_AND_VERSION_IDENTITY"
+    RETENTION_AND_TEMPORAL_CAUSALITY = "RETENTION_AND_TEMPORAL_CAUSALITY"
+    OBSERVED_UNTRUSTED_ASSESSMENT = "OBSERVED_UNTRUSTED_ASSESSMENT"
+    SEALED_REAL_VERIFICATION_BOUNDARY = "SEALED_REAL_VERIFICATION_BOUNDARY"
+
+
+class SubsequentBlockScope(StrEnum):
+    CANONICAL_AUTHORITY_IDENTITY = "CANONICAL_AUTHORITY_IDENTITY"
+    TRUST_ANCHOR_LINEAGE_AND_ROTATION = "TRUST_ANCHOR_LINEAGE_AND_ROTATION"
+    CAPABILITY_SCOPE_AND_TEMPORAL_VALIDITY = "CAPABILITY_SCOPE_AND_TEMPORAL_VALIDITY"
+    REVOCATION_AND_UNKNOWN_AUTHORITY_FAILURE = "REVOCATION_AND_UNKNOWN_AUTHORITY_FAILURE"
+    SEALED_NON_REAL_PROVISIONING_PORT = "SEALED_NON_REAL_PROVISIONING_PORT"
 
 
 class MergeOrder(StrEnum):
@@ -102,9 +112,9 @@ class NextBlockAuthorization(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     current_block: Literal[
-        RoadmapBlock.EXTERNAL_PROVIDER_ADAPTER_DURABLE_VERIFICATION_INTERFACE_FOUNDATION
+        RoadmapBlock.DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION
     ]
-    name: Literal[RoadmapBlock.DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION]
+    name: Literal[RoadmapBlock.EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION]
     foundation_implementation: Literal[
         ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
     ]
@@ -148,10 +158,8 @@ class NextBlockAuthorization(BaseModel):
 
 
 NEXT_BLOCK = NextBlockAuthorization(
-    current_block=(
-        RoadmapBlock.EXTERNAL_PROVIDER_ADAPTER_DURABLE_VERIFICATION_INTERFACE_FOUNDATION
-    ),
-    name=RoadmapBlock.DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION,
+    current_block=RoadmapBlock.DURABLE_REPLAY_PERSISTENCE_CUSTODY_BOUNDARY_FOUNDATION,
+    name=RoadmapBlock.EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION,
     foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
     operating_mode="CONTRACT_TEST_ONLY",
@@ -165,6 +173,57 @@ NEXT_BLOCK = NextBlockAuthorization(
     independent_verifier="NOT_PROVISIONED",
     real_route="QVM_NOT_READY",
     global_readiness="INSUFFICIENT_REAL_DATA",
+    trade_decision="NO_TRADE",
+    signals_generated=False,
+    live_execution_enabled=False,
+    backtesting="NOT_AUTHORIZED",
+)
+
+
+class SubsequentBlockAuthorization(BaseModel):
+    """Machine-readable successor after the current NEXT_BLOCK; still non-REAL."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    current_block: Literal[
+        RoadmapBlock.EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION
+    ]
+    name: Literal[RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION]
+    foundation_implementation: Literal[ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT]
+    real_external_activation: Literal[ImplementationAuthorization.NOT_AUTHORIZED]
+    operating_mode: Literal["CONTRACT_TEST_ONLY"]
+    merge_order: Literal[MergeOrder.AFTER_CURRENT_BLOCK_MERGED]
+    successor_pr: Literal["NEW_PR_REQUIRED"]
+    scope: tuple[SubsequentBlockScope, ...]
+    trust_root: Literal["NOT_PROVISIONED"]
+    independent_verifier: Literal["NOT_PROVISIONED"]
+    real_provider_promotion: Literal[False]
+    trade_decision: Literal["NO_TRADE"]
+    signals_generated: Literal[False]
+    live_execution_enabled: Literal[False]
+    backtesting: Literal["NOT_AUTHORIZED"]
+
+    @model_validator(mode="after")
+    def validate_successor_boundary(self):
+        if self.current_block.value == self.name.value:
+            raise ValueError("subsequent block cannot reference itself")
+        if self.scope != tuple(SubsequentBlockScope):
+            raise ValueError("subsequent block scope must remain complete")
+        return self
+
+
+SUBSEQUENT_BLOCK = SubsequentBlockAuthorization(
+    current_block=RoadmapBlock.EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION,
+    name=RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION,
+    foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
+    real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
+    operating_mode="CONTRACT_TEST_ONLY",
+    merge_order=MergeOrder.AFTER_CURRENT_BLOCK_MERGED,
+    successor_pr="NEW_PR_REQUIRED",
+    scope=tuple(SubsequentBlockScope),
+    trust_root="NOT_PROVISIONED",
+    independent_verifier="NOT_PROVISIONED",
+    real_provider_promotion=False,
     trade_decision="NO_TRADE",
     signals_generated=False,
     live_execution_enabled=False,
