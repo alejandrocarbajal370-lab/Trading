@@ -73,17 +73,19 @@ factory-owned and `CONTRACT_TEST_ONLY`, and the REAL route rejects it. Handoffs 
 `CLOSED` remain unavailable without external authority. This foundation remains a draft pending
 complete validation and explicit merge authorization.
 
-After that foundation is merged, the next implementable block is **Durable Replay Persistence &
-Custody Boundary Foundation**, formalized in
-[`docs/adr/0005-durable-replay-persistence-custody-boundary-foundation.md`](docs/adr/0005-durable-replay-persistence-custody-boundary-foundation.md).
-`governance.roadmap.NEXT_BLOCK` marks only its non-REAL contract work
-`AUTHORIZED_TO_IMPLEMENT`; REAL activation is `NOT_AUTHORIZED`. Its exact scope is replay identity,
-atomic consume-if-new behavior, restart/cross-process continuity, custody/retention boundaries,
-failure/concurrency semantics and a `CONTRACT_TEST_ONLY` persistence adapter. It must be opened in a
-new PR after PR #28 is merged and the new branch is based on that integrated head. It must not be
-stacked on this still-draft PR (`successor_pr=NEW_PR_REQUIRED`;
-`merge_order=AFTER_CURRENT_BLOCK_MERGED`). Trust root, REAL durable replay and independent verifier
-remain `NOT_PROVISIONED`; all evidence remains `OBSERVED` and all ten gates remain `OPEN_EXTERNAL`.
+Durable replay is integrated. The next implementable block is **External Custody & Retention
+Verification Boundary Foundation**, formalized in
+[`docs/adr/0006-external-custody-retention-verification-boundary-foundation.md`](docs/adr/0006-external-custody-retention-verification-boundary-foundation.md).
+This PR's `CONTRACT_TEST_ONLY` implementation binds a durable replay receipt to content-addressed raw
+custody-control evidence, canonical object/version identity, retention declarations and temporal
+causality, while emitting only `OBSERVED_UNTRUSTED`. No local receipt, location, retention value,
+hash or legal-hold declaration proves external custody, WORM, legal approval or trust. The sealed
+REAL boundary accepts no caller backend, authority or trust root and remains `NOT_PROVISIONED`.
+It is a new PR based on integrated PR #29. `governance.roadmap.NEXT_BLOCK` now records the true next
+non-REAL dependency as **Trust-Anchor & Authority Provisioning Contract Foundation** with
+`AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and
+`AFTER_CURRENT_BLOCK_MERGED`; REAL activation remains `NOT_AUTHORIZED`. All evidence gates remain
+`OPEN_EXTERNAL`.
 
 The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
 dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated
@@ -554,5 +556,13 @@ identities and an atomic SQLite-backed consume-if-new adapter used only by adver
 tests. It demonstrates restart and concurrent-process semantics without claiming external custody,
 WORM retention, legal approval, a trust root, or REAL provisioning. Corrupt or incompatible storage,
 duplicates, partial batches, and ambiguous persistence failures stop closed.
+
+`governance/external_custody.py` adds the contract-only custody/retention observation seam. It
+deeply revalidates durable receipts and nested models, computes raw-evidence digests internally,
+recomputes the bytes at assessment, requires canonical UTC, rejects ambiguous object paths, binds
+canonical storage identity and retention chronology, and produces only
+`OBSERVED_UNTRUSTED`. Its REAL verification route is sealed and always `NOT_PROVISIONED`; hashes
+and declarations never fabricate external custody, WORM, legal approval, a trust root or an
+independent verifier.
 
 This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
