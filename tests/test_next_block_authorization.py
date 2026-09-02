@@ -23,11 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_next_foundation_is_authorized_but_real_activation_is_not():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION
+        == RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.EXTERNAL_CUSTODY_RETENTION_VERIFICATION_BOUNDARY_FOUNDATION
+        == RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -70,7 +70,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
     adr = (
         ROOT
-        / "docs/adr/0006-external-custody-retention-verification-boundary-foundation.md"
+        / "docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md"
     ).read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
