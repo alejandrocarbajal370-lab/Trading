@@ -76,16 +76,16 @@ complete validation and explicit merge authorization.
 Durable replay is integrated. The next implementable block is **External Custody & Retention
 Verification Boundary Foundation**, formalized in
 [`docs/adr/0006-external-custody-retention-verification-boundary-foundation.md`](docs/adr/0006-external-custody-retention-verification-boundary-foundation.md).
-`governance.roadmap.NEXT_BLOCK` marks `AUTHORIZED_TO_IMPLEMENT` only for its non-REAL
-`CONTRACT_TEST_ONLY` contract work; REAL activation is `NOT_AUTHORIZED`. It binds a durable replay receipt to content-addressed raw
+This PR's `CONTRACT_TEST_ONLY` implementation binds a durable replay receipt to content-addressed raw
 custody-control evidence, canonical object/version identity, retention declarations and temporal
 causality, while emitting only `OBSERVED_UNTRUSTED`. No local receipt, location, retention value,
 hash or legal-hold declaration proves external custody, WORM, legal approval or trust. The sealed
 REAL boundary accepts no caller backend, authority or trust root and remains `NOT_PROVISIONED`.
-It is a new PR based on integrated PR #29 (`successor_pr=NEW_PR_REQUIRED`;
-`merge_order=AFTER_CURRENT_BLOCK_MERGED`). `governance.roadmap.SUBSEQUENT_BLOCK` records the next
-non-REAL dependency as **Trust-Anchor & Authority Provisioning Contract Foundation**; its REAL
-activation is also not authorized. All evidence gates remain `OPEN_EXTERNAL`.
+It is a new PR based on integrated PR #29. `governance.roadmap.NEXT_BLOCK` now records the true next
+non-REAL dependency as **Trust-Anchor & Authority Provisioning Contract Foundation** with
+`AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and
+`AFTER_CURRENT_BLOCK_MERGED`; REAL activation remains `NOT_AUTHORIZED`. All evidence gates remain
+`OPEN_EXTERNAL`.
 
 The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
 dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated

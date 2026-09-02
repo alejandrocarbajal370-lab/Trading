@@ -34,13 +34,11 @@ empty, `.` and `..` path segments so one storage subject cannot acquire path ali
 
 ## Machine-readable authorization
 
-`governance.roadmap.NEXT_BLOCK` records `AUTHORIZED_TO_IMPLEMENT`, `NOT_AUTHORIZED`,
-`CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and `AFTER_CURRENT_BLOCK_MERGED`.
-The implementation belongs in a new PR based on the integrated PR #29 main.
-
-After this block, `governance.roadmap.SUBSEQUENT_BLOCK` identifies **Trust-Anchor & Authority
-Provisioning Contract Foundation** as the next non-REAL architectural dependency. It remains
-`NOT_AUTHORIZED` for REAL activation and cannot appoint a real authority or trust root.
+This implementation belongs in a new PR based on the integrated PR #29 main. After this block,
+`governance.roadmap.NEXT_BLOCK` identifies **Trust-Anchor & Authority Provisioning Contract
+Foundation** as the next non-REAL architectural dependency and records `AUTHORIZED_TO_IMPLEMENT`,
+`CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and `AFTER_CURRENT_BLOCK_MERGED`. REAL activation remains
+`NOT_AUTHORIZED`; the roadmap cannot appoint a real authority or trust root.
 
 ## Frozen safety state
 
