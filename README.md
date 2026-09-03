@@ -107,6 +107,18 @@ registries/verifiers, lifecycle swaps, cross-gate swaps and reconstruction bypas
 result is `CONTRACT_TEST_VERIFIED`: every gate remains `OPEN_EXTERNAL`, while trust root,
 independent verifier and REAL provider admission remain `NOT_PROVISIONED`.
 
+PR #32 is integrated. The current roadmap block implemented by PR #33 is
+**IBKR Read-Only Market Observation Adapter Foundation**, documented in
+[`docs/adr/0009-ibkr-read-only-market-observation-adapter-foundation.md`](docs/adr/0009-ibkr-read-only-market-observation-adapter-foundation.md).
+It remains a `CONTRACT_TEST_ONLY` boundary. IBKR is the first provider/venue-specific observation adapter, not
+the sole historical truth source and not a REAL admitted provider. It can emit only
+`OBSERVED_UNTRUSTED`; credentials, network access, durable replay, trust root, authority and
+independent verification remain `NOT_PROVISIONED`. The possible **IBKR Provisioned Read-Only
+Observation Evidence Foundation** successor requires a
+separate decision on secure external credentials, connectivity, licensing and operational ownership;
+it is only a conditional candidate with implementation, activation and a successor PR all
+`NOT_AUTHORIZED`, and `ARCHITECTURAL_DECISION_REQUIRED`.
+
 The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
 dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated
 backtesting, but before portfolio optimization or live rebalancing. Its machine-readable scope is

@@ -20,26 +20,26 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_next_foundation_is_authorized_but_real_activation_is_not():
+def test_current_foundation_and_conditional_successor_are_not_authorized():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
+        == RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION
+        == RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
         NEXT_BLOCK.foundation_implementation
-        == ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
+        == ImplementationAuthorization.NOT_AUTHORIZED
     )
     assert NEXT_BLOCK.real_external_activation == ImplementationAuthorization.NOT_AUTHORIZED
-    assert NEXT_BLOCK.operating_mode == "CONTRACT_TEST_ONLY"
-    assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
-    assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"
+    assert NEXT_BLOCK.operating_mode == "NOT_AUTHORIZED"
+    assert NEXT_BLOCK.merge_order == MergeOrder.ARCHITECTURAL_DECISION_REQUIRED
+    assert NEXT_BLOCK.successor_pr == "NOT_AUTHORIZED"
     assert NEXT_BLOCK.scope == tuple(NextBlockScope)
-    assert NEXT_BLOCK.evidence_states == ("OBSERVED", "VERIFIED", "TRUSTED", "CLOSED")
+    assert NEXT_BLOCK.evidence_states == ("OBSERVED_UNTRUSTED",)
 
 
 def test_roadmap_rejects_self_reference_or_unauthorized_successor():
@@ -49,7 +49,7 @@ def test_roadmap_rejects_self_reference_or_unauthorized_successor():
         type(NEXT_BLOCK).model_validate(raw)
 
     raw = NEXT_BLOCK.model_dump(mode="python")
-    raw["foundation_implementation"] = ImplementationAuthorization.NOT_AUTHORIZED
+    raw["foundation_implementation"] = ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
     with pytest.raises(ValidationError):
         type(NEXT_BLOCK).model_validate(raw)
 
@@ -70,7 +70,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
     adr = (
         ROOT
-        / "docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md"
+        / "docs/adr/0009-ibkr-read-only-market-observation-adapter-foundation.md"
     ).read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
@@ -80,7 +80,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
         assert NEXT_BLOCK.operating_mode in document
         assert NEXT_BLOCK.merge_order.value in document
         assert NEXT_BLOCK.successor_pr in document
-    assert "new PR" in readme and "new PR" in adr
+    assert "conditional candidate" in readme and "conditional candidate" in adr
 
 
 def test_next_foundation_preserves_all_frozen_safety_states():
