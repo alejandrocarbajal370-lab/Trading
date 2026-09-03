@@ -93,6 +93,16 @@ def test_ticker_only_or_wrong_permanent_identity_fails():
     raw.pop("request_hash")
     with pytest.raises(ValidationError):
         _seal(ObservationRequest, "request_hash", **raw)
+    raw = build_request(mode=MarketDataMode.DELAYED).model_dump(mode="python")
+    raw["instrument"] = {
+        "security_master_id": "security.attacker-999",
+        "permanent_id": "ibkr.conid.wrong-but-valid",
+        "symbology_lineage_digest": "0" * 64,
+        "display_symbol": "ＥＸＡＭＰＬＥ",
+    }
+    raw.pop("request_hash")
+    with pytest.raises(ValidationError, match="code-owned fixture binding"):
+        _seal(ObservationRequest, "request_hash", **raw)
 
 
 def test_payload_digest_and_size_bind_actual_bytes():
@@ -128,6 +138,9 @@ def test_delayed_cannot_be_relabelled_realtime_and_unknown_timing_fails():
         _seal(RawObservationEnvelope, "envelope_hash", **raw)
     with pytest.raises(ValidationError, match="UNKNOWN"):
         build_request(mode=MarketDataMode.UNKNOWN, timing_sensitive=True)
+    for mode in (MarketDataMode.REALTIME, MarketDataMode.FROZEN, MarketDataMode.UNKNOWN):
+        with pytest.raises(ObservationError, match="DELAYED data only"):
+            observe_contract_fixture(build_request(mode=mode), observed_at=NOW)
 
 
 def test_pagination_omission_reordering_and_cursor_tampering_fail():
@@ -152,6 +165,18 @@ def test_pagination_omission_reordering_and_cursor_tampering_fail():
         with pytest.raises(ValidationError):
             _seal(ObservationBatch, "batch_hash", **raw)
 
+    other_request = build_request(mode=MarketDataMode.FROZEN)
+    mixed_raw = second.model_dump(mode="python")
+    mixed_raw["request"] = other_request
+    mixed_raw["response"]["market_data_mode"] = MarketDataMode.FROZEN
+    mixed_raw.pop("envelope_hash")
+    mixed = _seal(RawObservationEnvelope, "envelope_hash", **mixed_raw)
+    raw = result().model_dump(mode="python")
+    raw["envelopes"] = (first, mixed)
+    raw.pop("batch_hash")
+    with pytest.raises(ValidationError, match="same canonical request"):
+        _seal(ObservationBatch, "batch_hash", **raw)
+
 
 def test_error_or_secret_fields_and_fake_provisioning_rejected():
     raw = result().envelopes[0].model_dump(mode="python")
@@ -167,6 +192,18 @@ def test_error_or_secret_fields_and_fake_provisioning_rejected():
             "provisioning_state": "PROVISIONED_REAL",
             "api_key": "secret",
         })
+    for material in (
+        "Bearer eyJhbGciOiJIUzI1NiJ9.payload.signature",
+        "sessionid=abc123",
+        "authorization=Basic dXNlcjpwYXNz",
+        "hunter2",
+        "external-vault-reference:api-token",
+        "external-vault-reference:sessionid",
+        "external-vault-reference:authorization-header",
+        "external-vault-reference:client-certificate",
+    ):
+        with pytest.raises(ObservationError):
+            CredentialReference.from_reference(material)
 
 
 def test_copy_construct_json_nested_mutation_and_outer_reseal_fail():

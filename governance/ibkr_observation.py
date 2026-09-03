@@ -17,7 +17,12 @@ from governance.phase7e import EvidenceGate, GateState
 CONTRACT_VERSION = "ibkr-read-only-observation-v1"
 SHA256 = r"^[0-9a-f]{64}$"
 SAFE_ID = r"^[a-z0-9][a-z0-9._:-]{0,127}$"
-SECRET_FIELD = re.compile(r"(?i)(password|secret|api[_-]?key|token|cookie|certificate|private[_-]?key)")
+SECRET_FIELD = re.compile(
+    r"(?i)(password|passphrase|secret|api[_-]?key|token|cookie|cert(?:ificate)?|"
+    r"private[_-]?key|session|authorization|bearer|oauth|jwt|credential)"
+)
+CREDENTIAL_REFERENCE = re.compile(r"^external-vault-reference:[a-z0-9][a-z0-9._:-]{0,127}$")
+FIXTURE_LINEAGE_DIGEST = hashlib.sha256(b"contract-test-lineage").hexdigest()
 
 
 class ObservationError(ValueError):
@@ -106,7 +111,10 @@ class CredentialReference(ContractModel):
 
     @classmethod
     def from_reference(cls, reference: str) -> CredentialReference:
-        if not reference or SECRET_FIELD.search(reference) or len(reference) > 256:
+        if (
+            not CREDENTIAL_REFERENCE.fullmatch(reference)
+            or SECRET_FIELD.search(reference.removeprefix("external-vault-reference:"))
+        ):
             raise ObservationError("credential reference must be sanitized")
         return cls(reference_digest=hashlib.sha256(reference.encode()).hexdigest())
 
@@ -122,10 +130,17 @@ class InstrumentIdentity(ContractModel):
         if self.security_master_id == self.display_symbol or self.permanent_id == self.display_symbol:
             raise ValueError("ticker alone cannot be permanent identity")
         if (
-            self.security_master_id == "security.contract-test-001"
-            and self.permanent_id != "ibkr.conid.contract-test-001"
+            self.security_master_id,
+            self.permanent_id,
+            self.symbology_lineage_digest,
+            self.display_symbol,
+        ) != (
+            "security.contract-test-001",
+            "ibkr.conid.contract-test-001",
+            FIXTURE_LINEAGE_DIGEST,
+            "EXAMPLE",
         ):
-            raise ValueError("permanent identity does not match code-owned security master binding")
+            raise ValueError("instrument identity does not match code-owned fixture binding")
         return self
 
 
@@ -218,6 +233,8 @@ class ObservationBatch(ContractModel):
         if not envelopes:
             raise ValueError("batch cannot be empty")
         pages = tuple(x.response.page for x in envelopes)
+        if any(x.request.request_hash != envelopes[0].request.request_hash for x in envelopes[1:]):
+            raise ValueError("all pages must bind the same canonical request")
         if tuple(p.page_index for p in pages) != tuple(range(len(pages))):
             raise ValueError("pages must be complete and ordered")
         for current, following in pairwise(pages):
@@ -244,8 +261,10 @@ class ContractFixtureAdapter:
 
     def observe(self, request: ObservationRequest) -> tuple[bytes, ResponseMetadata, dt.datetime]:
         canonical = _revalidate(ObservationRequest, request, "request")
+        if canonical.requested_mode is not MarketDataMode.DELAYED:
+            raise ObservationError("contract fixture provides DELAYED data only")
         page = PageMetadata(page_index=0, is_last=True)
-        response = ResponseMetadata(status="SUCCESS", market_data_mode=canonical.requested_mode, page=page)
+        response = ResponseMetadata(status="SUCCESS", market_data_mode=MarketDataMode.DELAYED, page=page)
         return b'{"bars":[{"close":"100.00"}]}', response, dt.datetime(2026, 1, 1, tzinfo=dt.UTC)
 
 
@@ -263,10 +282,10 @@ def build_request(*, mode: MarketDataMode, timing_sensitive: bool = False) -> Ob
     instrument = InstrumentIdentity(
         security_master_id="security.contract-test-001",
         permanent_id="ibkr.conid.contract-test-001",
-        symbology_lineage_digest=hashlib.sha256(b"contract-test-lineage").hexdigest(),
+        symbology_lineage_digest=FIXTURE_LINEAGE_DIGEST,
         display_symbol="EXAMPLE",
     )
-    credential = CredentialReference.from_reference("external-vault-reference-contract-test")
+    credential = CredentialReference.from_reference("external-vault-reference:contract-test")
     return _seal(
         ObservationRequest,
         "request_hash",

@@ -36,6 +36,9 @@ class RoadmapBlock(StrEnum):
     IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION = (
         "IBKR Read-Only Market Observation Adapter Foundation"
     )
+    IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION = (
+        "IBKR Provisioned Read-Only Observation Evidence Foundation"
+    )
     TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE = (
         "Tax Lot & Tax-Aware Portfolio Governance"
     )
@@ -92,36 +95,38 @@ class TaxAwareScope(StrEnum):
 
 
 class NextBlockScope(StrEnum):
-    IBKR_TYPED_READ_ONLY_ADAPTER = "IBKR_TYPED_READ_ONLY_ADAPTER"
-    SANITIZED_EXTERNAL_CREDENTIAL_REFERENCE = "SANITIZED_EXTERNAL_CREDENTIAL_REFERENCE"
-    PRICES_OHLCV_OBSERVATION = "PRICES_OHLCV_OBSERVATION"
-    PERMANENT_INSTRUMENT_IDENTITY_BINDING = "PERMANENT_INSTRUMENT_IDENTITY_BINDING"
-    CONTENT_ADDRESSED_RAW_ENVELOPE = "CONTENT_ADDRESSED_RAW_ENVELOPE"
-    OBSERVED_UNTRUSTED_HANDOFF = "OBSERVED_UNTRUSTED_HANDOFF"
+    SECURE_EXTERNAL_CREDENTIAL_HANDLING_DEFINED = (
+        "SECURE_EXTERNAL_CREDENTIAL_HANDLING_DEFINED"
+    )
+    APPROVED_CONNECTIVITY_DEFINED = "APPROVED_CONNECTIVITY_DEFINED"
+    LICENSING_DEFINED = "LICENSING_DEFINED"
+    OPERATIONAL_OWNERSHIP_DEFINED = "OPERATIONAL_OWNERSHIP_DEFINED"
+    REAL_CAPTURE_EVIDENCE_DEFINED = "REAL_CAPTURE_EVIDENCE_DEFINED"
 
 
 class MergeOrder(StrEnum):
     AFTER_CURRENT_BLOCK_MERGED = "AFTER_CURRENT_BLOCK_MERGED"
+    ARCHITECTURAL_DECISION_REQUIRED = "ARCHITECTURAL_DECISION_REQUIRED"
 
 
 class NextBlockAuthorization(BaseModel):
-    """Code-owned roadmap state; authorization to build is not REAL activation."""
+    """Code-owned current block and explicitly unauthorized successor candidate."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     current_block: Literal[
-        RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
-    ]
-    name: Literal[
         RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION
     ]
+    name: Literal[
+        RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
+    ]
     foundation_implementation: Literal[
-        ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
+        ImplementationAuthorization.NOT_AUTHORIZED
     ]
     real_external_activation: Literal[ImplementationAuthorization.NOT_AUTHORIZED]
-    operating_mode: Literal["CONTRACT_TEST_ONLY"]
-    merge_order: Literal[MergeOrder.AFTER_CURRENT_BLOCK_MERGED]
-    successor_pr: Literal["NEW_PR_REQUIRED"]
+    operating_mode: Literal["NOT_AUTHORIZED"]
+    merge_order: Literal[MergeOrder.ARCHITECTURAL_DECISION_REQUIRED]
+    successor_pr: Literal["NOT_AUTHORIZED"]
     scope: tuple[NextBlockScope, ...]
     evidence_states: tuple[
         Literal["OBSERVED_UNTRUSTED"],
@@ -143,8 +148,8 @@ class NextBlockAuthorization(BaseModel):
             raise ValueError("roadmap successor cannot reference the current block")
         if not self.scope:
             raise ValueError("roadmap successor must have implementable scope")
-        if self.foundation_implementation is not ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT:
-            raise ValueError("roadmap successor must be explicitly authorized to implement")
+        if self.foundation_implementation is not ImplementationAuthorization.NOT_AUTHORIZED:
+            raise ValueError("conditional successor must not be authorized to implement")
         if self.real_external_activation is not ImplementationAuthorization.NOT_AUTHORIZED:
             raise ValueError("REAL activation must remain forbidden")
         if self.gate_states != tuple(
@@ -155,13 +160,13 @@ class NextBlockAuthorization(BaseModel):
 
 
 NEXT_BLOCK = NextBlockAuthorization(
-    current_block=RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION,
-    name=RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION,
-    foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
+    current_block=RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION,
+    name=RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION,
+    foundation_implementation=ImplementationAuthorization.NOT_AUTHORIZED,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
-    operating_mode="CONTRACT_TEST_ONLY",
-    merge_order=MergeOrder.AFTER_CURRENT_BLOCK_MERGED,
-    successor_pr="NEW_PR_REQUIRED",
+    operating_mode="NOT_AUTHORIZED",
+    merge_order=MergeOrder.ARCHITECTURAL_DECISION_REQUIRED,
+    successor_pr="NOT_AUTHORIZED",
     scope=tuple(NextBlockScope),
     evidence_states=("OBSERVED_UNTRUSTED",),
     gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
