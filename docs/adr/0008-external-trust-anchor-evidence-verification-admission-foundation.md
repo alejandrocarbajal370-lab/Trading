@@ -11,13 +11,16 @@ scope, policy, authority contract and independent trust-anchor registration life
 Contract-test verification requires exact expected registry and verifier hashes. The verifier is
 itself sealed to that registry and authority. The authority must have `VERIFY_EVIDENCE`; the
 registry must contain the exact authority and anchor; and every scope and lifecycle binding must
-match. Authority and anchor availability and revocation are resolved independently. Evidence
-before either availability fails, as do verification before observation and verification at or
-after either revocation boundary.
+match. The verifier identity must also differ from the authority identity and every maker, checker,
+reviewer and authority approver identity. Authority and anchor availability and revocation are
+resolved independently. Evidence before either availability fails, as do verification before
+observation and verification at or after either revocation boundary.
 
 All public inputs are deeply reconstructed. Payload modification, forged or substituted
 registry/verifier values, cross-provider/gate/scope swaps, lifecycle swaps, nested mutation,
 `model_copy`, `model_construct`, extra fields and resealing against unrelated bindings fail closed.
+The expected hashes are contract-harness pins, not REAL trust roots: a wholly caller-created,
+self-consistent graph can prove only contract behavior and remains explicitly unprovisioned.
 
 ## Admission semantics
 

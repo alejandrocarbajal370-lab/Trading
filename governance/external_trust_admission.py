@@ -184,6 +184,9 @@ def verify_and_admit_contract_test_evidence(
         raise FoundationError("evidence references authority or anchor outside registry")
     if actor.authority_contract_hash != authority.contract_hash:
         raise FoundationError("verifier authority binding mismatch")
+    authority_actors = {authority.authority_id, *(item.actor_id for item in authority.approvals)}
+    if actor.verifier_id in authority_actors:
+        raise FoundationError("verifier identity is not independent from authority actors")
     _validate_bindings(item, authority, anchor)
     _utc(verified_at, "verified_at")
     if item.observed_at < max(authority.available_at, anchor.available_at):

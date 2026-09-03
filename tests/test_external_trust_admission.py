@@ -140,6 +140,35 @@ def test_payload_tamper_fake_verifier_and_registry_fail_closed():
 
 
 @pytest.mark.parametrize(
+    "verifier_id",
+    [
+        "authority.primary",
+        "actor.maker",
+        "actor.checker",
+        "actor.reviewer",
+        "actor.authority",
+    ],
+)
+def test_verifier_identity_must_be_independent_from_authority_actors(verifier_id):
+    _, authority, registry, _, evidence = graph()
+    verifier = build_contract_test_verifier(
+        verifier_id=verifier_id,
+        authority_contract_hash=authority.contract_hash,
+        registry_hash=registry.registry_hash,
+    )
+    with pytest.raises(FoundationError, match="verifier identity is not independent"):
+        verify_and_admit_contract_test_evidence(
+            evidence,
+            payload=PAYLOAD,
+            verifier=verifier,
+            registry=registry,
+            expected_registry_hash=registry.registry_hash,
+            expected_verifier_hash=verifier.verifier_hash,
+            verified_at=VERIFIED,
+        )
+
+
+@pytest.mark.parametrize(
     "field,value",
     [
         ("provider_id", "provider.other"),
