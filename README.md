@@ -94,8 +94,18 @@ now records the true posterior dependency as **External Trust-Anchor Evidence Ve
 Admission Foundation** with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `NEW_PR_REQUIRED`, and
 `AFTER_CURRENT_BLOCK_MERGED`; REAL activation remains `NOT_AUTHORIZED`. All evidence gates remain
-`OPEN_EXTERNAL`. It must be implemented in a new PR after this Draft is independently authorized
-and merged.
+`OPEN_EXTERNAL`.
+
+PR #31 is integrated. The current Draft foundation is **External Trust-Anchor Evidence
+Verification & Admission Foundation**, documented in
+[`docs/adr/0008-external-trust-anchor-evidence-verification-admission-foundation.md`](docs/adr/0008-external-trust-anchor-evidence-verification-admission-foundation.md).
+It is implemented in a new PR, as required by the machine-readable merge boundary.
+It content-addresses externally supplied bytes and binds them to the exact registry, authority,
+anchor lifecycle, provider, gate, scope, policy and contract-test verifier. Verification resolves
+authority and anchor revocation independently and rejects payload tampering, forged
+registries/verifiers, lifecycle swaps, cross-gate swaps and reconstruction bypasses. Its strongest
+result is `CONTRACT_TEST_VERIFIED`: every gate remains `OPEN_EXTERNAL`, while trust root,
+independent verifier and REAL provider admission remain `NOT_PROVISIONED`.
 
 The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
 dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated
