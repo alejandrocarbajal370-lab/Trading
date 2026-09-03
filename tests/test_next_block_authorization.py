@@ -23,11 +23,11 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_next_foundation_is_authorized_but_real_activation_is_not():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
+        == RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION
+        == RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -39,7 +39,7 @@ def test_next_foundation_is_authorized_but_real_activation_is_not():
     assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
     assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"
     assert NEXT_BLOCK.scope == tuple(NextBlockScope)
-    assert NEXT_BLOCK.evidence_states == ("OBSERVED", "VERIFIED", "TRUSTED", "CLOSED")
+    assert NEXT_BLOCK.evidence_states == ("OBSERVED_UNTRUSTED",)
 
 
 def test_roadmap_rejects_self_reference_or_unauthorized_successor():
@@ -70,7 +70,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
     adr = (
         ROOT
-        / "docs/adr/0007-trust-anchor-authority-provisioning-contract-foundation.md"
+        / "docs/adr/0009-ibkr-read-only-market-observation-adapter-foundation.md"
     ).read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())

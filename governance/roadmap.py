@@ -33,6 +33,9 @@ class RoadmapBlock(StrEnum):
     EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION = (
         "External Trust-Anchor Evidence Verification & Admission Foundation"
     )
+    IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION = (
+        "IBKR Read-Only Market Observation Adapter Foundation"
+    )
     TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE = (
         "Tax Lot & Tax-Aware Portfolio Governance"
     )
@@ -89,11 +92,12 @@ class TaxAwareScope(StrEnum):
 
 
 class NextBlockScope(StrEnum):
-    EXTERNAL_ANCHOR_EVIDENCE_INGESTION = "EXTERNAL_ANCHOR_EVIDENCE_INGESTION"
-    INDEPENDENT_AUTHORITY_VERIFICATION = "INDEPENDENT_AUTHORITY_VERIFICATION"
-    HISTORICAL_REVOCATION_STATUS_RESOLUTION = "HISTORICAL_REVOCATION_STATUS_RESOLUTION"
-    VERIFIED_ADMISSION_DECISION = "VERIFIED_ADMISSION_DECISION"
-    SEALED_REAL_PROVISIONING_ADAPTER = "SEALED_REAL_PROVISIONING_ADAPTER"
+    IBKR_TYPED_READ_ONLY_ADAPTER = "IBKR_TYPED_READ_ONLY_ADAPTER"
+    SANITIZED_EXTERNAL_CREDENTIAL_REFERENCE = "SANITIZED_EXTERNAL_CREDENTIAL_REFERENCE"
+    PRICES_OHLCV_OBSERVATION = "PRICES_OHLCV_OBSERVATION"
+    PERMANENT_INSTRUMENT_IDENTITY_BINDING = "PERMANENT_INSTRUMENT_IDENTITY_BINDING"
+    CONTENT_ADDRESSED_RAW_ENVELOPE = "CONTENT_ADDRESSED_RAW_ENVELOPE"
+    OBSERVED_UNTRUSTED_HANDOFF = "OBSERVED_UNTRUSTED_HANDOFF"
 
 
 class MergeOrder(StrEnum):
@@ -106,10 +110,10 @@ class NextBlockAuthorization(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     current_block: Literal[
-        RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION
+        RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
     ]
     name: Literal[
-        RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION
+        RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION
     ]
     foundation_implementation: Literal[
         ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
@@ -120,10 +124,7 @@ class NextBlockAuthorization(BaseModel):
     successor_pr: Literal["NEW_PR_REQUIRED"]
     scope: tuple[NextBlockScope, ...]
     evidence_states: tuple[
-        Literal["OBSERVED"],
-        Literal["VERIFIED"],
-        Literal["TRUSTED"],
-        Literal["CLOSED"],
+        Literal["OBSERVED_UNTRUSTED"],
     ]
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
     trust_root: Literal["NOT_PROVISIONED"]
@@ -154,15 +155,15 @@ class NextBlockAuthorization(BaseModel):
 
 
 NEXT_BLOCK = NextBlockAuthorization(
-    current_block=RoadmapBlock.TRUST_ANCHOR_AUTHORITY_PROVISIONING_CONTRACT_FOUNDATION,
-    name=RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION,
+    current_block=RoadmapBlock.EXTERNAL_TRUST_ANCHOR_EVIDENCE_VERIFICATION_ADMISSION_FOUNDATION,
+    name=RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION,
     foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
     operating_mode="CONTRACT_TEST_ONLY",
     merge_order=MergeOrder.AFTER_CURRENT_BLOCK_MERGED,
     successor_pr="NEW_PR_REQUIRED",
     scope=tuple(NextBlockScope),
-    evidence_states=("OBSERVED", "VERIFIED", "TRUSTED", "CLOSED"),
+    evidence_states=("OBSERVED_UNTRUSTED",),
     gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
     trust_root="NOT_PROVISIONED",
     durable_replay="NOT_PROVISIONED",
