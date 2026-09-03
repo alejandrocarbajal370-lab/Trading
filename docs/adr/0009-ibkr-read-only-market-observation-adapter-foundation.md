@@ -37,11 +37,10 @@ replay-prevention claim.
 All ten gates remain `OPEN_EXTERNAL`; `QVM_NOT_READY`, `INSUFFICIENT_REAL_DATA`, `NO_TRADE`, disabled
 signals and live execution, and unauthorized backtesting remain frozen.
 
-## Successor condition
+## Successor decision
 
-A later **IBKR Provisioned Read-Only Observation Evidence Foundation** may become the machine-readable
-successor only after an explicit architectural decision defines secure external credential handling,
-approved connectivity and licensing, operational ownership, and REAL capture evidence. Those
-external conditions are absent, so this ADR does not authorize or invent that successor. It remains
-a conditional candidate: implementation, activation and a successor PR are `NOT_AUTHORIZED`, and
-an `ARCHITECTURAL_DECISION_REQUIRED` is mandatory first.
+The explicit decision in ADR 0010 now makes **IBKR Provisioned Read-Only Observation Evidence
+Foundation** the machine-readable successor. Its contract-only implementation is
+`AUTHORIZED_TO_IMPLEMENT`, uses `CONTRACT_TEST_ONLY`, requires a `NEW_PR_REQUIRED` after this block
+was merged, and follows `AFTER_CURRENT_BLOCK_MERGED`. REAL activation remains `NOT_AUTHORIZED`; no
+external dependency was provisioned by this decision.

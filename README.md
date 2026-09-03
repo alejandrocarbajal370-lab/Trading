@@ -113,11 +113,18 @@ PR #32 is integrated. The current roadmap block implemented by PR #33 is
 It remains a `CONTRACT_TEST_ONLY` boundary. IBKR is the first provider/venue-specific observation adapter, not
 the sole historical truth source and not a REAL admitted provider. It can emit only
 `OBSERVED_UNTRUSTED`; credentials, network access, durable replay, trust root, authority and
-independent verification remain `NOT_PROVISIONED`. The possible **IBKR Provisioned Read-Only
-Observation Evidence Foundation** successor requires a
-separate decision on secure external credentials, connectivity, licensing and operational ownership;
-it is only a conditional candidate with implementation, activation and a successor PR all
-`NOT_AUTHORIZED`, and `ARCHITECTURAL_DECISION_REQUIRED`.
+independent verification remain `NOT_PROVISIONED`. ADR 0010 records secure external credential,
+private Gateway/TWS connectivity, licensing evidence, operational ownership and REAL-capture
+evidence as `DEFINED` at contract level. Therefore **IBKR Provisioned Read-Only Observation Evidence
+Foundation** is the exact `NEXT_BLOCK`: `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`,
+`NEW_PR_REQUIRED`, and `AFTER_CURRENT_BLOCK_MERGED`. REAL activation remains `NOT_AUTHORIZED`, with
+`activation_real=false` and `operating_mode_real=false`; actual credential/backend/session,
+entitlement, actors, trust root, authority, independent verifier, provider admission and external
+custody/WORM/legal evidence all remain `NOT_PROVISIONED`. The implementation is documented in
+[`docs/adr/0010-ibkr-provisioned-read-only-observation-evidence-foundation.md`](docs/adr/0010-ibkr-provisioned-read-only-observation-evidence-foundation.md).
+`governance.roadmap.AFTER_NEXT_BLOCK` records the later successor as `UNDETERMINED`,
+`implementation_authorized=false`, `activation_real=false`, and
+`ARCHITECTURAL_DECISION_REQUIRED`.
 
 The general future roadmap also reserves **Tax Lot & Tax-Aware Portfolio Governance** as a mandatory
 dependency after REAL provider admission, governed REAL QVM readiness and authorized/validated

@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from governance.phase7e import EvidenceGate, GateState
 from governance.roadmap import (
+    AFTER_NEXT_BLOCK,
     FUTURE_TAX_AWARE_CAPABILITY,
     NEXT_BLOCK,
     ImplementationAuthorization,
@@ -20,7 +21,7 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_current_foundation_and_conditional_successor_are_not_authorized():
+def test_current_foundation_and_successor_foundation_are_explicitly_authorized():
     assert (
         NEXT_BLOCK.name
         == RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
@@ -32,24 +33,27 @@ def test_current_foundation_and_conditional_successor_are_not_authorized():
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
         NEXT_BLOCK.foundation_implementation
-        == ImplementationAuthorization.NOT_AUTHORIZED
+        == ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
     )
+    assert NEXT_BLOCK.implementation_authorized is True
     assert NEXT_BLOCK.real_external_activation == ImplementationAuthorization.NOT_AUTHORIZED
-    assert NEXT_BLOCK.operating_mode == "NOT_AUTHORIZED"
-    assert NEXT_BLOCK.merge_order == MergeOrder.ARCHITECTURAL_DECISION_REQUIRED
-    assert NEXT_BLOCK.successor_pr == "NOT_AUTHORIZED"
+    assert NEXT_BLOCK.activation_real is False
+    assert NEXT_BLOCK.operating_mode == "CONTRACT_TEST_ONLY"
+    assert NEXT_BLOCK.operating_mode_real is False
+    assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
+    assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"
     assert NEXT_BLOCK.scope == tuple(NextBlockScope)
     assert NEXT_BLOCK.evidence_states == ("OBSERVED_UNTRUSTED",)
 
 
-def test_roadmap_rejects_self_reference_or_unauthorized_successor():
+def test_roadmap_rejects_self_reference_or_missing_foundation_authorization():
     raw = NEXT_BLOCK.model_dump(mode="python")
     raw["name"] = raw["current_block"]
     with pytest.raises(ValidationError):
         type(NEXT_BLOCK).model_validate(raw)
 
     raw = NEXT_BLOCK.model_dump(mode="python")
-    raw["foundation_implementation"] = ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
+    raw["foundation_implementation"] = ImplementationAuthorization.NOT_AUTHORIZED
     with pytest.raises(ValidationError):
         type(NEXT_BLOCK).model_validate(raw)
 
@@ -80,7 +84,8 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
         assert NEXT_BLOCK.operating_mode in document
         assert NEXT_BLOCK.merge_order.value in document
         assert NEXT_BLOCK.successor_pr in document
-    assert "conditional candidate" in readme and "conditional candidate" in adr
+    assert "exact `NEXT_BLOCK`" in readme
+    assert "machine-readable successor" in adr
 
 
 def test_next_foundation_preserves_all_frozen_safety_states():
@@ -97,6 +102,14 @@ def test_next_foundation_preserves_all_frozen_safety_states():
     assert NEXT_BLOCK.signals_generated is False
     assert NEXT_BLOCK.live_execution_enabled is False
     assert NEXT_BLOCK.backtesting == "NOT_AUTHORIZED"
+
+
+def test_successor_after_authorized_foundation_is_undetermined_and_unauthorized():
+    assert AFTER_NEXT_BLOCK.after == NEXT_BLOCK.name
+    assert AFTER_NEXT_BLOCK.name == "UNDETERMINED"
+    assert AFTER_NEXT_BLOCK.implementation_authorized is False
+    assert AFTER_NEXT_BLOCK.activation_real is False
+    assert AFTER_NEXT_BLOCK.decision_state == "ARCHITECTURAL_DECISION_REQUIRED"
 
 
 def test_tax_aware_governance_is_future_only_and_does_not_replace_next_block():
