@@ -106,11 +106,10 @@ class NextBlockScope(StrEnum):
 
 class MergeOrder(StrEnum):
     AFTER_CURRENT_BLOCK_MERGED = "AFTER_CURRENT_BLOCK_MERGED"
-    ARCHITECTURAL_DECISION_REQUIRED = "ARCHITECTURAL_DECISION_REQUIRED"
 
 
 class NextBlockAuthorization(BaseModel):
-    """Code-owned current block and explicitly unauthorized successor candidate."""
+    """Code-owned authorization to build a foundation, never to activate REAL."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -121,12 +120,15 @@ class NextBlockAuthorization(BaseModel):
         RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
     ]
     foundation_implementation: Literal[
-        ImplementationAuthorization.NOT_AUTHORIZED
+        ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
     ]
+    implementation_authorized: Literal[True]
     real_external_activation: Literal[ImplementationAuthorization.NOT_AUTHORIZED]
-    operating_mode: Literal["NOT_AUTHORIZED"]
-    merge_order: Literal[MergeOrder.ARCHITECTURAL_DECISION_REQUIRED]
-    successor_pr: Literal["NOT_AUTHORIZED"]
+    activation_real: Literal[False]
+    operating_mode: Literal["CONTRACT_TEST_ONLY"]
+    operating_mode_real: Literal[False]
+    merge_order: Literal[MergeOrder.AFTER_CURRENT_BLOCK_MERGED]
+    successor_pr: Literal["NEW_PR_REQUIRED"]
     scope: tuple[NextBlockScope, ...]
     evidence_states: tuple[
         Literal["OBSERVED_UNTRUSTED"],
@@ -148,8 +150,8 @@ class NextBlockAuthorization(BaseModel):
             raise ValueError("roadmap successor cannot reference the current block")
         if not self.scope:
             raise ValueError("roadmap successor must have implementable scope")
-        if self.foundation_implementation is not ImplementationAuthorization.NOT_AUTHORIZED:
-            raise ValueError("conditional successor must not be authorized to implement")
+        if self.foundation_implementation is not ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT:
+            raise ValueError("roadmap successor must be explicitly authorized to implement")
         if self.real_external_activation is not ImplementationAuthorization.NOT_AUTHORIZED:
             raise ValueError("REAL activation must remain forbidden")
         if self.gate_states != tuple(
@@ -162,11 +164,14 @@ class NextBlockAuthorization(BaseModel):
 NEXT_BLOCK = NextBlockAuthorization(
     current_block=RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION,
     name=RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION,
-    foundation_implementation=ImplementationAuthorization.NOT_AUTHORIZED,
+    foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
+    implementation_authorized=True,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
-    operating_mode="NOT_AUTHORIZED",
-    merge_order=MergeOrder.ARCHITECTURAL_DECISION_REQUIRED,
-    successor_pr="NOT_AUTHORIZED",
+    activation_real=False,
+    operating_mode="CONTRACT_TEST_ONLY",
+    operating_mode_real=False,
+    merge_order=MergeOrder.AFTER_CURRENT_BLOCK_MERGED,
+    successor_pr="NEW_PR_REQUIRED",
     scope=tuple(NextBlockScope),
     evidence_states=("OBSERVED_UNTRUSTED",),
     gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
@@ -179,6 +184,29 @@ NEXT_BLOCK = NextBlockAuthorization(
     signals_generated=False,
     live_execution_enabled=False,
     backtesting="NOT_AUTHORIZED",
+)
+
+
+class AfterNextBlockCandidate(BaseModel):
+    """No successor beyond the authorized foundation has been selected."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    after: Literal[
+        RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
+    ]
+    name: Literal["UNDETERMINED"]
+    implementation_authorized: Literal[False]
+    activation_real: Literal[False]
+    decision_state: Literal["ARCHITECTURAL_DECISION_REQUIRED"]
+
+
+AFTER_NEXT_BLOCK = AfterNextBlockCandidate(
+    after=RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION,
+    name="UNDETERMINED",
+    implementation_authorized=False,
+    activation_real=False,
+    decision_state="ARCHITECTURAL_DECISION_REQUIRED",
 )
 
 
