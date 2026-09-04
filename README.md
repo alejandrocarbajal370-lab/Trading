@@ -3,6 +3,8 @@
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
 Phases 6 and 7A/7B/7C/7D/7E/7F are integrated; Phase 7F was squash merged as PR #25.
+The current authorized block is the contract-only **IBKR Observation External Authenticity
+Foundation** described in `docs/adr/0012-ibkr-observation-external-authenticity-foundation.md`.
 **Phase 7G — Governed External Provisioning Foundation** is proposed in draft form as a
 contract-test-only boundary in
 [`docs/adr/0002-phase7g-governed-external-provisioning.md`](docs/adr/0002-phase7g-governed-external-provisioning.md).
@@ -590,7 +592,14 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
-The exact `NEXT_BLOCK` is **IBKR Reproducible Read-Only Local Observation Probe
+The exact `NEXT_BLOCK` is **IBKR Observation External Authenticity Foundation**, with
+`AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
+`NEW_PR_REQUIRED`. It binds PR #35 observation identity to external attestation, entitlement and
+trust-lifecycle contracts while REAL activation, the external trust root, independent verifier and
+provider admission remain `NOT_AUTHORIZED` / `NOT_PROVISIONED`. See ADR 0012. The machine-readable
+successor remains `UNDETERMINED`; QVM remains blocked.
+
+The completed PR #35 block was **IBKR Reproducible Read-Only Local Observation Probe
 (Unauthenticated)**, with `AUTHORIZED_TO_IMPLEMENT`,
 `EXPLICIT_LOCAL_OBSERVATION_UNAUTHENTICATED`, `AFTER_CURRENT_BLOCK_MERGED`,
 and `NEW_PR_REQUIRED`. It is an explicit localhost-only (`127.0.0.1:7496`) observation command.
