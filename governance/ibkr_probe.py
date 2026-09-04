@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
+import hmac
 import ipaddress
 import json
+import secrets
 import threading
 import time
 from enum import StrEnum
@@ -25,7 +27,11 @@ SAFE_ADAPTER_VERSION = r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"
 MSFT_LINEAGE = hashlib.sha256(
     b"ibkr-probe-v1|security.us.msft.xnas|ibkr.conid.272093|MSFT|STK|SMART|NASDAQ|USD"
 ).hexdigest()
-ERROR_CLASS = {200: "CONTRACT_RESOLUTION", 354: "MARKET_DATA_PERMISSION", 10167: "MARKET_DATA_PERMISSION"}
+ERROR_CLASS = {
+    200: "CONTRACT_RESOLUTION",
+    354: "MARKET_DATA_PERMISSION",
+    10167: "MARKET_DATA_PERMISSION",
+}
 
 
 class ProbeError(ValueError):
@@ -53,6 +59,12 @@ class TickStatus(StrEnum):
 class TransportStatus(StrEnum):
     SUCCESS = "SUCCESS"
     PARTIAL = "PARTIAL"
+    FAILED_SANITIZED = "FAILED_SANITIZED"
+
+
+class ChannelStatus(StrEnum):
+    SUCCESS = "SUCCESS"
+    TIMEOUT_NO_DATA = "TIMEOUT_NO_DATA"
     FAILED_SANITIZED = "FAILED_SANITIZED"
 
 
@@ -88,10 +100,25 @@ def _revalidate(model: type[ContractModel], value: Any, label: str) -> Any:
         value = value.model_dump(mode="python", warnings=False)
     elif not isinstance(value, (dict, str)):
         raise ProbeError(f"invalid {label}")
+    failed = False
     try:
-        return model.model_validate_json(value) if isinstance(value, str) else model.model_validate(value)
+        validated = (
+            model.model_validate_json(value)
+            if isinstance(value, str)
+            else model.model_validate(value)
+        )
     except (TypeError, ValueError, ValidationError):
-        raise ProbeError(f"invalid {label}") from None
+        failed = True
+        validated = None
+    if failed:
+        # Raise outside the handler: neither __cause__ nor __context__ can retain rejected data.
+        raise ProbeError(f"invalid {label}")
+    return validated
+
+
+def _safe_external(model: type[ContractModel], value: Any, label: str) -> Any:
+    """Validate provider/caller material without retaining a leaky exception chain."""
+    return _revalidate(model, value, label)
 
 
 def _ibkr_bar_time(value: Any) -> dt.datetime:
@@ -170,6 +197,40 @@ class SanitizedError(ContractModel):
     category: Literal["CONTRACT_RESOLUTION", "MARKET_DATA_PERMISSION", "PROVIDER_OTHER"]
 
 
+class AdapterIdentity(ContractModel):
+    api_version: str = Field(pattern=SAFE_ADAPTER_VERSION)
+
+
+class CollectedResult(ContractModel):
+    server_version: int = Field(ge=1)
+    server_current_time: dt.datetime | None
+    resolved_contract: ResolvedContract
+    mode_code: Literal[1, 2, 3, 4] | None
+    market_mode: MarketDataMode
+    tick_count: int = Field(ge=0)
+    historical_bars: tuple[HistoricalBar, ...]
+    errors: tuple[SanitizedError, ...]
+    retrieved_at: dt.datetime
+
+    @model_validator(mode="after")
+    def validate_result(self):
+        _utc(self.retrieved_at, "retrieved_at")
+        if self.server_current_time is not None:
+            _utc(self.server_current_time, "server_current_time")
+        expected = {
+            1: MarketDataMode.REALTIME,
+            2: MarketDataMode.FROZEN,
+            3: MarketDataMode.DELAYED,
+            4: MarketDataMode.DELAYED_FROZEN,
+            None: MarketDataMode.UNKNOWN,
+        }[self.mode_code]
+        if self.market_mode is not expected:
+            raise ValueError("market mode differs from callback code")
+        if not self.historical_bars:
+            raise ValueError("historical channel returned no data")
+        return self
+
+
 class ProbeRequest(ContractModel):
     provider: Literal["provider.ibkr"] = "provider.ibkr"
     adapter: Literal["adapter.ibkr.python-api.local-read-only-probe"] = (
@@ -182,6 +243,7 @@ class ProbeRequest(ContractModel):
     requested_mode: Literal[MarketDataMode.REALTIME] = MarketDataMode.REALTIME
     stream_requested: Literal[True] = True
     historical_requested: Literal[True] = True
+    historical_duration_days: Literal[2] = 2
     request_id: str = Field(pattern=SAFE_ID)
     request_hash: str = Field(pattern=SHA256)
 
@@ -215,10 +277,13 @@ class ProbeEvidence(ContractModel):
     historical_bars: tuple[HistoricalBar, ...]
     pagination: Literal["SINGLE_BOUNDED_REQUEST_NO_CURSOR"] = "SINGLE_BOUNDED_REQUEST_NO_CURSOR"
     transport_status: TransportStatus
+    stream_transport_status: ChannelStatus
+    historical_transport_status: ChannelStatus
     sanitized_errors: tuple[SanitizedError, ...]
     raw_digest: str = Field(pattern=SHA256)
     material_digest: str = Field(pattern=SHA256)
     provenance_digest: str = Field(pattern=SHA256)
+    boundary_attestation: str | None = Field(default=None, pattern=SHA256)
     evidence_state: Literal["OBSERVED_UNTRUSTED"] = "OBSERVED_UNTRUSTED"
     fixture_truth: Literal[False] = False
     verified: Literal[False] = False
@@ -249,7 +314,15 @@ class ProbeEvidence(ContractModel):
             raise ValueError("probe timestamp chronology is invalid")
         if self.source_kind is SourceKind.CONTRACT_TEST_ONLY and self.fixture_truth:
             raise ValueError("fixture cannot produce truth")
-        if self.mode_confirmed_by_callback is False and self.confirmed_market_data_mode is not MarketDataMode.UNKNOWN:
+        if (
+            self.source_kind is SourceKind.CONTRACT_TEST_ONLY
+            and self.boundary_attestation is not None
+        ):
+            raise ValueError("contract evidence cannot carry a real-boundary attestation")
+        if (
+            self.mode_confirmed_by_callback is False
+            and self.confirmed_market_data_mode is not MarketDataMode.UNKNOWN
+        ):
             raise ValueError("unconfirmed market mode must remain UNKNOWN")
         expected_mode = {
             1: MarketDataMode.REALTIME,
@@ -269,13 +342,50 @@ class ProbeEvidence(ContractModel):
                 raise ValueError("timeout must record absence, duration, and no fabricated ticks")
         elif self.tick_timeout_seconds is not None:
             raise ValueError("timeout duration is only valid for observational timeout")
+        expected_stream = (
+            ChannelStatus.SUCCESS
+            if self.tick_status is TickStatus.PRESENT
+            else ChannelStatus.TIMEOUT_NO_DATA
+        )
+        if self.stream_transport_status is not expected_stream:
+            raise ValueError("stream transport status differs from observed stream outcome")
+        if self.historical_transport_status is not ChannelStatus.SUCCESS or not bars:
+            raise ValueError("historical success requires observed bars")
+        expected_transport = (
+            TransportStatus.SUCCESS
+            if expected_stream is ChannelStatus.SUCCESS
+            else TransportStatus.PARTIAL
+        )
+        if self.transport_status is not expected_transport:
+            raise ValueError("aggregate transport status differs from channel outcomes")
+        # IBKR daily bars are session dates normalized to UTC midnight. Compare calendar
+        # dates so the first allowed session is not lost to the request's time-of-day.
+        earliest_date = (self.requested_at - dt.timedelta(days=request.historical_duration_days)).date()
+        latest_date = self.observed_at.date()
+        if any(not earliest_date <= bar.event_at.date() <= latest_date for bar in bars):
+            raise ValueError("historical bar is outside the governed request window")
         if tuple(self.gate_states) != tuple((g, GateState.OPEN_EXTERNAL) for g in EvidenceGate):
             raise ValueError("all ten gates must remain OPEN_EXTERNAL")
+        raw_view = {
+            "server_version": self.tws_server_version,
+            "server_current_time": self.server_current_time,
+            "contract": self.resolved_contract.model_dump(mode="json"),
+            "mode_code": self.official_market_data_type_code,
+            "tick_count": self.tick_count,
+            "bars": [x.model_dump(mode="json") for x in bars],
+            "errors": [x.model_dump(mode="json") for x in self.sanitized_errors],
+        }
+        if typed_hash(raw_view) != self.raw_digest:
+            raise ValueError("raw digest mismatch")
         if typed_hash([x.model_dump(mode="json") for x in bars]) != self.material_digest:
             raise ValueError("material digest mismatch")
         if self.provenance_digest != typed_hash(
-            {"request_hash": request.request_hash, "raw_digest": self.raw_digest,
-             "material_digest": self.material_digest, "lineage_digest": request.instrument.lineage_digest}
+            {
+                "request_hash": request.request_hash,
+                "raw_digest": self.raw_digest,
+                "material_digest": self.material_digest,
+                "lineage_digest": request.instrument.lineage_digest,
+            }
         ):
             raise ValueError("provenance digest mismatch")
         _check_hash(self, "evidence_hash")
@@ -283,7 +393,6 @@ class ProbeEvidence(ContractModel):
 
 
 class ProbeTransport(Protocol):
-    source_kind: SourceKind
     api_version: str
 
     def collect(self, config: ProbeConfig, instrument: GovernedInstrument) -> dict[str, Any]: ...
@@ -302,57 +411,86 @@ def build_request(*, adapter_version: str, client_id: int = 71) -> ProbeRequest:
     return _seal(ProbeRequest, "request_hash", **values)
 
 
-def capture_probe(request: Any, transport: ProbeTransport) -> ProbeEvidence:
+def _capture_probe(
+    request: Any, transport: ProbeTransport, source_kind: SourceKind
+) -> ProbeEvidence:
     request = _revalidate(ProbeRequest, request, "probe request")
-    if type(transport).__module__ != __name__ and transport.source_kind is SourceKind.REAL_LOCAL_IBKR:
-        raise ProbeError("caller-controlled transport cannot claim REAL_LOCAL_IBKR")
     started = dt.datetime.now(dt.UTC)
+    failed = False
     try:
         result = transport.collect(request.config, request.instrument)
     except Exception:  # noqa: BLE001 -- provider exceptions can contain secrets; erase the chain
-        raise ProbeError("sanitized IBKR probe failure") from None
+        failed = True
+        result = None
+    if failed:
+        raise ProbeError("sanitized IBKR probe failure")
     observed = dt.datetime.now(dt.UTC)
-    bars = tuple(HistoricalBar.model_validate(x) for x in result["historical_bars"])
+    external_failed = False
+    try:
+        identity = _safe_external(
+            AdapterIdentity, {"api_version": transport.api_version}, "adapter identity"
+        )
+        api_version = identity.api_version
+        external = _safe_external(CollectedResult, result, "provider result")
+        bars = tuple(external.historical_bars)
+    except Exception:  # noqa: BLE001 -- validation/property failures may retain rejected data
+        external_failed = True
+        external = None
+        bars = ()
+        api_version = ""
+    if external_failed:
+        raise ProbeError("sanitized IBKR probe failure")
     raw_view = {
-        "server_version": result["server_version"], "server_current_time": result["server_current_time"],
-        "contract": result["resolved_contract"], "mode_code": result["mode_code"],
-        "tick_count": result["tick_count"], "bars": [x.model_dump(mode="json") for x in bars],
-        "errors": result["errors"],
+        "server_version": external.server_version,
+        "server_current_time": external.server_current_time,
+        "contract": external.resolved_contract.model_dump(mode="json"),
+        "mode_code": external.mode_code,
+        "tick_count": external.tick_count,
+        "bars": [x.model_dump(mode="json") for x in bars],
+        "errors": [x.model_dump(mode="json") for x in external.errors],
     }
     raw_digest = typed_hash(raw_view)
     material_digest = typed_hash([x.model_dump(mode="json") for x in bars])
-    provenance_digest = typed_hash({"request_hash": request.request_hash, "raw_digest": raw_digest,
-                                    "material_digest": material_digest,
-                                    "lineage_digest": request.instrument.lineage_digest})
-    tick_count = int(result["tick_count"])
+    provenance_digest = typed_hash(
+        {
+            "request_hash": request.request_hash,
+            "raw_digest": raw_digest,
+            "material_digest": material_digest,
+            "lineage_digest": request.instrument.lineage_digest,
+        }
+    )
+    tick_count = external.tick_count
     tick_status = TickStatus.PRESENT if tick_count else TickStatus.ABSENT_TIMEOUT
     values = {
-        "source_kind": transport.source_kind, "request": request,
-        "tws_server_version": result["server_version"], "api_version": transport.api_version,
-        "server_current_time": result["server_current_time"],
-        "resolved_contract": result["resolved_contract"], "requested_at": started,
-        "retrieved_at": result["retrieved_at"], "observed_at": observed,
-        "confirmed_market_data_mode": MarketDataMode(result["market_mode"]),
-        "official_market_data_type_code": result["mode_code"],
-        "mode_confirmed_by_callback": result["mode_code"] is not None,
-        "tick_status": tick_status, "tick_count": tick_count,
+        "source_kind": source_kind,
+        "request": request,
+        "tws_server_version": external.server_version,
+        "api_version": api_version,
+        "server_current_time": external.server_current_time,
+        "resolved_contract": external.resolved_contract,
+        "requested_at": started,
+        "retrieved_at": external.retrieved_at,
+        "observed_at": observed,
+        "confirmed_market_data_mode": external.market_mode,
+        "official_market_data_type_code": external.mode_code,
+        "mode_confirmed_by_callback": external.mode_code is not None,
+        "tick_status": tick_status,
+        "tick_count": tick_count,
         "tick_timeout_seconds": request.config.stream_seconds if not tick_count else None,
-        "historical_bars": bars, "transport_status": result["transport_status"],
-        "sanitized_errors": tuple(SanitizedError.model_validate(x) for x in result["errors"]),
-        "raw_digest": raw_digest, "material_digest": material_digest,
+        "historical_bars": bars,
+        "transport_status": "SUCCESS" if tick_count else "PARTIAL",
+        "stream_transport_status": "SUCCESS" if tick_count else "TIMEOUT_NO_DATA",
+        "historical_transport_status": "SUCCESS",
+        "sanitized_errors": external.errors,
+        "raw_digest": raw_digest,
+        "material_digest": material_digest,
         "provenance_digest": provenance_digest,
         "gate_states": tuple((g, GateState.OPEN_EXTERNAL) for g in EvidenceGate),
     }
     return _seal(ProbeEvidence, "evidence_hash", **values)
 
 
-def validate_evidence(value: Any) -> ProbeEvidence:
-    return _revalidate(ProbeEvidence, value, "probe evidence")
-
-
 class IBKRLocalTransport:
-    source_kind = SourceKind.REAL_LOCAL_IBKR
-
     def __init__(self) -> None:
         try:
             import ibapi  # type: ignore[import-not-found]
@@ -365,10 +503,19 @@ class IBKRLocalTransport:
         from ibapi.contract import Contract  # type: ignore[import-not-found]
         from ibapi.wrapper import EWrapper  # type: ignore[import-not-found]
 
-        state: dict[str, Any] = {"ready": threading.Event(), "contract_done": threading.Event(),
-                                 "mode": threading.Event(), "history_done": threading.Event(),
-                                 "server_time": None, "contract": None, "mode_code": None,
-                                 "ticks": 0, "bars": [], "errors": [], "delayed_fallback": False}
+        state: dict[str, Any] = {
+            "ready": threading.Event(),
+            "contract_done": threading.Event(),
+            "mode": threading.Event(),
+            "history_done": threading.Event(),
+            "server_time": None,
+            "contract": None,
+            "mode_code": None,
+            "ticks": 0,
+            "bars": [],
+            "errors": [],
+            "delayed_fallback": False,
+        }
 
         class App(EWrapper, EClient):
             def __init__(self):
@@ -385,10 +532,15 @@ class IBKRLocalTransport:
 
             def contractDetails(self, reqId, details):
                 c = details.contract
-                state["contract"] = {"conid": c.conId, "symbol": c.symbol,
-                    "security_type": c.secType, "exchange": c.exchange,
-                    "primary_exchange": c.primaryExchange, "currency": c.currency,
-                    "local_symbol": c.localSymbol}
+                state["contract"] = {
+                    "conid": c.conId,
+                    "symbol": c.symbol,
+                    "security_type": c.secType,
+                    "exchange": c.exchange,
+                    "primary_exchange": c.primaryExchange,
+                    "currency": c.currency,
+                    "local_symbol": c.localSymbol,
+                }
 
             def contractDetailsEnd(self, reqId):
                 state["contract_done"].set()
@@ -407,16 +559,29 @@ class IBKRLocalTransport:
 
             def historicalData(self, reqId, bar):
                 event = _ibkr_bar_time(bar.date)
-                state["bars"].append({"event_at": event, "open": str(bar.open), "high": str(bar.high),
-                    "low": str(bar.low), "close": str(bar.close), "volume": str(bar.volume)})
+                state["bars"].append(
+                    {
+                        "event_at": event,
+                        "open": str(bar.open),
+                        "high": str(bar.high),
+                        "low": str(bar.low),
+                        "close": str(bar.close),
+                        "volume": str(bar.volume),
+                    }
+                )
 
             def historicalDataEnd(self, reqId, start, end):
                 state["history_done"].set()
 
             def error(self, reqId, errorCode, errorString, advancedOrderRejectJson=""):
                 if errorCode >= 1000 or errorCode in ERROR_CLASS:
-                    state["errors"].append({"request_id": reqId, "code": errorCode,
-                        "category": ERROR_CLASS.get(errorCode, "PROVIDER_OTHER")})
+                    state["errors"].append(
+                        {
+                            "request_id": reqId,
+                            "code": errorCode,
+                            "category": ERROR_CLASS.get(errorCode, "PROVIDER_OTHER"),
+                        }
+                    )
 
         app = App()
         app.connect(config.host, config.port, clientId=config.client_id)
@@ -426,9 +591,13 @@ class IBKRLocalTransport:
             if not state["ready"].wait(8):
                 raise ProbeError("IBKR handshake timeout")
             app.reqCurrentTime()
-            contract = Contract(); contract.conId = instrument.conid; contract.symbol = instrument.symbol
-            contract.secType = instrument.security_type; contract.exchange = instrument.exchange
-            contract.primaryExchange = instrument.primary_exchange; contract.currency = instrument.currency
+            contract = Contract()
+            contract.conId = instrument.conid
+            contract.symbol = instrument.symbol
+            contract.secType = instrument.security_type
+            contract.exchange = instrument.exchange
+            contract.primaryExchange = instrument.primary_exchange
+            contract.currency = instrument.currency
             app.reqContractDetails(7101, contract)
             if not state["contract_done"].wait(8) or state["contract"] is None:
                 raise ProbeError("IBKR contract resolution timeout")
@@ -453,15 +622,86 @@ class IBKRLocalTransport:
             if not state["history_done"].wait(12):
                 raise ProbeError("IBKR historical observation timeout")
             mode = {1: "REALTIME", 2: "FROZEN", 3: "DELAYED", 4: "DELAYED_FROZEN"}.get(
-                state["mode_code"], "UNKNOWN")
-            return {"server_version": app.serverVersion(), "server_current_time": state["server_time"],
-                "resolved_contract": state["contract"], "mode_code": state["mode_code"],
-                "market_mode": mode, "tick_count": state["ticks"], "historical_bars": state["bars"][-1:],
-                "errors": state["errors"], "retrieved_at": dt.datetime.now(dt.UTC),
-                "transport_status": "SUCCESS" if state["bars"] else "PARTIAL"}
+                state["mode_code"], "UNKNOWN"
+            )
+            return {
+                "server_version": app.serverVersion(),
+                "server_current_time": state["server_time"],
+                "resolved_contract": state["contract"],
+                "mode_code": state["mode_code"],
+                "market_mode": mode,
+                "tick_count": state["ticks"],
+                "historical_bars": state["bars"][-1:],
+                "errors": state["errors"],
+                "retrieved_at": dt.datetime.now(dt.UTC),
+            }
         finally:
             app.disconnect()
             runner.join(timeout=2)
+
+
+def _make_real_boundary(
+    transport_type: type[IBKRLocalTransport],
+    capture: Any,
+    evidence_model: type[ProbeEvidence],
+):
+    """Keep the REAL capability and its signing key inside a lexical boundary."""
+    key = secrets.token_bytes(32)
+
+    def payload(evidence: ProbeEvidence) -> bytes:
+        digest = typed_hash(
+            evidence.model_dump(
+                mode="json", exclude={"evidence_hash", "boundary_attestation"}, warnings=False
+            )
+        )
+        return digest.encode("ascii")
+
+    def execute(request: Any) -> ProbeEvidence:
+        # The adapter class is captured here; replacing the public module binding cannot inject a fake.
+        draft = capture(request, transport_type(), SourceKind.REAL_LOCAL_IBKR)
+        values = draft.model_dump(mode="python", exclude={"evidence_hash", "boundary_attestation"})
+        unsigned = evidence_model.model_construct(
+            **values, boundary_attestation=None, evidence_hash="0" * 64
+        )
+        values["boundary_attestation"] = hmac.new(
+            key, payload(unsigned), hashlib.sha256
+        ).hexdigest()
+        return _seal(evidence_model, "evidence_hash", **values)
+
+    def verify(evidence: ProbeEvidence) -> bool:
+        if evidence.boundary_attestation is None:
+            return False
+        expected = hmac.new(key, payload(evidence), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, evidence.boundary_attestation)
+
+    return execute, verify
+
+
+execute_real_probe, _verify_real_attestation = _make_real_boundary(
+    IBKRLocalTransport, _capture_probe, ProbeEvidence
+)
+
+
+def _make_contract_capture(capture: Any):
+    def contract_capture(request: Any, transport: ProbeTransport) -> ProbeEvidence:
+        """Caller transports are useful for contract tests but can never assert REAL provenance."""
+        return capture(request, transport, SourceKind.CONTRACT_TEST_ONLY)
+
+    return contract_capture
+
+
+def _make_evidence_validator(model: type[ProbeEvidence], verify_real: Any):
+    def validator(value: Any) -> ProbeEvidence:
+        evidence = _revalidate(model, value, "probe evidence")
+        if evidence.source_kind is SourceKind.REAL_LOCAL_IBKR and not verify_real(evidence):
+            raise ProbeError("invalid probe evidence")
+        return evidence
+
+    return validator
+
+
+capture_probe = _make_contract_capture(_capture_probe)
+validate_evidence = _make_evidence_validator(ProbeEvidence, _verify_real_attestation)
 
 
 def persist_evidence(evidence: Any, output: Path) -> None:
@@ -478,10 +718,20 @@ def main() -> int:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--client-id", type=int, default=71)
     args = parser.parse_args()
-    evidence = capture_probe(build_request(adapter_version="9.81.1.post1", client_id=args.client_id), IBKRLocalTransport())
+    evidence = execute_real_probe(
+        build_request(adapter_version="9.81.1.post1", client_id=args.client_id)
+    )
     persist_evidence(evidence, args.output)
-    print(json.dumps({"evidence_hash": evidence.evidence_hash, "state": evidence.evidence_state,
-                      "mode": evidence.confirmed_market_data_mode, "tick_status": evidence.tick_status}))
+    print(
+        json.dumps(
+            {
+                "evidence_hash": evidence.evidence_hash,
+                "state": evidence.evidence_state,
+                "mode": evidence.confirmed_market_data_mode,
+                "tick_status": evidence.tick_status,
+            }
+        )
+    )
     return 0
 
 

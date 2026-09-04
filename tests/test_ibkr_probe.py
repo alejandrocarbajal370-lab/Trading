@@ -1,18 +1,25 @@
 import datetime as dt
 import json
+import traceback
 
 import pytest
 from pydantic import ValidationError
 
+import governance.ibkr_probe as probe_module
+from governance.canonical import typed_hash
 from governance.ibkr_probe import (
+    ChannelStatus,
     GovernedInstrument,
+    HistoricalBar,
     MarketDataMode,
     ProbeConfig,
     ProbeError,
     ProbeEvidence,
+    ProbeRequest,
     ResolvedContract,
     SourceKind,
     TickStatus,
+    TransportStatus,
     _ibkr_bar_time,
     _seal,
     build_request,
@@ -49,14 +56,18 @@ class FixtureTransport:
             "mode_code": self.mode_code,
             "market_mode": self.mode,
             "tick_count": self.ticks,
-            "historical_bars": [{
-                "event_at": dt.datetime(2026, 9, 4, tzinfo=dt.UTC),
-                "open": "510.00", "high": "510.75", "low": "501.44",
-                "close": "502.43", "volume": "85329",
-            }],
+            "historical_bars": [
+                {
+                    "event_at": dt.datetime(2026, 9, 4, tzinfo=dt.UTC),
+                    "open": "510.00",
+                    "high": "510.75",
+                    "low": "501.44",
+                    "close": "502.43",
+                    "volume": "85329",
+                }
+            ],
             "errors": [],
             "retrieved_at": now,
-            "transport_status": "SUCCESS",
         }
 
 
@@ -69,6 +80,36 @@ def reseal(value, model, hash_field, **changes):
     raw.update(changes)
     raw.pop(hash_field)
     return _seal(model, hash_field, **raw)
+
+
+def fully_reseal_evidence(value, **changes):
+    raw = value.model_dump(mode="python")
+    raw.update(changes)
+    bars = tuple(HistoricalBar.model_validate(x) for x in raw["historical_bars"])
+    raw["material_digest"] = typed_hash([x.model_dump(mode="json") for x in bars])
+    raw_view = {
+        "server_version": raw["tws_server_version"],
+        "server_current_time": raw["server_current_time"],
+        "contract": ResolvedContract.model_validate(raw["resolved_contract"]).model_dump(
+            mode="json"
+        ),
+        "mode_code": raw["official_market_data_type_code"],
+        "tick_count": raw["tick_count"],
+        "bars": [x.model_dump(mode="json") for x in bars],
+        "errors": [x.model_dump(mode="json") for x in raw["sanitized_errors"]],
+    }
+    raw["raw_digest"] = typed_hash(raw_view)
+    request = ProbeRequest.model_validate(raw["request"])
+    raw["provenance_digest"] = typed_hash(
+        {
+            "request_hash": request.request_hash,
+            "raw_digest": raw["raw_digest"],
+            "material_digest": raw["material_digest"],
+            "lineage_digest": request.instrument.lineage_digest,
+        }
+    )
+    raw.pop("evidence_hash")
+    return _seal(ProbeEvidence, "evidence_hash", **raw)
 
 
 def test_contract_fixture_is_observed_untrusted_and_safety_is_frozen():
@@ -92,8 +133,11 @@ def test_localhost_profile_port_and_read_only_capability_are_closed():
     assert request.config.account_requests_enabled is False
     assert request.config.order_capability_enabled is False
     for changes in (
-        {"host": "localhost"}, {"host": "192.168.1.2"}, {"port": 7497},
-        {"account_requests_enabled": True}, {"order_capability_enabled": True},
+        {"host": "localhost"},
+        {"host": "192.168.1.2"},
+        {"port": 7497},
+        {"account_requests_enabled": True},
+        {"order_capability_enabled": True},
     ):
         with pytest.raises(ValidationError):
             ProbeConfig.model_validate({**request.config.model_dump(), **changes})
@@ -101,20 +145,23 @@ def test_localhost_profile_port_and_read_only_capability_are_closed():
 
 def test_unicode_confusables_and_ambiguous_identity_fail():
     for changes in (
-        {"symbol": "ＭＳＦＴ"}, {"security_master_id": "security.us.msft.xnaѕ"},
-        {"permanent_id": "MSFT"}, {"conid": 1}, {"primary_exchange": "NYSE"},
+        {"symbol": "ＭＳＦＴ"},
+        {"security_master_id": "security.us.msft.xnaѕ"},
+        {"permanent_id": "MSFT"},
+        {"conid": 1},
+        {"primary_exchange": "NYSE"},
     ):
         with pytest.raises(ValidationError):
             GovernedInstrument.model_validate({**GovernedInstrument().model_dump(), **changes})
     with pytest.raises(ValidationError):
-        ResolvedContract.model_validate({
-            **evidence().resolved_contract.model_dump(), "local_symbol": "ＭＳＦＴ"
-        })
+        ResolvedContract.model_validate(
+            {**evidence().resolved_contract.model_dump(), "local_symbol": "ＭＳＦＴ"}
+        )
 
 
-@pytest.mark.parametrize("mode,code", [
-    ("REALTIME", 1), ("FROZEN", 2), ("DELAYED", 3), ("DELAYED_FROZEN", 4)
-])
+@pytest.mark.parametrize(
+    "mode,code", [("REALTIME", 1), ("FROZEN", 2), ("DELAYED", 3), ("DELAYED_FROZEN", 4)]
+)
 def test_official_market_mode_mapping_is_distinct(mode, code):
     value = evidence(mode=mode, mode_code=code)
     assert value.confirmed_market_data_mode is MarketDataMode(mode)
@@ -122,13 +169,14 @@ def test_official_market_mode_mapping_is_distinct(mode, code):
 
 
 def test_unconfirmed_mode_cannot_be_spoofed_or_confused():
-    with pytest.raises(ValidationError, match="unconfirmed"):
+    with pytest.raises(ProbeError, match="sanitized"):
         evidence(mode="DELAYED", mode_code=None)
     delayed = evidence(mode="DELAYED", mode_code=3)
     for mode in ("REALTIME", "DELAYED_FROZEN"):
         with pytest.raises((ValidationError, ProbeError)):
-            validate_evidence(reseal(delayed, ProbeEvidence, "evidence_hash",
-                                     confirmed_market_data_mode=mode))
+            validate_evidence(
+                reseal(delayed, ProbeEvidence, "evidence_hash", confirmed_market_data_mode=mode)
+            )
 
 
 def test_stream_timeout_is_absence_never_zero_tick_observation():
@@ -136,8 +184,12 @@ def test_stream_timeout_is_absence_never_zero_tick_observation():
     assert value.tick_status is TickStatus.ABSENT_TIMEOUT
     assert value.tick_count == 0
     assert value.tick_timeout_seconds == 12
+    assert value.stream_transport_status is ChannelStatus.TIMEOUT_NO_DATA
+    assert value.historical_transport_status is ChannelStatus.SUCCESS
+    assert value.transport_status is TransportStatus.PARTIAL
     present = evidence(ticks=2)
     assert present.tick_status is TickStatus.PRESENT and present.tick_timeout_seconds is None
+    assert present.transport_status is TransportStatus.SUCCESS
     with pytest.raises(ValidationError):
         reseal(value, ProbeEvidence, "evidence_hash", tick_status="PRESENT")
 
@@ -145,11 +197,147 @@ def test_stream_timeout_is_absence_never_zero_tick_observation():
 def test_digests_and_fully_resealed_material_provenance_swaps_fail():
     value = evidence()
     for changes in (
-        {"raw_digest": "0" * 64}, {"material_digest": "0" * 64},
+        {"raw_digest": "0" * 64},
+        {"material_digest": "0" * 64},
         {"provenance_digest": "0" * 64},
     ):
         with pytest.raises((ValidationError, ProbeError)):
             validate_evidence(reseal(value, ProbeEvidence, "evidence_hash", **changes))
+
+
+def test_real_provenance_cannot_be_asserted_by_fixture_or_fully_resealed_input():
+    value = evidence(mode="DELAYED", mode_code=3)
+    for mode, code in (("REALTIME", 1), ("FROZEN", 2), ("DELAYED_FROZEN", 4)):
+        forged = fully_reseal_evidence(
+            value,
+            source_kind="REAL_LOCAL_IBKR",
+            confirmed_market_data_mode=mode,
+            official_market_data_type_code=code,
+            boundary_attestation="0" * 64,
+        )
+        with pytest.raises(ProbeError, match="invalid probe evidence"):
+            validate_evidence(forged)
+
+
+def test_module_and_validator_monkeypatches_do_not_open_real_boundary(monkeypatch):
+    value = evidence()
+    forged = fully_reseal_evidence(
+        value, source_kind="REAL_LOCAL_IBKR", boundary_attestation="0" * 64
+    )
+    monkeypatch.setattr(probe_module, "_verify_real_attestation", lambda evidence: True)
+    monkeypatch.setattr(
+        probe_module,
+        "_capture_probe",
+        lambda request, transport, source: forged,
+    )
+    assert (
+        capture_probe(build_request(adapter_version="9.81.1.post1"), FixtureTransport()).source_kind
+        is SourceKind.CONTRACT_TEST_ONLY
+    )
+    with pytest.raises(ProbeError, match="invalid probe evidence"):
+        validate_evidence(forged)
+
+
+def test_all_untrusted_construction_routes_fail_to_promote_real():
+    value = evidence()
+    raw = value.model_dump(mode="python")
+    raw.update({"source_kind": "REAL_LOCAL_IBKR", "boundary_attestation": "0" * 64})
+    raw.pop("evidence_hash")
+    forged = _seal(ProbeEvidence, "evidence_hash", **raw)
+    candidates = (
+        forged,
+        forged.model_dump(mode="python"),
+        forged.model_dump_json(),
+        value.model_copy(
+            update={
+                "source_kind": SourceKind.REAL_LOCAL_IBKR,
+                "boundary_attestation": "0" * 64,
+            }
+        ),
+        ProbeEvidence.model_construct(**forged.model_dump(mode="python")),
+    )
+    for candidate in candidates:
+        with pytest.raises(ProbeError, match="invalid probe evidence"):
+            validate_evidence(candidate)
+
+
+def test_arbitrary_resealed_raw_digest_and_out_of_window_bars_fail():
+    value = evidence()
+    with pytest.raises(ValidationError, match="raw digest mismatch"):
+        reseal(value, ProbeEvidence, "evidence_hash", raw_digest="a" * 64)
+    stale_bar = value.historical_bars[0].model_copy(
+        update={"event_at": dt.datetime(1999, 1, 1, tzinfo=dt.UTC)}
+    )
+    with pytest.raises(ValidationError, match="outside the governed request window"):
+        fully_reseal_evidence(value, historical_bars=(stale_bar,))
+    future_bar = value.historical_bars[0].model_copy(
+        update={"event_at": value.observed_at + dt.timedelta(days=2)}
+    )
+    with pytest.raises(ValidationError, match="outside the governed request window"):
+        fully_reseal_evidence(value, historical_bars=(future_bar,))
+
+
+def test_external_secret_values_are_erased_from_error_graph_and_traceback():
+    sentinels = ("password=SENSITIVE_SENTINEL", "account=U1234567")
+    base = evidence().model_dump(mode="python")
+    for field, secret in (("source_kind", sentinels[0]), ("api_version", sentinels[1])):
+        forged = {**base, field: secret}
+        with pytest.raises(ProbeError) as caught:
+            validate_evidence(forged)
+        rendered = (
+            str(caught.value)
+            + repr(caught.value)
+            + "".join(traceback.format_exception(caught.value))
+        )
+        assert all(secret not in rendered for secret in sentinels)
+        assert caught.value.__cause__ is caught.value.__context__ is None
+
+    class LeakyIdentity(FixtureTransport):
+        def collect(self, config, instrument):
+            result = super().collect(config, instrument)
+            result.pop("transport_status", None)
+            result["resolved_contract"]["local_symbol"] = sentinels[1]
+            return result
+
+    with pytest.raises(ProbeError) as caught:
+        capture_probe(build_request(adapter_version="9.81.1.post1"), LeakyIdentity())
+    rendered = (
+        str(caught.value) + repr(caught.value) + "".join(traceback.format_exception(caught.value))
+    )
+    assert all(secret not in rendered for secret in sentinels)
+    assert caught.value.__cause__ is caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("target", ["contract", "callback", "error", "status", "api"])
+def test_provider_callback_fields_never_leak_rejected_values(target):
+    secret = "account=U1234567-password=SENSITIVE_SENTINEL"
+
+    class Malicious(FixtureTransport):
+        @property
+        def api_version(self):
+            if target == "api":
+                raise RuntimeError(secret)
+            return "9.81.1.post1"
+
+        def collect(self, config, instrument):
+            result = super().collect(config, instrument)
+            if target == "contract":
+                result["resolved_contract"]["local_symbol"] = secret
+            elif target == "callback":
+                result["mode_code"] = secret
+            elif target == "error":
+                result["errors"] = [{"request_id": 1, "code": 500, "category": secret}]
+            elif target == "status":
+                result["transport_status"] = secret
+            return result
+
+    with pytest.raises(ProbeError) as caught:
+        capture_probe(build_request(adapter_version="9.81.1.post1"), Malicious())
+    rendered = (
+        str(caught.value) + repr(caught.value) + "".join(traceback.format_exception(caught.value))
+    )
+    assert secret not in rendered
+    assert caught.value.__cause__ is caught.value.__context__ is None
 
 
 def test_model_copy_construct_json_duck_and_trust_promotions_fail():
@@ -172,8 +360,12 @@ def test_fake_real_transport_and_secret_exception_are_sanitized():
     class FakeReal(FixtureTransport):
         source_kind = SourceKind.REAL_LOCAL_IBKR
 
-    with pytest.raises(ProbeError, match="caller-controlled"):
-        capture_probe(build_request(adapter_version="9.81.1.post1"), FakeReal())
+    fake = FakeReal()
+    fake.__class__.__module__ = "governance.ibkr_probe"
+    assert (
+        capture_probe(build_request(adapter_version="9.81.1.post1"), fake).source_kind
+        is SourceKind.CONTRACT_TEST_ONLY
+    )
 
     class Leaky(FixtureTransport):
         def collect(self, config, instrument):
@@ -184,6 +376,7 @@ def test_fake_real_transport_and_secret_exception_are_sanitized():
     assert "SENSITIVE_SENTINEL" not in str(caught.value)
     assert "U1234567" not in str(caught.value)
     assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
 
 
 def test_append_only_persistence_contains_no_account_or_secret(tmp_path):
