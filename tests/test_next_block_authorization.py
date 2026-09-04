@@ -21,14 +21,14 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_current_foundation_and_successor_foundation_are_explicitly_authorized():
+def test_authorized_probe_follows_the_completed_foundation():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
+        == RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.IBKR_READ_ONLY_MARKET_OBSERVATION_ADAPTER_FOUNDATION
+        == RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -38,7 +38,7 @@ def test_current_foundation_and_successor_foundation_are_explicitly_authorized()
     assert NEXT_BLOCK.implementation_authorized is True
     assert NEXT_BLOCK.real_external_activation == ImplementationAuthorization.NOT_AUTHORIZED
     assert NEXT_BLOCK.activation_real is False
-    assert NEXT_BLOCK.operating_mode == "CONTRACT_TEST_ONLY"
+    assert NEXT_BLOCK.operating_mode == "EXPLICIT_LOCAL_OBSERVATION_UNAUTHENTICATED"
     assert NEXT_BLOCK.operating_mode_real is False
     assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
     assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"
@@ -74,7 +74,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
     adr = (
         ROOT
-        / "docs/adr/0009-ibkr-read-only-market-observation-adapter-foundation.md"
+        / "docs/adr/0011-ibkr-reproducible-read-only-real-observation-probe.md"
     ).read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
