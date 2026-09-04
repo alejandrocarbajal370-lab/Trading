@@ -590,6 +590,16 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
+The exact `NEXT_BLOCK` is **IBKR Reproducible Read-Only REAL Observation Probe**, with
+`AUTHORIZED_TO_IMPLEMENT`, `EXPLICIT_LOCAL_REAL_OBSERVATION_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`,
+and `NEW_PR_REQUIRED`. It is an explicit localhost-only (`127.0.0.1:7496`) observation command.
+It captures server time, resolved MSFT identity, the official market-data-mode callback, streaming
+tick presence or observational timeout, and a bounded historical bar as content-addressed
+`OBSERVED_UNTRUSTED` evidence. Install the optional pinned dependency with
+`pip install -e '.[ibkr-probe]'`, then invoke `ibkr-read-only-probe --execute-real-local --output
+<new-file.json>`. The output path is append-only. This does not authorize provider admission,
+QVM, backtesting, account requests, orders, trading, custody, WORM, legal or trust claims.
+
 `governance/durable_replay.py` implements the next contract-only foundation: canonical replay
 identities and an atomic SQLite-backed consume-if-new adapter used only by adversarial contract
 tests. It demonstrates restart and concurrent-process semantics without claiming external custody,

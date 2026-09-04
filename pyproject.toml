@@ -20,6 +20,9 @@ dev = [
   "pytest-cov>=5.0",
   "ruff>=0.6",
 ]
+ibkr-probe = [
+  "ibapi==9.81.1.post1",
+]
 
 [project.scripts]
 phase0-validate = "core.phase0:main"
@@ -31,6 +34,7 @@ value-research-run = "research.value_runner:main"
 momentum-research-run = "research.momentum_runner:main"
 qvm-research-run = "research.qvm_runner:main"
 pre-phase6-blind-coverage = "research.pre_phase6_readiness:main"
+ibkr-read-only-probe = "governance.ibkr_probe:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
