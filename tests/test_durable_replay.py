@@ -1,7 +1,9 @@
 import concurrent.futures
 import datetime as dt
-import multiprocessing
 import sqlite3
+import subprocess
+import sys
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -31,14 +33,6 @@ def identity(gate=EvidenceGate.REAL_FX, material=b"material", provenance=b"prove
     return derive_replay_identity(observation)
 
 
-def _consume_in_fresh_process(database, item, output):
-    try:
-        build_contract_test_persistent_replay(database).consume_if_new((item,), committed_at=NOW)
-        output.put("consumed")
-    except FoundationError as exc:
-        output.put(str(exc))
-
-
 def test_identity_binds_route_material_and_provenance():
     baseline = identity()
     assert baseline != identity(EvidenceGate.LICENSING_LEGAL)
@@ -60,13 +54,36 @@ def test_consumption_is_visible_to_a_fresh_process(tmp_path):
     database = tmp_path / "replay.sqlite3"
     item = identity()
     build_contract_test_persistent_replay(database).consume_if_new((item,), committed_at=NOW)
-    context = multiprocessing.get_context("spawn")
-    output = context.Queue()
-    process = context.Process(target=_consume_in_fresh_process, args=(database, item, output))
-    process.start()
-    process.join(timeout=10)
-    assert process.exitcode == 0
-    assert output.get(timeout=1) == "replay identity already consumed"
+    repository = Path(__file__).resolve().parents[1]
+    probe = """
+import datetime as dt
+import sys
+from pathlib import Path
+
+from governance.durable_replay import ReplayIdentity, build_contract_test_persistent_replay
+from governance.external_provider_foundation import FoundationError
+
+database = Path(sys.argv[1])
+item = ReplayIdentity.model_validate_json(sys.argv[2])
+committed_at = dt.datetime.fromisoformat(sys.argv[3])
+try:
+    build_contract_test_persistent_replay(database).consume_if_new(
+        (item,), committed_at=committed_at
+    )
+except FoundationError as exc:
+    print(exc)
+else:
+    print("consumed")
+"""
+    process = subprocess.run(
+        [sys.executable, "-c", probe, str(database), item.model_dump_json(), NOW.isoformat()],
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert process.stdout.strip() == "replay identity already consumed"
 
 
 def test_atomic_batch_rolls_back_when_any_identity_is_duplicate(tmp_path):
