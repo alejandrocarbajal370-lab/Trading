@@ -39,8 +39,8 @@ class RoadmapBlock(StrEnum):
     IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION = (
         "IBKR Provisioned Read-Only Observation Evidence Foundation"
     )
-    IBKR_REPRODUCIBLE_READ_ONLY_REAL_OBSERVATION_PROBE = (
-        "IBKR Reproducible Read-Only REAL Observation Probe"
+    IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE = (
+        "IBKR Reproducible Read-Only Local Observation Probe (Unauthenticated)"
     )
     TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE = (
         "Tax Lot & Tax-Aware Portfolio Governance"
@@ -118,7 +118,7 @@ class NextBlockAuthorization(BaseModel):
         RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION
     ]
     name: Literal[
-        RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_REAL_OBSERVATION_PROBE
+        RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE
     ]
     foundation_implementation: Literal[
         ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
@@ -126,7 +126,7 @@ class NextBlockAuthorization(BaseModel):
     implementation_authorized: Literal[True]
     real_external_activation: Literal[ImplementationAuthorization.NOT_AUTHORIZED]
     activation_real: Literal[False]
-    operating_mode: Literal["EXPLICIT_LOCAL_REAL_OBSERVATION_ONLY"]
+    operating_mode: Literal["EXPLICIT_LOCAL_OBSERVATION_UNAUTHENTICATED"]
     operating_mode_real: Literal[False]
     merge_order: Literal[MergeOrder.AFTER_CURRENT_BLOCK_MERGED]
     successor_pr: Literal["NEW_PR_REQUIRED"]
@@ -164,12 +164,12 @@ class NextBlockAuthorization(BaseModel):
 
 NEXT_BLOCK = NextBlockAuthorization(
     current_block=RoadmapBlock.IBKR_PROVISIONED_READ_ONLY_OBSERVATION_EVIDENCE_FOUNDATION,
-    name=RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_REAL_OBSERVATION_PROBE,
+    name=RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE,
     foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
     implementation_authorized=True,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
     activation_real=False,
-    operating_mode="EXPLICIT_LOCAL_REAL_OBSERVATION_ONLY",
+    operating_mode="EXPLICIT_LOCAL_OBSERVATION_UNAUTHENTICATED",
     operating_mode_real=False,
     merge_order=MergeOrder.AFTER_CURRENT_BLOCK_MERGED,
     successor_pr="NEW_PR_REQUIRED",
@@ -194,7 +194,7 @@ class AfterNextBlockCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     after: Literal[
-        RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_REAL_OBSERVATION_PROBE
+        RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE
     ]
     name: Literal["UNDETERMINED"]
     implementation_authorized: Literal[False]
@@ -203,7 +203,7 @@ class AfterNextBlockCandidate(BaseModel):
 
 
 AFTER_NEXT_BLOCK = AfterNextBlockCandidate(
-    after=RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_REAL_OBSERVATION_PROBE,
+    after=RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE,
     name="UNDETERMINED",
     implementation_authorized=False,
     activation_real=False,

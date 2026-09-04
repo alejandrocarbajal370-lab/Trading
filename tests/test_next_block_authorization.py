@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_authorized_probe_follows_the_completed_foundation():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_REAL_OBSERVATION_PROBE
+        == RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE
     )
     assert (
         NEXT_BLOCK.current_block
@@ -38,7 +38,7 @@ def test_authorized_probe_follows_the_completed_foundation():
     assert NEXT_BLOCK.implementation_authorized is True
     assert NEXT_BLOCK.real_external_activation == ImplementationAuthorization.NOT_AUTHORIZED
     assert NEXT_BLOCK.activation_real is False
-    assert NEXT_BLOCK.operating_mode == "EXPLICIT_LOCAL_REAL_OBSERVATION_ONLY"
+    assert NEXT_BLOCK.operating_mode == "EXPLICIT_LOCAL_OBSERVATION_UNAUTHENTICATED"
     assert NEXT_BLOCK.operating_mode_real is False
     assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
     assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"

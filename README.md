@@ -590,14 +590,18 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
-The exact `NEXT_BLOCK` is **IBKR Reproducible Read-Only REAL Observation Probe**, with
-`AUTHORIZED_TO_IMPLEMENT`, `EXPLICIT_LOCAL_REAL_OBSERVATION_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`,
+The exact `NEXT_BLOCK` is **IBKR Reproducible Read-Only Local Observation Probe
+(Unauthenticated)**, with `AUTHORIZED_TO_IMPLEMENT`,
+`EXPLICIT_LOCAL_OBSERVATION_UNAUTHENTICATED`, `AFTER_CURRENT_BLOCK_MERGED`,
 and `NEW_PR_REQUIRED`. It is an explicit localhost-only (`127.0.0.1:7496`) observation command.
 It captures server time, resolved MSFT identity, the official market-data-mode callback, streaming
 tick presence or observational timeout, and a bounded historical bar as content-addressed
 `OBSERVED_UNTRUSTED` evidence. Install the optional pinned dependency with
-`pip install -e '.[ibkr-probe]'`, then invoke `ibkr-read-only-probe --execute-real-local --output
-<new-file.json>`. The output path is append-only. This does not authorize provider admission,
+`pip install -e '.[ibkr-probe]'`, then invoke `ibkr-read-only-probe
+--execute-local-observation --output <new-file.json>`. The output path is append-only. The result is
+classified `LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED`: local Python execution, callbacks and content
+hashes cannot prove external authenticity. Authenticated REAL evidence remains deferred until an
+independently provisioned external root and attester exist. This does not authorize provider admission,
 QVM, backtesting, account requests, orders, trading, custody, WORM, legal or trust claims.
 
 `governance/durable_replay.py` implements the next contract-only foundation: canonical replay

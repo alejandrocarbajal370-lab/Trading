@@ -1,4 +1,5 @@
 import datetime as dt
+import inspect
 import json
 import traceback
 
@@ -205,56 +206,53 @@ def test_digests_and_fully_resealed_material_provenance_swaps_fail():
             validate_evidence(reseal(value, ProbeEvidence, "evidence_hash", **changes))
 
 
-def test_real_provenance_cannot_be_asserted_by_fixture_or_fully_resealed_input():
+def test_real_provenance_label_no_longer_exists_and_cannot_be_resealed():
     value = evidence(mode="DELAYED", mode_code=3)
     for mode, code in (("REALTIME", 1), ("FROZEN", 2), ("DELAYED_FROZEN", 4)):
-        forged = fully_reseal_evidence(
-            value,
-            source_kind="REAL_LOCAL_IBKR",
-            confirmed_market_data_mode=mode,
-            official_market_data_type_code=code,
-            boundary_attestation="0" * 64,
-        )
-        with pytest.raises(ProbeError, match="invalid probe evidence"):
-            validate_evidence(forged)
+        with pytest.raises(ValidationError):
+            fully_reseal_evidence(
+                value,
+                source_kind="REAL_LOCAL_IBKR",
+                confirmed_market_data_mode=mode,
+                official_market_data_type_code=code,
+            )
 
 
-def test_module_and_validator_monkeypatches_do_not_open_real_boundary(monkeypatch):
-    value = evidence()
-    forged = fully_reseal_evidence(
-        value, source_kind="REAL_LOCAL_IBKR", boundary_attestation="0" * 64
+def test_transport_monkeypatch_subclass_and_replacement_cannot_assert_real(monkeypatch):
+    fixture = evidence(mode="REALTIME", mode_code=1, ticks=2)
+    monkeypatch.setattr(probe_module, "IBKRLocalTransport", FixtureTransport)
+    observed = probe_module.execute_local_observation_probe(
+        build_request(adapter_version="9.81.1.post1")
     )
-    monkeypatch.setattr(probe_module, "_verify_real_attestation", lambda evidence: True)
-    monkeypatch.setattr(
-        probe_module,
-        "_capture_probe",
-        lambda request, transport, source: forged,
+    assert observed.source_kind is SourceKind.LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED
+    assert observed.confirmed_market_data_mode is MarketDataMode.DELAYED
+    assert observed.evidence_state == "OBSERVED_UNTRUSTED"
+    assert observed.verified is observed.trusted is observed.qvm_admissible is False
+    monkeypatch.setattr(probe_module, "_capture_probe", lambda *args: fixture)
+    replaced = probe_module.execute_local_observation_probe(
+        build_request(adapter_version="9.81.1.post1")
     )
+    assert replaced.source_kind is SourceKind.CONTRACT_TEST_ONLY
     assert (
         capture_probe(build_request(adapter_version="9.81.1.post1"), FixtureTransport()).source_kind
         is SourceKind.CONTRACT_TEST_ONLY
     )
-    with pytest.raises(ProbeError, match="invalid probe evidence"):
-        validate_evidence(forged)
 
 
 def test_all_untrusted_construction_routes_fail_to_promote_real():
     value = evidence()
     raw = value.model_dump(mode="python")
-    raw.update({"source_kind": "REAL_LOCAL_IBKR", "boundary_attestation": "0" * 64})
+    raw.update({"source_kind": "REAL_LOCAL_IBKR"})
     raw.pop("evidence_hash")
-    forged = _seal(ProbeEvidence, "evidence_hash", **raw)
+    with pytest.raises(ValidationError):
+        _seal(ProbeEvidence, "evidence_hash", **raw)
     candidates = (
-        forged,
-        forged.model_dump(mode="python"),
-        forged.model_dump_json(),
-        value.model_copy(
-            update={
-                "source_kind": SourceKind.REAL_LOCAL_IBKR,
-                "boundary_attestation": "0" * 64,
-            }
+        {**value.model_dump(mode="python"), "source_kind": "REAL_LOCAL_IBKR"},
+        value.model_dump_json().replace("CONTRACT_TEST_ONLY", "REAL_LOCAL_IBKR"),
+        value.model_copy(update={"source_kind": "REAL_LOCAL_IBKR"}),
+        ProbeEvidence.model_construct(
+            **{**value.model_dump(mode="python"), "source_kind": "REAL_LOCAL_IBKR"}
         ),
-        ProbeEvidence.model_construct(**forged.model_dump(mode="python")),
     )
     for candidate in candidates:
         with pytest.raises(ProbeError, match="invalid probe evidence"):
@@ -358,7 +356,7 @@ def test_model_copy_construct_json_duck_and_trust_promotions_fail():
 
 def test_fake_real_transport_and_secret_exception_are_sanitized():
     class FakeReal(FixtureTransport):
-        source_kind = SourceKind.REAL_LOCAL_IBKR
+        source_kind = SourceKind.LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED
 
     fake = FakeReal()
     fake.__class__.__module__ = "governance.ibkr_probe"
@@ -377,6 +375,56 @@ def test_fake_real_transport_and_secret_exception_are_sanitized():
     assert "U1234567" not in str(caught.value)
     assert caught.value.__cause__ is None
     assert caught.value.__context__ is None
+
+
+def test_no_local_authentication_signer_or_secret_is_introspectable():
+    module_text = inspect.getsource(probe_module)
+    assert "hmac" not in module_text.lower()
+    assert "boundary_attestation" not in module_text
+    assert "REAL_LOCAL_IBKR" not in module_text
+    assert probe_module.execute_local_observation_probe.__closure__ is None
+    for function in (probe_module.execute_local_observation_probe, probe_module.validate_evidence):
+        defaults = (function.__defaults__ or ()) + tuple((function.__kwdefaults__ or {}).values())
+        assert not any(
+            token in str(value).lower()
+            for value in defaults
+            for token in ("key", "secret", "signer", "hmac")
+        )
+
+
+def test_malicious_model_dump_serializer_repr_str_and_property_are_sanitized():
+    secret = "password=SENSITIVE_SENTINEL-account=U1234567"
+
+    class MaliciousEvidence(ProbeEvidence):
+        def model_dump(self, *args, **kwargs):
+            raise RuntimeError(secret)
+
+        def __repr__(self):
+            raise RuntimeError(secret)
+
+        def __str__(self):
+            raise RuntimeError(secret)
+
+    malicious = MaliciousEvidence.model_construct(**evidence().model_dump(mode="python"))
+
+    class MaliciousDict(dict):
+        def items(self):
+            raise RuntimeError(secret)
+
+        def __repr__(self):
+            raise RuntimeError(secret)
+
+        def __str__(self):
+            raise RuntimeError(secret)
+
+    for candidate in (malicious, MaliciousDict(evidence().model_dump(mode="python"))):
+        with pytest.raises(ProbeError) as caught:
+            validate_evidence(candidate)
+        rendered = str(caught.value) + repr(caught.value) + "".join(
+            traceback.format_exception(caught.value)
+        )
+        assert secret not in rendered
+        assert caught.value.__cause__ is caught.value.__context__ is None
 
 
 def test_append_only_persistence_contains_no_account_or_secret(tmp_path):

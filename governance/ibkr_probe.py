@@ -5,22 +5,20 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import hashlib
-import hmac
 import ipaddress
 import json
-import secrets
 import threading
 import time
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "ibkr-read-only-real-observation-probe-v1"
+CONTRACT_VERSION = "ibkr-read-only-local-observation-probe-v2"
 SHA256 = r"^[0-9a-f]{64}$"
 SAFE_ID = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
 SAFE_ADAPTER_VERSION = r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"
@@ -69,7 +67,7 @@ class ChannelStatus(StrEnum):
 
 
 class SourceKind(StrEnum):
-    REAL_LOCAL_IBKR = "REAL_LOCAL_IBKR"
+    LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED = "LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED"
     CONTRACT_TEST_ONLY = "CONTRACT_TEST_ONLY"
 
 
@@ -94,20 +92,20 @@ def _seal(model: type[ContractModel], hash_field: str, **values: Any) -> Any:
 
 
 def _revalidate(model: type[ContractModel], value: Any, label: str) -> Any:
-    if isinstance(value, BaseModel):
-        if set(value.__dict__) - set(type(value).model_fields):
-            raise ProbeError(f"{label} contains undeclared fields")
-        value = value.model_dump(mode="python", warnings=False)
-    elif not isinstance(value, (dict, str)):
-        raise ProbeError(f"invalid {label}")
     failed = False
     try:
+        if isinstance(value, BaseModel):
+            if set(value.__dict__) - set(type(value).model_fields):
+                raise ValueError("undeclared fields")
+            value = value.model_dump(mode="python", warnings=False)
+        elif not isinstance(value, (dict, str)):
+            raise TypeError("unsupported input")
         validated = (
             model.model_validate_json(value)
             if isinstance(value, str)
             else model.model_validate(value)
         )
-    except (TypeError, ValueError, ValidationError):
+    except BaseException:  # noqa: BLE001 -- caller hooks may throw secret-bearing exceptions
         failed = True
         validated = None
     if failed:
@@ -283,7 +281,6 @@ class ProbeEvidence(ContractModel):
     raw_digest: str = Field(pattern=SHA256)
     material_digest: str = Field(pattern=SHA256)
     provenance_digest: str = Field(pattern=SHA256)
-    boundary_attestation: str | None = Field(default=None, pattern=SHA256)
     evidence_state: Literal["OBSERVED_UNTRUSTED"] = "OBSERVED_UNTRUSTED"
     fixture_truth: Literal[False] = False
     verified: Literal[False] = False
@@ -314,11 +311,6 @@ class ProbeEvidence(ContractModel):
             raise ValueError("probe timestamp chronology is invalid")
         if self.source_kind is SourceKind.CONTRACT_TEST_ONLY and self.fixture_truth:
             raise ValueError("fixture cannot produce truth")
-        if (
-            self.source_kind is SourceKind.CONTRACT_TEST_ONLY
-            and self.boundary_attestation is not None
-        ):
-            raise ValueError("contract evidence cannot carry a real-boundary attestation")
         if (
             self.mode_confirmed_by_callback is False
             and self.confirmed_market_data_mode is not MarketDataMode.UNKNOWN
@@ -419,7 +411,7 @@ def _capture_probe(
     failed = False
     try:
         result = transport.collect(request.config, request.instrument)
-    except Exception:  # noqa: BLE001 -- provider exceptions can contain secrets; erase the chain
+    except BaseException:  # noqa: BLE001 -- provider hooks may throw secret-bearing exceptions
         failed = True
         result = None
     if failed:
@@ -433,7 +425,7 @@ def _capture_probe(
         api_version = identity.api_version
         external = _safe_external(CollectedResult, result, "provider result")
         bars = tuple(external.historical_bars)
-    except Exception:  # noqa: BLE001 -- validation/property failures may retain rejected data
+    except BaseException:  # noqa: BLE001 -- property hooks may retain rejected data
         external_failed = True
         external = None
         bars = ()
@@ -640,46 +632,18 @@ class IBKRLocalTransport:
             runner.join(timeout=2)
 
 
-def _make_real_boundary(
-    transport_type: type[IBKRLocalTransport],
-    capture: Any,
-    evidence_model: type[ProbeEvidence],
-):
-    """Keep the REAL capability and its signing key inside a lexical boundary."""
-    key = secrets.token_bytes(32)
+def execute_local_observation_probe(request: Any) -> ProbeEvidence:
+    """Observe localhost IBKR without claiming cryptographically authenticated provenance.
 
-    def payload(evidence: ProbeEvidence) -> bytes:
-        digest = typed_hash(
-            evidence.model_dump(
-                mode="json", exclude={"evidence_hash", "boundary_attestation"}, warnings=False
-            )
-        )
-        return digest.encode("ascii")
-
-    def execute(request: Any) -> ProbeEvidence:
-        # The adapter class is captured here; replacing the public module binding cannot inject a fake.
-        draft = capture(request, transport_type(), SourceKind.REAL_LOCAL_IBKR)
-        values = draft.model_dump(mode="python", exclude={"evidence_hash", "boundary_attestation"})
-        unsigned = evidence_model.model_construct(
-            **values, boundary_attestation=None, evidence_hash="0" * 64
-        )
-        values["boundary_attestation"] = hmac.new(
-            key, payload(unsigned), hashlib.sha256
-        ).hexdigest()
-        return _seal(evidence_model, "evidence_hash", **values)
-
-    def verify(evidence: ProbeEvidence) -> bool:
-        if evidence.boundary_attestation is None:
-            return False
-        expected = hmac.new(key, payload(evidence), hashlib.sha256).hexdigest()
-        return hmac.compare_digest(expected, evidence.boundary_attestation)
-
-    return execute, verify
-
-
-execute_real_probe, _verify_real_attestation = _make_real_boundary(
-    IBKRLocalTransport, _capture_probe, ProbeEvidence
-)
+    Python process integrity is not a trust root: replacement of this function, the transport,
+    callbacks, or classes can fabricate an observation.  Until an independently provisioned
+    external attester exists, even this concrete path is deliberately classified as unauthenticated.
+    """
+    return _capture_probe(
+        request,
+        IBKRLocalTransport(),
+        SourceKind.LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED,
+    )
 
 
 def _make_contract_capture(capture: Any):
@@ -690,18 +654,11 @@ def _make_contract_capture(capture: Any):
     return contract_capture
 
 
-def _make_evidence_validator(model: type[ProbeEvidence], verify_real: Any):
-    def validator(value: Any) -> ProbeEvidence:
-        evidence = _revalidate(model, value, "probe evidence")
-        if evidence.source_kind is SourceKind.REAL_LOCAL_IBKR and not verify_real(evidence):
-            raise ProbeError("invalid probe evidence")
-        return evidence
-
-    return validator
-
-
 capture_probe = _make_contract_capture(_capture_probe)
-validate_evidence = _make_evidence_validator(ProbeEvidence, _verify_real_attestation)
+
+
+def validate_evidence(value: Any) -> ProbeEvidence:
+    return _revalidate(ProbeEvidence, value, "probe evidence")
 
 
 def persist_evidence(evidence: Any, output: Path) -> None:
@@ -714,11 +671,11 @@ def persist_evidence(evidence: Any, output: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--execute-real-local", action="store_true", required=True)
+    parser.add_argument("--execute-local-observation", action="store_true", required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--client-id", type=int, default=71)
     args = parser.parse_args()
-    evidence = execute_real_probe(
+    evidence = execute_local_observation_probe(
         build_request(adapter_version="9.81.1.post1", client_id=args.client_id)
     )
     persist_evidence(evidence, args.output)
