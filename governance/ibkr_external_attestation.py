@@ -45,6 +45,40 @@ class ActorRole(StrEnum):
 class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
+    def __init__(self, **data: Any) -> None:
+        failed = False
+        try:
+            super().__init__(**data)
+        except BaseException:  # noqa: BLE001 - rejected values may contain secrets
+            failed = True
+        if failed:
+            raise ExternalAttestationError("invalid external attestation value")
+
+    @classmethod
+    def model_validate(cls, obj: Any, **kwargs: Any):
+        return cls._sanitized_validate("model_validate", obj, kwargs)
+
+    @classmethod
+    def model_validate_json(cls, json_data: str | bytes | bytearray, **kwargs: Any):
+        return cls._sanitized_validate("model_validate_json", json_data, kwargs)
+
+    @classmethod
+    def model_validate_strings(cls, obj: Any, **kwargs: Any):
+        return cls._sanitized_validate("model_validate_strings", obj, kwargs)
+
+    @classmethod
+    def _sanitized_validate(cls, route: str, value: Any, kwargs: dict[str, Any]):
+        failed = False
+        try:
+            validator = getattr(super(), route)
+            result = validator(value, **kwargs)
+        except BaseException:  # noqa: BLE001 - Pydantic errors retain rejected input
+            failed = True
+            result = None
+        if failed:
+            raise ExternalAttestationError("invalid external attestation value")
+        return result
+
 
 class ActorIdentity(_Model):
     actor_id: str = Field(pattern=IDENTIFIER)
@@ -58,11 +92,34 @@ class ActorIdentity(_Model):
         return self
 
 
+class ActorLifecycle(_Model):
+    actor_identity_digest: str = Field(pattern=SHA256)
+    role: ActorRole
+    effective_at: dt.datetime
+    available_at: dt.datetime
+    expires_at: dt.datetime
+    revoked_at: dt.datetime | None = None
+    lifecycle_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_lifecycle(self):
+        for name in ("effective_at", "available_at", "expires_at", "revoked_at"):
+            _utc(getattr(self, name), name)
+        if not self.effective_at <= self.available_at < self.expires_at:
+            raise ValueError("invalid actor lifecycle chronology")
+        if self.revoked_at is not None and self.revoked_at <= self.available_at:
+            raise ValueError("actor revocation must follow availability")
+        _hash(self, "lifecycle_hash")
+        return self
+
+
 class ExternalTrustLifecycle(_Model):
     anchor_id: str = Field(pattern=IDENTIFIER)
     authority_id: str = Field(pattern=IDENTIFIER)
     public_material_digest: str = Field(pattern=SHA256)
     registry_digest: str = Field(pattern=SHA256)
+    authority_identity_digest: str = Field(pattern=SHA256)
+    actor_lifecycles: tuple[ActorLifecycle, ...]
     effective_at: dt.datetime
     available_at: dt.datetime
     expires_at: dt.datetime
@@ -80,6 +137,16 @@ class ExternalTrustLifecycle(_Model):
             raise ValueError("invalid trust lifecycle chronology")
         if self.revoked_at is not None and self.revoked_at <= self.available_at:
             raise ValueError("revocation must follow trust availability")
+        lifecycles = tuple(
+            _deep(ActorLifecycle, item, "actor lifecycle") for item in self.actor_lifecycles
+        )
+        if tuple(item.role for item in lifecycles) != tuple(ActorRole):
+            raise ValueError("actor lifecycles must be exact and ordered")
+        if len({item.actor_identity_digest for item in lifecycles}) != len(lifecycles):
+            raise ValueError("actor lifecycle identities must be independent")
+        authority = lifecycles[tuple(ActorRole).index(ActorRole.AUTHORITY)]
+        if authority.actor_identity_digest != self.authority_identity_digest:
+            raise ValueError("authority lifecycle identity mismatch")
         _hash(self, "lifecycle_hash")
         return self
 
@@ -145,6 +212,7 @@ class ExternalAttestationEnvelope(_Model):
     binding_hash: str = Field(pattern=SHA256)
     entitlement_hash: str = Field(pattern=SHA256)
     lifecycle_hash: str = Field(pattern=SHA256)
+    actors_hash: str = Field(pattern=SHA256)
     attester_identity_digest: str = Field(pattern=SHA256)
     authority_identity_digest: str = Field(pattern=SHA256)
     issued_at: dt.datetime
@@ -167,6 +235,7 @@ class ExternalAuthenticityAssessment(_Model):
     envelope_hash: str = Field(pattern=SHA256)
     entitlement_hash: str = Field(pattern=SHA256)
     lifecycle_hash: str = Field(pattern=SHA256)
+    actors_hash: str = Field(pattern=SHA256)
     verifier_identity_digest: str = Field(pattern=SHA256)
     verified_at: dt.datetime
     state: Literal[ContractVerificationState.CONTRACT_TEST_VERIFIED]
@@ -193,37 +262,47 @@ class ExternalAuthenticityAssessment(_Model):
         return self
 
 
-def bind_ibkr_observation(evidence: Any, *, credential_reference_digest: str) -> ObservationAttestationBinding:
+def bind_ibkr_observation(
+    evidence: Any, *, credential_reference_digest: str
+) -> ObservationAttestationBinding:
     """Bind the complete PR #35 observation identity without authenticating its origin."""
-    item = _deep(ProbeEvidence, evidence, "IBKR observation")
-    if item.source_kind not in {
-        SourceKind.CONTRACT_TEST_ONLY,
-        SourceKind.LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED,
-    }:
-        raise ExternalAttestationError("unsupported observation source")
-    request = item.request
-    return _seal(
-        ObservationAttestationBinding,
-        "binding_hash",
-        provider=request.provider,
-        adapter=request.adapter,
-        dataset="PRICES_OHLCV",
-        evidence_hash=item.evidence_hash,
-        request_hash=request.request_hash,
-        request_id=request.request_id,
-        security_master_id=request.instrument.security_master_id,
-        permanent_id=request.instrument.permanent_id,
-        lineage_digest=request.instrument.lineage_digest,
-        market_mode=item.confirmed_market_data_mode,
-        requested_at=item.requested_at,
-        retrieved_at=item.retrieved_at,
-        observed_at=item.observed_at,
-        server_current_time=item.server_current_time,
-        raw_digest=item.raw_digest,
-        material_digest=item.material_digest,
-        provenance_digest=item.provenance_digest,
-        credential_reference_digest=credential_reference_digest,
-    )
+    failed = False
+    try:
+        item = _deep(ProbeEvidence, evidence, "IBKR observation")
+        if item.source_kind not in {
+            SourceKind.CONTRACT_TEST_ONLY,
+            SourceKind.LOCAL_IBKR_OBSERVATION_UNAUTHENTICATED,
+        }:
+            raise ValueError("unsupported observation source")
+        request = item.request
+        result = _seal(
+            ObservationAttestationBinding,
+            "binding_hash",
+            provider=request.provider,
+            adapter=request.adapter,
+            dataset="PRICES_OHLCV",
+            evidence_hash=item.evidence_hash,
+            request_hash=request.request_hash,
+            request_id=request.request_id,
+            security_master_id=request.instrument.security_master_id,
+            permanent_id=request.instrument.permanent_id,
+            lineage_digest=request.instrument.lineage_digest,
+            market_mode=item.confirmed_market_data_mode,
+            requested_at=item.requested_at,
+            retrieved_at=item.retrieved_at,
+            observed_at=item.observed_at,
+            server_current_time=item.server_current_time,
+            raw_digest=item.raw_digest,
+            material_digest=item.material_digest,
+            provenance_digest=item.provenance_digest,
+            credential_reference_digest=credential_reference_digest,
+        )
+    except BaseException:  # noqa: BLE001 - the entire public boundary is hostile
+        failed = True
+        result = None
+    if failed:
+        raise ExternalAttestationError("invalid IBKR observation binding")
+    return result
 
 
 def verify_contract_test_attestation(
@@ -238,6 +317,40 @@ def verify_contract_test_attestation(
     verified_at: dt.datetime,
 ) -> ExternalAuthenticityAssessment:
     """Exercise exact bindings; the result can never represent REAL authenticity."""
+    failed = False
+    message = "invalid external attestation verification"
+    try:
+        result = _verify_contract_test_attestation(
+            observation=observation,
+            binding=binding,
+            entitlement=entitlement,
+            lifecycle=lifecycle,
+            envelope=envelope,
+            actors=actors,
+            assertion=assertion,
+            verified_at=verified_at,
+        )
+    except BaseException as exc:  # noqa: BLE001 - sanitize the complete public route
+        failed = True
+        result = None
+        if type(exc) is ExternalAttestationError:
+            message = str(exc)
+    if failed:
+        raise ExternalAttestationError(message)
+    return result
+
+
+def _verify_contract_test_attestation(
+    *,
+    observation: Any,
+    binding: Any,
+    entitlement: Any,
+    lifecycle: Any,
+    envelope: Any,
+    actors: tuple[Any, ...],
+    assertion: bytes,
+    verified_at: dt.datetime,
+) -> ExternalAuthenticityAssessment:
     source = _deep(ProbeEvidence, observation, "IBKR observation")
     subject = _deep(ObservationAttestationBinding, binding, "observation binding")
     grant = _deep(AuthenticEntitlementReference, entitlement, "entitlement reference")
@@ -245,9 +358,13 @@ def verify_contract_test_attestation(
     attestation = _deep(ExternalAttestationEnvelope, envelope, "attestation envelope")
     people = tuple(_deep(ActorIdentity, item, "actor identity") for item in actors)
     expected_roles = tuple(ActorRole)
-    if tuple(item.role for item in people) != expected_roles or len({x.actor_id for x in people}) != len(people):
+    if tuple(item.role for item in people) != expected_roles or len(
+        {x.actor_id for x in people}
+    ) != len(people):
         raise ExternalAttestationError("actors must be exact, ordered and independent")
     by_role = {item.role: item for item in people}
+    actors_hash = typed_hash([item.model_dump(mode="json", warnings=False) for item in people])
+    _utc(verified_at, "verified_at")
     if not isinstance(assertion, bytes) or not assertion:
         raise ExternalAttestationError("external assertion must be non-empty bytes")
     rebuilt = bind_ibkr_observation(
@@ -261,7 +378,10 @@ def verify_contract_test_attestation(
         subject.security_master_id,
     ):
         raise ExternalAttestationError("cross-provider, dataset or security entitlement swap")
-    if attestation.binding_hash != subject.binding_hash or attestation.entitlement_hash != grant.entitlement_hash:
+    if (
+        attestation.binding_hash != subject.binding_hash
+        or attestation.entitlement_hash != grant.entitlement_hash
+    ):
         raise ExternalAttestationError("attestation evidence or entitlement binding mismatch")
     if attestation.lifecycle_hash != trust.lifecycle_hash:
         raise ExternalAttestationError("attestation trust lifecycle binding mismatch")
@@ -269,9 +389,23 @@ def verify_contract_test_attestation(
         raise ExternalAttestationError("attester identity binding mismatch")
     if attestation.authority_identity_digest != by_role[ActorRole.AUTHORITY].identity_digest:
         raise ExternalAttestationError("authority identity binding mismatch")
+    if attestation.actors_hash != actors_hash:
+        raise ExternalAttestationError("actor set binding mismatch")
+    actor_lifecycles = {item.role: item for item in trust.actor_lifecycles}
+    for role, actor in by_role.items():
+        lifecycle_record = actor_lifecycles[role]
+        if lifecycle_record.actor_identity_digest != actor.identity_digest:
+            raise ExternalAttestationError(f"{role.value} lifecycle identity mismatch")
+        if not lifecycle_record.available_at <= attestation.issued_at < lifecycle_record.expires_at:
+            raise ExternalAttestationError(f"{role.value} lifecycle unavailable at issuance")
+        if not lifecycle_record.available_at <= verified_at < lifecycle_record.expires_at:
+            raise ExternalAttestationError(
+                f"{role.value} lifecycle unavailable, expired or future-dated"
+            )
+        if lifecycle_record.revoked_at is not None and verified_at >= lifecycle_record.revoked_at:
+            raise ExternalAttestationError(f"{role.value} lifecycle revoked")
     if hashlib.sha256(assertion).hexdigest() != attestation.assertion_digest:
         raise ExternalAttestationError("external assertion digest mismatch")
-    _utc(verified_at, "verified_at")
     if source.source_kind is not SourceKind.CONTRACT_TEST_ONLY:
         raise ExternalAttestationError("REAL observation verification is NOT_PROVISIONED")
     if not trust.available_at <= attestation.issued_at < trust.expires_at:
@@ -291,6 +425,7 @@ def verify_contract_test_attestation(
         envelope_hash=attestation.envelope_hash,
         entitlement_hash=grant.entitlement_hash,
         lifecycle_hash=trust.lifecycle_hash,
+        actors_hash=actors_hash,
         verifier_identity_digest=by_role[ActorRole.VERIFIER].identity_digest,
         verified_at=verified_at,
         state=ContractVerificationState.CONTRACT_TEST_VERIFIED,
@@ -320,13 +455,33 @@ T = TypeVar("T", bound=BaseModel)
 
 def seal_contract_test(expected: type[T], hash_field: str, **values: Any) -> T:
     """Build only CONTRACT_TEST_ONLY values; this is not an external signer."""
-    return _seal(expected, hash_field, **values)
+    failed = False
+    try:
+        if _SEAL_FIELDS.get(expected) != hash_field:
+            raise TypeError("unsupported contract-test model or hash field")
+        result = _seal(expected, hash_field, **values)
+    except BaseException:  # noqa: BLE001 - caller-controlled hooks and values are hostile
+        failed = True
+        result = None
+    if failed:
+        raise ExternalAttestationError("invalid contract-test external attestation value")
+    return result
 
 
 def _seal(expected: type[T], hash_field: str, **values: Any) -> T:
-    raw = expected.model_construct(**values, **{hash_field: "0" * 64})
-    values[hash_field] = typed_hash(raw.model_dump(mode="json", exclude={hash_field}, warnings=False))
-    return expected(**values)
+    failed = False
+    try:
+        raw = expected.model_construct(**values, **{hash_field: "0" * 64})
+        payload = raw.model_dump(mode="json", exclude={hash_field}, warnings=False)
+        sealed = dict(values)
+        sealed[hash_field] = typed_hash(payload)
+        result = expected(**sealed)
+    except BaseException:  # noqa: BLE001 - serializers/properties may be hostile
+        failed = True
+        result = None
+    if failed:
+        raise ExternalAttestationError("invalid external attestation value")
+    return result
 
 
 def _deep(expected: type[T], value: Any, label: str) -> T:
@@ -351,7 +506,11 @@ def _deep(expected: type[T], value: Any, label: str) -> T:
 
 
 def _identifier(value: str, label: str) -> None:
-    if not value.isascii() or value != value.casefold() or value != unicodedata.normalize("NFKC", value):
+    if (
+        not value.isascii()
+        or value != value.casefold()
+        or value != unicodedata.normalize("NFKC", value)
+    ):
         raise ValueError(f"{label} must be canonical lowercase ASCII")
 
 
@@ -365,3 +524,14 @@ def _hash(value: BaseModel, field: str) -> None:
         value.model_dump(mode="json", exclude={field}, warnings=False)
     ):
         raise ValueError(f"{field} mismatch")
+
+
+_SEAL_FIELDS: dict[type[BaseModel], str] = {
+    ActorIdentity: "identity_digest",
+    ActorLifecycle: "lifecycle_hash",
+    ExternalTrustLifecycle: "lifecycle_hash",
+    ObservationAttestationBinding: "binding_hash",
+    AuthenticEntitlementReference: "entitlement_hash",
+    ExternalAttestationEnvelope: "envelope_hash",
+    ExternalAuthenticityAssessment: "assessment_hash",
+}

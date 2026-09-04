@@ -1,11 +1,14 @@
 import datetime as dt
 import hashlib
+import traceback
+from itertools import combinations
 
 import pytest
-from pydantic import ValidationError
 
+from governance.canonical import typed_hash
 from governance.ibkr_external_attestation import (
     ActorIdentity,
+    ActorLifecycle,
     ActorRole,
     AuthenticEntitlementReference,
     ExternalAttestationEnvelope,
@@ -65,9 +68,7 @@ class FixtureTransport:
 def graph():
     observation = capture_probe(build_request(adapter_version="9.81.1.post1"), FixtureTransport())
     credential_digest = hashlib.sha256(b"external-credential-reference").hexdigest()
-    binding = bind_ibkr_observation(
-        observation, credential_reference_digest=credential_digest
-    )
+    binding = bind_ibkr_observation(observation, credential_reference_digest=credential_digest)
     actors = tuple(
         seal_contract_test(
             ActorIdentity,
@@ -77,6 +78,18 @@ def graph():
         )
         for role in ActorRole
     )
+    actor_lifecycles = tuple(
+        seal_contract_test(
+            ActorLifecycle,
+            "lifecycle_hash",
+            actor_identity_digest=actor.identity_digest,
+            role=actor.role,
+            effective_at=observation.requested_at - dt.timedelta(minutes=2),
+            available_at=observation.requested_at - dt.timedelta(minutes=1),
+            expires_at=observation.observed_at + dt.timedelta(hours=2),
+        )
+        for actor in actors
+    )
     lifecycle = seal_contract_test(
         ExternalTrustLifecycle,
         "lifecycle_hash",
@@ -84,6 +97,8 @@ def graph():
         authority_id="authority.ibkr.contract",
         public_material_digest=hashlib.sha256(b"public-material").hexdigest(),
         registry_digest=hashlib.sha256(b"external-registry-snapshot").hexdigest(),
+        authority_identity_digest=actors[4].identity_digest,
+        actor_lifecycles=actor_lifecycles,
         effective_at=observation.requested_at - dt.timedelta(minutes=2),
         available_at=observation.requested_at - dt.timedelta(minutes=1),
         expires_at=observation.observed_at + dt.timedelta(hours=2),
@@ -108,6 +123,7 @@ def graph():
         binding_hash=binding.binding_hash,
         entitlement_hash=entitlement.entitlement_hash,
         lifecycle_hash=lifecycle.lifecycle_hash,
+        actors_hash=typed_hash([actor.model_dump(mode="json", warnings=False) for actor in actors]),
         attester_identity_digest=actors[0].identity_digest,
         authority_identity_digest=actors[4].identity_digest,
         issued_at=observation.observed_at + dt.timedelta(seconds=1),
@@ -120,7 +136,15 @@ def graph():
 
 def verify(values=None, **changes):
     values = values or graph()
-    keys = ("observation", "binding", "entitlement", "lifecycle", "envelope", "actors", "verified_at")
+    keys = (
+        "observation",
+        "binding",
+        "entitlement",
+        "lifecycle",
+        "envelope",
+        "actors",
+        "verified_at",
+    )
     kwargs = dict(zip(keys, values, strict=True))
     kwargs["assertion"] = ASSERTION
     kwargs.update(changes)
@@ -140,9 +164,14 @@ def test_contract_verification_binds_pr35_evidence_and_never_promotes_real():
     assert result.real_authenticity == result.real_entitlement == "NOT_PROVISIONED"
     assert result.real_provider_admission == result.external_custody_worm_legal == "NOT_PROVISIONED"
     assert result.gate_states == tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate)
-    assert (result.real_route, result.global_readiness) == ("QVM_NOT_READY", "INSUFFICIENT_REAL_DATA")
+    assert (result.real_route, result.global_readiness) == (
+        "QVM_NOT_READY",
+        "INSUFFICIENT_REAL_DATA",
+    )
     assert (result.trade_decision, result.signals_generated, result.live_execution_enabled) == (
-        "NO_TRADE", False, False
+        "NO_TRADE",
+        False,
+        False,
     )
     assert result.backtesting == "NOT_AUTHORIZED"
     with pytest.raises(ExternalAttestationError, match="NOT_PROVISIONED"):
@@ -152,12 +181,24 @@ def test_contract_verification_binds_pr35_evidence_and_never_promotes_real():
 def test_market_mode_is_bound_but_cannot_substitute_for_entitlement():
     values = graph()
     assert values[1].market_mode == "DELAYED"
-    bad = reseal(values[2], AuthenticEntitlementReference, "entitlement_hash", dataset="PRICES_OHLCV")
+    bad = reseal(
+        values[2], AuthenticEntitlementReference, "entitlement_hash", dataset="PRICES_OHLCV"
+    )
     # Even a self-consistent declaration remains contract-only and REAL entitlement remains absent.
     assert verify(values=(*values[:2], bad, *values[3:])).real_entitlement == "NOT_PROVISIONED"
 
 
-@pytest.mark.parametrize("field", ["evidence_hash", "request_hash", "lineage_digest", "raw_digest", "material_digest", "provenance_digest"])
+@pytest.mark.parametrize(
+    "field",
+    [
+        "evidence_hash",
+        "request_hash",
+        "lineage_digest",
+        "raw_digest",
+        "material_digest",
+        "provenance_digest",
+    ],
+)
 def test_resealed_observation_binding_swaps_are_rejected(field):
     values = graph()
     forged = reseal(values[1], type(values[1]), "binding_hash", **{field: "0" * 64})
@@ -170,7 +211,7 @@ def test_cross_security_entitlement_and_cross_request_attestation_are_rejected()
     raw = values[2].model_dump(mode="python")
     raw["security_master_id"] = "security.us.goog.xnas"
     raw.pop("entitlement_hash")
-    with pytest.raises(ValidationError):
+    with pytest.raises(ExternalAttestationError):
         seal_contract_test(AuthenticEntitlementReference, "entitlement_hash", **raw)
     forged = reseal(values[4], ExternalAttestationEnvelope, "envelope_hash", binding_hash="0" * 64)
     with pytest.raises(ExternalAttestationError, match="attestation evidence"):
@@ -184,7 +225,10 @@ def test_actor_collapse_reordering_and_identity_swaps_are_rejected():
         with pytest.raises(ExternalAttestationError, match="actors must be exact"):
             verify(values=values, actors=forged)
     envelope = reseal(
-        values[4], ExternalAttestationEnvelope, "envelope_hash", attester_identity_digest=actors[1].identity_digest
+        values[4],
+        ExternalAttestationEnvelope,
+        "envelope_hash",
+        attester_identity_digest=actors[1].identity_digest,
     )
     with pytest.raises(ExternalAttestationError, match="attester identity"):
         verify(values=values, envelope=envelope)
@@ -196,7 +240,12 @@ def test_revoked_expired_stale_and_future_attestations_fail_at_verifier_time(con
     verified = values[6]
     if condition == "revoked":
         lifecycle = reseal(values[3], ExternalTrustLifecycle, "lifecycle_hash", revoked_at=verified)
-        envelope = reseal(values[4], ExternalAttestationEnvelope, "envelope_hash", lifecycle_hash=lifecycle.lifecycle_hash)
+        envelope = reseal(
+            values[4],
+            ExternalAttestationEnvelope,
+            "envelope_hash",
+            lifecycle_hash=lifecycle.lifecycle_hash,
+        )
         values = (*values[:3], lifecycle, envelope, *values[5:])
     elif condition == "expired":
         values = (*values[:6], values[4].expires_at)
@@ -213,14 +262,16 @@ def test_malformed_time_unicode_and_construct_copy_deep_revalidation_fail():
     raw = values[3].model_dump(mode="python")
     raw["available_at"] = raw["available_at"].replace(tzinfo=None)
     raw.pop("lifecycle_hash")
-    with pytest.raises(ValidationError, match="canonical UTC"):
+    with pytest.raises(ExternalAttestationError, match="invalid contract-test"):
         seal_contract_test(ExternalTrustLifecycle, "lifecycle_hash", **raw)
-    with pytest.raises(ValidationError):
+    with pytest.raises(ExternalAttestationError):
         ActorIdentity(actor_id="actor.verifіer", role="VERIFIER", identity_digest="0" * 64)
     forged = values[1].model_copy(update={"request_hash": "0" * 64})
     with pytest.raises(ExternalAttestationError, match="invalid observation binding"):
         verify(values=values, binding=forged)
-    constructed = type(values[4]).model_construct(**{**values[4].model_dump(), "binding_hash": "0" * 64})
+    constructed = type(values[4]).model_construct(
+        **{**values[4].model_dump(), "binding_hash": "0" * 64}
+    )
     with pytest.raises(ExternalAttestationError, match="invalid attestation envelope"):
         verify(values=values, envelope=constructed)
 
@@ -248,9 +299,218 @@ def test_local_observation_and_fixture_can_never_enter_real_verification():
     from governance.ibkr_probe import ProbeEvidence, _seal
 
     local = _seal(ProbeEvidence, "evidence_hash", **raw)
-    binding = bind_ibkr_observation(local, credential_reference_digest=values[1].credential_reference_digest)
+    binding = bind_ibkr_observation(
+        local, credential_reference_digest=values[1].credential_reference_digest
+    )
     envelope = reseal(
         values[4], ExternalAttestationEnvelope, "envelope_hash", binding_hash=binding.binding_hash
     )
     with pytest.raises(ExternalAttestationError, match="NOT_PROVISIONED"):
         verify(values=(local, binding, values[2], values[3], envelope, *values[5:]))
+
+
+@pytest.mark.parametrize(
+    ("model_index", "field"),
+    [
+        (1, "credential_reference_digest"),
+        (1, "material_digest"),
+        (1, "provenance_digest"),
+        (2, "account_reference_digest"),
+        (2, "entitlement_evidence_digest"),
+        (3, "public_material_digest"),
+        (3, "registry_digest"),
+        (4, "assertion_digest"),
+    ],
+)
+def test_all_digest_only_public_sealing_failures_are_secret_free(model_index, field):
+    values = graph()
+    model = type(values[model_index])
+    hash_field = {
+        1: "binding_hash",
+        2: "entitlement_hash",
+        3: "lifecycle_hash",
+        4: "envelope_hash",
+    }[model_index]
+    raw = values[model_index].model_dump(mode="python", exclude={hash_field})
+    secret = f"RAW_{field.upper()}_ABC123_SECRET"
+    raw[field] = secret
+    with pytest.raises(ExternalAttestationError) as caught:
+        seal_contract_test(model, hash_field, **raw)
+    rendered = "\n".join((str(caught.value), repr(caught.value), traceback.format_exc()))
+    assert secret not in rendered
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_original_binding_secret_reproducer_is_closed_without_exception_chaining():
+    observation = graph()[0]
+    secret = "RAW_ACCOUNT_ID_ABC123_SECRET"
+    with pytest.raises(ExternalAttestationError) as caught:
+        bind_ibkr_observation(observation, credential_reference_digest=secret)
+    rendered = "\n".join((str(caught.value), repr(caught.value), traceback.format_exc()))
+    assert secret not in rendered
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("route", ("constructor", "model_validate", "model_validate_json"))
+def test_public_pydantic_validation_routes_never_expose_rejected_values(route):
+    secret = "RAW_IDENTITY_PII_ABC123_SECRET"
+    raw = {"actor_id": secret, "role": "ATTESTER", "identity_digest": "0" * 64}
+    with pytest.raises(ExternalAttestationError) as caught:
+        if route == "constructor":
+            ActorIdentity(**raw)
+        elif route == "model_validate":
+            ActorIdentity.model_validate(raw)
+        else:
+            ActorIdentity.model_validate_json(
+                '{"actor_id":"'
+                + secret
+                + '","role":"ATTESTER","identity_digest":"'
+                + "0" * 64
+                + '"}'
+            )
+    rendered = "\n".join((str(caught.value), repr(caught.value), traceback.format_exc()))
+    assert secret not in rendered
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+
+
+def test_hostile_dump_serializer_repr_str_and_property_are_never_invoked_or_leaked():
+    secret = "RAW_HOSTILE_OBJECT_ABC123_SECRET"
+
+    class Hostile:
+        @property
+        def __dict__(self):
+            raise RuntimeError(secret)
+
+        def model_dump(self, *args, **kwargs):
+            raise RuntimeError(secret)
+
+        def __repr__(self):
+            raise RuntimeError(secret)
+
+        def __str__(self):
+            raise RuntimeError(secret)
+
+    with pytest.raises(ExternalAttestationError) as caught:
+        bind_ibkr_observation(Hostile(), credential_reference_digest="0" * 64)
+    rendered = "\n".join((str(caught.value), repr(caught.value), traceback.format_exc()))
+    assert secret not in rendered
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    with pytest.raises(ExternalAttestationError):
+        seal_contract_test(Hostile, "hostile_hash", payload=secret)
+
+
+@pytest.mark.parametrize("role", tuple(ActorRole))
+def test_each_actor_identity_is_materially_bound_and_full_rebinding_changes_assessment(role):
+    values = graph()
+    baseline = verify(values=values)
+    actors = list(values[5])
+    index = tuple(ActorRole).index(role)
+    actors[index] = seal_contract_test(
+        ActorIdentity,
+        "identity_digest",
+        actor_id=f"replacement.{role.value.casefold().replace('_', '-')}",
+        role=role,
+    )
+    replaced = tuple(actors)
+    with pytest.raises(ExternalAttestationError, match="identity binding|actor set binding"):
+        verify(values=values, actors=replaced)
+
+    records = list(values[3].actor_lifecycles)
+    records[index] = reseal(
+        records[index],
+        ActorLifecycle,
+        "lifecycle_hash",
+        actor_identity_digest=replaced[index].identity_digest,
+    )
+    lifecycle = reseal(
+        values[3],
+        ExternalTrustLifecycle,
+        "lifecycle_hash",
+        actor_lifecycles=tuple(records),
+        **(
+            {"authority_identity_digest": replaced[index].identity_digest}
+            if role is ActorRole.AUTHORITY
+            else {}
+        ),
+    )
+    envelope = reseal(
+        values[4],
+        ExternalAttestationEnvelope,
+        "envelope_hash",
+        lifecycle_hash=lifecycle.lifecycle_hash,
+        actors_hash=typed_hash(
+            [actor.model_dump(mode="json", warnings=False) for actor in replaced]
+        ),
+        **(
+            {"attester_identity_digest": replaced[index].identity_digest}
+            if role is ActorRole.ATTESTER
+            else {}
+        ),
+        **(
+            {"authority_identity_digest": replaced[index].identity_digest}
+            if role is ActorRole.AUTHORITY
+            else {}
+        ),
+    )
+    rebound = verify(values=(*values[:3], lifecycle, envelope, replaced, values[6]))
+    assert rebound.assessment_hash != baseline.assessment_hash
+    assert rebound.actors_hash != baseline.actors_hash
+
+
+@pytest.mark.parametrize("roles", tuple(combinations(tuple(ActorRole), 2)))
+def test_combined_actor_swaps_are_detected_by_canonical_actor_binding(roles):
+    values = graph()
+    actors = list(values[5])
+    for role in roles:
+        index = tuple(ActorRole).index(role)
+        actors[index] = seal_contract_test(
+            ActorIdentity,
+            "identity_digest",
+            actor_id=f"combined.{role.value.casefold().replace('_', '-')}",
+            role=role,
+        )
+    with pytest.raises(ExternalAttestationError, match="identity binding|actor set binding"):
+        verify(values=values, actors=tuple(actors))
+
+
+@pytest.mark.parametrize("role", tuple(ActorRole))
+@pytest.mark.parametrize("condition", ("future", "expired", "revoked", "unavailable"))
+def test_every_actor_lifecycle_fails_closed_at_verifier_time(role, condition):
+    values = graph()
+    verified = values[6]
+    index = tuple(ActorRole).index(role)
+    record = values[3].actor_lifecycles[index]
+    changes = {
+        "future": {
+            "effective_at": verified + dt.timedelta(seconds=1),
+            "available_at": verified + dt.timedelta(seconds=2),
+            "expires_at": verified + dt.timedelta(hours=1),
+        },
+        "unavailable": {
+            "available_at": verified + dt.timedelta(seconds=1),
+            "expires_at": verified + dt.timedelta(hours=1),
+        },
+        "expired": {"expires_at": verified},
+        "revoked": {"revoked_at": verified},
+    }[condition]
+    records = list(values[3].actor_lifecycles)
+    records[index] = reseal(record, ActorLifecycle, "lifecycle_hash", **changes)
+    lifecycle = reseal(
+        values[3], ExternalTrustLifecycle, "lifecycle_hash", actor_lifecycles=tuple(records)
+    )
+    envelope = reseal(
+        values[4],
+        ExternalAttestationEnvelope,
+        "envelope_hash",
+        lifecycle_hash=lifecycle.lifecycle_hash,
+    )
+    with pytest.raises(ExternalAttestationError, match="lifecycle"):
+        verify(values=(*values[:3], lifecycle, envelope, *values[5:]))
+
+
+def test_authority_actor_and_lifecycle_identity_mismatch_is_rejected():
+    values = graph()
+    raw = values[3].model_dump(mode="python", exclude={"lifecycle_hash"})
+    raw["authority_identity_digest"] = "f" * 64
+    with pytest.raises(ExternalAttestationError, match="invalid contract-test"):
+        seal_contract_test(ExternalTrustLifecycle, "lifecycle_hash", **raw)
