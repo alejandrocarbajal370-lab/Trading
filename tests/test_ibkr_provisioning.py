@@ -97,6 +97,15 @@ def test_secret_material_cannot_enter_models_or_real_route():
         evaluate_real_route(raw_secret="actual-secret")  # type: ignore[call-arg]
 
 
+def test_rejected_secret_is_absent_from_error_and_exception_chain():
+    raw = capture().model_dump(mode="python")
+    raw["credential_reference"]["secret"] = "SENSITIVE_SENTINEL"
+    with pytest.raises(IBKRProvisioningError) as caught:
+        validate_capture(raw, raw_payload=PAYLOAD)
+    assert "SENSITIVE_SENTINEL" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
 def test_connection_profile_is_code_owned_and_state_machine_has_no_mutation_state():
     result = capture()
     for changes in (

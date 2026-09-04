@@ -7,7 +7,7 @@ import hashlib
 from enum import StrEnum
 from typing import Any, Literal, Protocol, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from governance.canonical import typed_hash
 from governance.ibkr_observation import (
@@ -110,8 +110,11 @@ def _revalidate(model: type[T], value: Any, label: str) -> T:
         if isinstance(value, str):
             return model.model_validate_json(value)
         return model.model_validate(value)
-    except Exception as exc:
-        raise IBKRProvisioningError(f"invalid {label}") from exc
+    except (TypeError, ValueError, ValidationError):
+        # Pydantic validation errors may echo rejected input values. Suppress the
+        # internal exception so raw secret material cannot escape through a
+        # traceback or the public exception's ``__cause__``.
+        raise IBKRProvisioningError(f"invalid {label}") from None
 
 
 def _utc(value: dt.datetime, label: str) -> None:
