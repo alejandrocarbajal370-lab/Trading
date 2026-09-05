@@ -595,7 +595,11 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 The exact `NEXT_BLOCK` is **External Trust Backend Provisioning Contract Foundation**, with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
 `NEW_PR_REQUIRED`. It binds the exact PR #35/#36 evidence to digest-only external backend and
-independent attester/verifier contracts while REAL activation, trust and provider admission remain
+seven independent principal contracts: provisioning maker, provisioning checker, runtime operator,
+attester, verifier, authority, and revocation owner. Every principal identity and lifecycle is
+canonically bound. Trust-anchor and authority-registry artifact references are distinct; other
+operational evidence references may share an external root without implying trust. REAL activation,
+trust and provider admission remain
 `NOT_AUTHORIZED` / `NOT_PROVISIONED`. See ADR 0013. The machine-readable
 successor remains `UNDETERMINED`; QVM remains blocked.
 

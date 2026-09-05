@@ -30,6 +30,7 @@ class TrustBackendError(ValueError):
 class PrincipalRole(StrEnum):
     PROVISIONING_MAKER = "PROVISIONING_MAKER"
     PROVISIONING_CHECKER = "PROVISIONING_CHECKER"
+    RUNTIME_OPERATOR = "RUNTIME_OPERATOR"
     ATTESTER = "ATTESTER"
     VERIFIER = "VERIFIER"
     AUTHORITY = "AUTHORITY"
@@ -150,6 +151,11 @@ class ProvisioningEvidenceManifest(_Model):
         identities = {item.external_identity_digest for item in principals}
         if len(identities) != len(principals):
             raise ValueError("external principals must be independent")
+        principal_ids = {item.principal_id for item in principals}
+        if len(principal_ids) != len(principals):
+            raise ValueError("principal identifiers must be independent")
+        if self.trust_anchor_reference_digest == self.authority_registry_reference_digest:
+            raise ValueError("trust anchor and authority registry references must be distinct")
         _hash(self, "manifest_hash")
         return self
 
@@ -213,6 +219,17 @@ def validate_contract_test_provisioning(
             raise ValueError("cross-assessment binding mismatch")
         if record.entitlement_reference_hash != authenticity.entitlement_hash:
             raise ValueError("entitlement binding mismatch")
+        # The upstream verifier deeply reconstructs and validates the complete
+        # request -> observation -> attestation -> authenticity graph.  This
+        # boundary must not claim to have assessed that graph before the
+        # upstream authenticity result existed.  Equality is the first valid
+        # boundary; all timestamps are canonical UTC before comparison.
+        if authenticity.verified_at < binding.observed_at:
+            raise ValueError("authenticity precedes bound observation")
+        if record.effective_at < authenticity.verified_at:
+            raise ValueError("manifest precedes upstream authenticity")
+        if assessed_at < authenticity.verified_at:
+            raise ValueError("assessment precedes upstream authenticity")
         if not record.effective_at <= assessed_at < record.expires_at:
             raise ValueError("manifest unavailable at assessment time")
         for principal in record.principals:

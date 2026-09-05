@@ -19,21 +19,34 @@ shipping an injectable signer, key, verifier, registry, endpoint or credential.
 ## Contract and binding
 
 The contract binds `provider.ibkr` to digest-only backend deployment, endpoint and configuration
-references. Six ordered, distinct external principals cover maker, checker, attester, verifier,
-authority and revocation ownership, each with independent effective, availability, expiry and
-revocation semantics checked again at assessment time.
+references. Seven ordered, distinct external principals cover provisioning maker, provisioning
+checker, runtime operator, attester, verifier, authority and revocation ownership, each with
+independent effective, availability, expiry and revocation semantics checked again at assessment
+time. Maker and checker preserve the dual-control provisioning boundary established by earlier
+foundations; the runtime operator is a separate identity accountable for operating the deployed
+backend. None is decorative: every role and lifecycle is included in the canonical manifest hash
+and revalidated at assessment time.
 
 The provisioning manifest binds the exact PR #35 request and observation binding hashes and the
 exact PR #36 authenticity assessment and entitlement hashes. It separately references trust anchor,
 authority registry, durable replay service, custody evidence, WORM evidence and legal approval.
 These are content-addressed references, not proof that any service, control, entitlement or approval
-exists. Account IDs, secrets, tokens, private key material and credentials remain outside the
-repository and domain.
+exists. The trust-anchor object and authority-registry object must have distinct digests because
+they are different governed artifacts. The replay, custody, WORM and legal references may share an
+external evidence root (including equal digests), and principal authority-reference digests may
+refer to the same registry; neither case implies identity collapse or confers trust. Principal IDs
+and external identity digests are independently unique across all seven roles, and principal IDs
+must be canonical lowercase ASCII/NFKC so Unicode aliases and confusables fail closed. Account IDs,
+secrets, tokens, private key material and credentials remain outside the repository and domain.
 
 Contract-test sealing and validation can yield only `CONTRACT_TEST_VALIDATED`. Public boundaries
 deeply reconstruct nested primitives and reject extra fields, altered hashes, cross-provider,
 cross-security, cross-request, cross-observation and cross-assessment substitutions, lifecycle
-invalidity and principal collapse. Hostile validation failures are generic and discard exception
+invalidity and principal collapse. Provisioning assessment time must be canonical UTC and cannot
+precede the deeply revalidated upstream authenticity verification time; equality is valid. The
+bound request/retrieval/observation chronology must precede authenticity verification, and a
+manifest that binds that authenticity result cannot become effective before verification. Hostile
+validation failures are generic and discard exception
 chains. The REAL entry point accepts no injected backend and always returns `NOT_PROVISIONED`.
 
 ## Admission and successor

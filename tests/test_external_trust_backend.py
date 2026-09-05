@@ -70,7 +70,7 @@ def provisioning_graph():
         worm_evidence_reference_digest=digest("worm-evidence-reference"),
         legal_approval_reference_digest=digest("legal-approval-reference"),
         principals=principals,
-        effective_at=assessed_at - dt.timedelta(minutes=1),
+        effective_at=authenticity.verified_at,
         expires_at=assessed_at + dt.timedelta(hours=1),
         mode=ProvisioningState.CONTRACT_TEST_ONLY,
     )
@@ -113,6 +113,57 @@ def test_contract_is_exactly_bound_and_never_claims_real_provisioning():
         provision_real_external_trust_backend(object())
 
 
+def test_seven_roles_include_independent_checker_and_runtime_operator():
+    values = provisioning_graph()
+    assert tuple(item.role for item in values[1].principals) == tuple(PrincipalRole)
+    assert len(values[1].principals) == 7
+    checker = values[1].principals[tuple(PrincipalRole).index(PrincipalRole.PROVISIONING_CHECKER)]
+    operator = values[1].principals[tuple(PrincipalRole).index(PrincipalRole.RUNTIME_OPERATOR)]
+    assert checker.principal_id != operator.principal_id
+    assert checker.external_identity_digest != operator.external_identity_digest
+    assert checker.principal_hash != operator.principal_hash
+
+
+def test_runtime_operator_remove_duplicate_and_role_swap_fail_closed():
+    values = provisioning_graph()
+    operator = tuple(PrincipalRole).index(PrincipalRole.RUNTIME_OPERATOR)
+    principals = list(values[1].principals)
+    for forged in (
+        tuple(principals[:operator] + principals[operator + 1:]),
+        tuple(principals[:operator] + [principals[operator]] + principals[operator:]),
+        tuple(
+            principals[:operator]
+            + [reseal(
+                principals[operator], ExternalPrincipal, "principal_hash",
+                role=PrincipalRole.ATTESTER,
+            )]
+            + principals[operator + 1:]
+        ),
+    ):
+        with pytest.raises(TrustBackendError):
+            reseal(values[1], ProvisioningEvidenceManifest, "manifest_hash", principals=forged)
+
+
+def test_assessment_cannot_precede_authenticity_and_equality_is_valid():
+    values = provisioning_graph()
+    verified_at = values[3].verified_at
+    assert validate(values=values, assessed_at=verified_at).assessed_at == verified_at
+    with pytest.raises(TrustBackendError):
+        validate(values=values, assessed_at=verified_at - dt.timedelta(days=1))
+
+
+@pytest.mark.parametrize(
+    "assessed_at",
+    (
+        dt.datetime(2026, 9, 5, 13, 40, 18, tzinfo=dt.UTC).replace(tzinfo=None),
+        dt.datetime(2026, 9, 5, 7, 40, 18, tzinfo=dt.timezone(dt.timedelta(hours=-6))),
+    ),
+)
+def test_assessment_naive_or_non_utc_fails_closed(assessed_at):
+    with pytest.raises(TrustBackendError):
+        validate(assessed_at=assessed_at)
+
+
 @pytest.mark.parametrize(
     "field",
     ("request_hash", "observation_binding_hash", "authenticity_assessment_hash", "entitlement_reference_hash"),
@@ -125,7 +176,7 @@ def test_cross_request_observation_assessment_and_entitlement_swaps_fail(field):
 
 
 @pytest.mark.parametrize("role", tuple(PrincipalRole))
-@pytest.mark.parametrize("condition", ("future", "expired", "revoked"))
+@pytest.mark.parametrize("condition", ("future", "unavailable", "expired", "revoked"))
 def test_every_external_principal_lifecycle_is_checked_at_verifier_time(role, condition):
     values = provisioning_graph()
     index = tuple(PrincipalRole).index(role)
@@ -133,6 +184,7 @@ def test_every_external_principal_lifecycle_is_checked_at_verifier_time(role, co
     now = values[4]
     changes = {
         "future": {"effective_at": now + dt.timedelta(seconds=1), "available_at": now + dt.timedelta(seconds=2), "expires_at": now + dt.timedelta(hours=1)},
+        "unavailable": {"available_at": now + dt.timedelta(seconds=1)},
         "expired": {"expires_at": now},
         "revoked": {"revoked_at": now},
     }[condition]
@@ -158,6 +210,78 @@ def test_attester_verifier_collapse_reordering_and_cross_backend_swap_fail():
     other = reseal(values[0], ExternalBackendIdentity, "backend_hash", configuration_digest="f" * 64)
     with pytest.raises(TrustBackendError):
         validate(values=values, backend=other)
+
+
+@pytest.mark.parametrize("count", (2, 3, len(PrincipalRole)))
+def test_duplicate_principal_ids_fail_closed(count):
+    values = provisioning_graph()
+    principals = list(values[1].principals)
+    for index in range(count):
+        principals[index] = reseal(
+            principals[index], ExternalPrincipal, "principal_hash",
+            principal_id="principal.same",
+        )
+    with pytest.raises(TrustBackendError):
+        reseal(values[1], ProvisioningEvidenceManifest, "manifest_hash", principals=tuple(principals))
+
+
+def test_checker_runtime_operator_identity_collapse_fails_closed():
+    values = provisioning_graph()
+    principals = list(values[1].principals)
+    checker = tuple(PrincipalRole).index(PrincipalRole.PROVISIONING_CHECKER)
+    operator = tuple(PrincipalRole).index(PrincipalRole.RUNTIME_OPERATOR)
+    principals[operator] = reseal(
+        principals[operator], ExternalPrincipal, "principal_hash",
+        principal_id=principals[checker].principal_id,
+        external_identity_digest=principals[checker].external_identity_digest,
+    )
+    with pytest.raises(TrustBackendError):
+        reseal(values[1], ProvisioningEvidenceManifest, "manifest_hash", principals=tuple(principals))
+
+
+def test_reference_independence_policy_is_exact_and_never_confers_trust():
+    values = provisioning_graph()
+    with pytest.raises(TrustBackendError):
+        reseal(
+            values[1], ProvisioningEvidenceManifest, "manifest_hash",
+            authority_registry_reference_digest=values[1].trust_anchor_reference_digest,
+        )
+    shared = digest("shared-operational-evidence-root")
+    manifest = reseal(
+        values[1], ProvisioningEvidenceManifest, "manifest_hash",
+        replay_service_reference_digest=shared,
+        custody_evidence_reference_digest=shared,
+        worm_evidence_reference_digest=shared,
+        legal_approval_reference_digest=shared,
+    )
+    result = validate(values=values, manifest=manifest)
+    assert result.provider_admission_real is ProvisioningState.NOT_PROVISIONED
+    assert result.trust_anchor_real is ProvisioningState.NOT_PROVISIONED
+
+    principals = tuple(
+        reseal(
+            principal, ExternalPrincipal, "principal_hash",
+            authority_reference_digest=shared,
+        )
+        for principal in values[1].principals
+    )
+    shared_registry_manifest = reseal(
+        values[1], ProvisioningEvidenceManifest, "manifest_hash", principals=principals
+    )
+    assert (
+        validate(values=values, manifest=shared_registry_manifest).provider_admission_real
+        is ProvisioningState.NOT_PROVISIONED
+    )
+
+
+def test_principal_identifier_unicode_confusable_fails_closed():
+    values = provisioning_graph()
+    principal = values[1].principals[0]
+    with pytest.raises(TrustBackendError):
+        reseal(
+            principal, ExternalPrincipal, "principal_hash",
+            principal_id="principal.makеr",
+        )
 
 
 def test_copy_construct_json_nested_extra_duck_and_unicode_fail_closed():
