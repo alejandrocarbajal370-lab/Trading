@@ -21,14 +21,14 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_external_authenticity_foundation_follows_the_completed_probe():
+def test_external_trust_backend_foundation_follows_completed_authenticity():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION
+        == RoadmapBlock.EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE
+        == RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -74,7 +74,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
     adr = (
         ROOT
-        / "docs/adr/0012-ibkr-observation-external-authenticity-foundation.md"
+        / "docs/adr/0013-external-trust-backend-provisioning-contract-foundation.md"
     ).read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())

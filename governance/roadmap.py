@@ -45,6 +45,9 @@ class RoadmapBlock(StrEnum):
     IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION = (
         "IBKR Observation External Authenticity Foundation"
     )
+    EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION = (
+        "External Trust Backend Provisioning Contract Foundation"
+    )
     TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE = (
         "Tax Lot & Tax-Aware Portfolio Governance"
     )
@@ -101,11 +104,11 @@ class TaxAwareScope(StrEnum):
 
 
 class NextBlockScope(StrEnum):
-    EXTERNAL_ATTESTATION_BINDING = "EXTERNAL_ATTESTATION_BINDING"
-    INDEPENDENT_ACTOR_SEPARATION = "INDEPENDENT_ACTOR_SEPARATION"
-    TRUST_LIFECYCLE_AND_REVOCATION = "TRUST_LIFECYCLE_AND_REVOCATION"
-    AUTHENTIC_ENTITLEMENT_REFERENCE = "AUTHENTIC_ENTITLEMENT_REFERENCE"
-    PROVIDER_ADMISSION_FOUNDATION_ONLY = "PROVIDER_ADMISSION_FOUNDATION_ONLY"
+    EXTERNAL_BACKEND_IDENTITY = "EXTERNAL_BACKEND_IDENTITY"
+    ATTESTER_VERIFIER_SEPARATION = "ATTESTER_VERIFIER_SEPARATION"
+    PROVISIONING_LIFECYCLE_AND_REVOCATION = "PROVISIONING_LIFECYCLE_AND_REVOCATION"
+    DIGEST_ONLY_EXTERNAL_REFERENCES = "DIGEST_ONLY_EXTERNAL_REFERENCES"
+    EXACT_IBKR_AUTHENTICITY_BINDING = "EXACT_IBKR_AUTHENTICITY_BINDING"
 
 
 class MergeOrder(StrEnum):
@@ -118,10 +121,10 @@ class NextBlockAuthorization(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     current_block: Literal[
-        RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE
+        RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION
     ]
     name: Literal[
-        RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION
+        RoadmapBlock.EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION
     ]
     foundation_implementation: Literal[
         ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
@@ -166,8 +169,8 @@ class NextBlockAuthorization(BaseModel):
 
 
 NEXT_BLOCK = NextBlockAuthorization(
-    current_block=RoadmapBlock.IBKR_REPRODUCIBLE_READ_ONLY_LOCAL_OBSERVATION_PROBE,
-    name=RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION,
+    current_block=RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION,
+    name=RoadmapBlock.EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION,
     foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
     implementation_authorized=True,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
@@ -197,7 +200,7 @@ class AfterNextBlockCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     after: Literal[
-        RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION
+        RoadmapBlock.EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION
     ]
     name: Literal["UNDETERMINED"]
     implementation_authorized: Literal[False]
@@ -206,7 +209,7 @@ class AfterNextBlockCandidate(BaseModel):
 
 
 AFTER_NEXT_BLOCK = AfterNextBlockCandidate(
-    after=RoadmapBlock.IBKR_OBSERVATION_EXTERNAL_AUTHENTICITY_FOUNDATION,
+    after=RoadmapBlock.EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION,
     name="UNDETERMINED",
     implementation_authorized=False,
     activation_real=False,

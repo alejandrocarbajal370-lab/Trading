@@ -3,8 +3,8 @@
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
 Phases 6 and 7A/7B/7C/7D/7E/7F are integrated; Phase 7F was squash merged as PR #25.
-The current authorized block is the contract-only **IBKR Observation External Authenticity
-Foundation** described in `docs/adr/0012-ibkr-observation-external-authenticity-foundation.md`.
+The current authorized block is the contract-only **External Trust Backend Provisioning Contract
+Foundation** described in `docs/adr/0013-external-trust-backend-provisioning-contract-foundation.md`.
 **Phase 7G — Governed External Provisioning Foundation** is proposed in draft form as a
 contract-test-only boundary in
 [`docs/adr/0002-phase7g-governed-external-provisioning.md`](docs/adr/0002-phase7g-governed-external-provisioning.md).
@@ -592,11 +592,11 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
-The exact `NEXT_BLOCK` is **IBKR Observation External Authenticity Foundation**, with
+The exact `NEXT_BLOCK` is **External Trust Backend Provisioning Contract Foundation**, with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
-`NEW_PR_REQUIRED`. It binds PR #35 observation identity to external attestation, entitlement and
-trust-lifecycle contracts while REAL activation, the external trust root, independent verifier and
-provider admission remain `NOT_AUTHORIZED` / `NOT_PROVISIONED`. See ADR 0012. The machine-readable
+`NEW_PR_REQUIRED`. It binds the exact PR #35/#36 evidence to digest-only external backend and
+independent attester/verifier contracts while REAL activation, trust and provider admission remain
+`NOT_AUTHORIZED` / `NOT_PROVISIONED`. See ADR 0013. The machine-readable
 successor remains `UNDETERMINED`; QVM remains blocked.
 
 The completed PR #35 block was **IBKR Reproducible Read-Only Local Observation Probe
