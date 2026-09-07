@@ -47,9 +47,9 @@ disabled signals/live execution and unauthorized backtesting remain frozen.
 
 ## Successor
 
-No later block is selected. The machine-readable successor remains `UNDETERMINED`,
-`implementation_authorized=false`, `activation_real=false`, and
-`ARCHITECTURAL_DECISION_REQUIRED`. REAL provider admission still requires a named external
+At integration time no later block was selected. ADR 0013 subsequently selects **External Trust
+Backend Provisioning Contract Foundation** as the next minimum block. REAL provider admission still
+requires a named external
 attester/trust backend, provisioned anchor and authority registry, authentic entitlement evidence,
 external verifier operation, durable replay/custody evidence, WORM/legal approval and sufficient
 admitted observations. QVM remains blocked until those requirements are satisfied. Tax Lot remains

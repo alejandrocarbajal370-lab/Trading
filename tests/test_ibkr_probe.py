@@ -2,6 +2,7 @@ import datetime as dt
 import inspect
 import json
 import traceback
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -30,18 +31,40 @@ from governance.ibkr_probe import (
 )
 from governance.phase7e import EvidenceGate, GateState
 
+TEST_NOW = dt.datetime(2026, 9, 4, 20, tzinfo=dt.UTC)
+
+
+def install_probe_clock(monkeypatch, now):
+    class FixedDateTime(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            assert tz is dt.UTC
+            return now
+
+    monkeypatch.setattr(
+        probe_module,
+        "dt",
+        SimpleNamespace(datetime=FixedDateTime, timedelta=dt.timedelta, UTC=dt.UTC),
+    )
+
+
+@pytest.fixture(autouse=True)
+def fixed_probe_clock(monkeypatch):
+    install_probe_clock(monkeypatch, TEST_NOW)
+
 
 class FixtureTransport:
     source_kind = SourceKind.CONTRACT_TEST_ONLY
     api_version = "9.81.1.post1"
 
-    def __init__(self, *, mode="DELAYED", mode_code=3, ticks=0):
+    def __init__(self, *, mode="DELAYED", mode_code=3, ticks=0, now=TEST_NOW):
         self.mode = mode
         self.mode_code = mode_code
         self.ticks = ticks
+        self.now = now
 
     def collect(self, config, instrument):
-        now = dt.datetime.now(dt.UTC)
+        now = self.now
         return {
             "server_version": 157,
             "server_current_time": now - dt.timedelta(seconds=1),
@@ -59,7 +82,7 @@ class FixtureTransport:
             "tick_count": self.ticks,
             "historical_bars": [
                 {
-                    "event_at": dt.datetime(2026, 9, 4, tzinfo=dt.UTC),
+                    "event_at": now.replace(hour=0, minute=0, second=0, microsecond=0),
                     "open": "510.00",
                     "high": "510.75",
                     "low": "501.44",
@@ -273,6 +296,34 @@ def test_arbitrary_resealed_raw_digest_and_out_of_window_bars_fail():
     )
     with pytest.raises(ValidationError, match="outside the governed request window"):
         fully_reseal_evidence(value, historical_bars=(future_bar,))
+
+
+def test_governed_historical_window_boundaries_are_inclusive_and_outside_is_rejected():
+    value = evidence()
+    earliest = (value.requested_at - dt.timedelta(days=2)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    latest = value.observed_at.replace(hour=0, minute=0, second=0, microsecond=0)
+
+    for event_at in (earliest, latest):
+        bar = value.historical_bars[0].model_copy(update={"event_at": event_at})
+        assert fully_reseal_evidence(value, historical_bars=(bar,)).historical_bars[0] == bar
+
+    for event_at in (earliest - dt.timedelta(days=1), latest + dt.timedelta(days=1)):
+        bar = value.historical_bars[0].model_copy(update={"event_at": event_at})
+        with pytest.raises(ValidationError, match="outside the governed request window"):
+            fully_reseal_evidence(value, historical_bars=(bar,))
+
+
+def test_contract_fixture_remains_valid_weeks_after_its_original_date(monkeypatch):
+    future_now = TEST_NOW + dt.timedelta(weeks=8)
+    install_probe_clock(monkeypatch, future_now)
+
+    value = evidence(now=future_now)
+
+    assert value.requested_at == value.retrieved_at == value.observed_at == future_now
+    assert value.historical_bars[0].event_at.date() == future_now.date()
+    assert validate_evidence(value.model_dump_json()) == value
 
 
 def test_external_secret_values_are_erased_from_error_graph_and_traceback():
