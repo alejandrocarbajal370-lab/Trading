@@ -312,6 +312,14 @@ def assess_contract_test(
             raise ValueError("impossible verification chronology")
         if assessed_at >= result.expires_at or assessed_at >= envelope.expires_at:
             raise ValueError("attestation or verification expired")
+        for lifecycle, label in (
+            (session.lifecycle, "session"),
+            (entitlement.lifecycle, "entitlement"),
+        ):
+            if not lifecycle.verified_at <= assessed_at < lifecycle.expires_at:
+                raise ValueError(f"{label} evidence unavailable at assessment")
+            if lifecycle.revoked_at is not None and lifecycle.revoked_at <= assessed_at:
+                raise ValueError(f"{label} evidence revoked at assessment")
         for item in (anchor, registry, *people):
             lifecycle = item.lifecycle
             if not lifecycle.verified_at <= envelope.attested_at < lifecycle.expires_at:
@@ -320,6 +328,10 @@ def assess_contract_test(
                 raise ValueError("trust evidence unavailable at verification")
             if lifecycle.revoked_at is not None and lifecycle.revoked_at <= result.verified_at:
                 raise ValueError("trust evidence revoked")
+            if not lifecycle.verified_at <= assessed_at < lifecycle.expires_at:
+                raise ValueError("trust evidence unavailable at assessment")
+            if lifecycle.revoked_at is not None and lifecycle.revoked_at <= assessed_at:
+                raise ValueError("trust evidence revoked at assessment")
     except BaseException:  # noqa: BLE001 - discard hostile values and exceptions
         failed = True
     if failed:

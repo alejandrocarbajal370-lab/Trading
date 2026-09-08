@@ -133,6 +133,61 @@ def reseal(value, field, **changes):
     return seal_contract_test(type(value), field, **raw)
 
 
+def reseal_upstream(value, field, **changes):
+    raw = value.model_dump(mode="python", exclude={field})
+    raw.update(changes)
+    return seal_upstream(type(value), field, **raw)
+
+
+def relink(values):
+    """Rebuild the whole downstream graph so lifecycle checks cannot hide behind hashes."""
+    session = values["session"]
+    entitlement = reseal_upstream(
+        values["entitlement"], "evidence_hash",
+        session_binding_hash=session.binding_hash,
+        session_evidence_digest=session.session_evidence_digest,
+    )
+    observation = reseal_upstream(
+        values["observation"], "observation_digest", session_binding_hash=session.binding_hash,
+    )
+    people = values["principals"]
+    by_role = {item.role: item for item in people}
+    registry = reseal(
+        values["authority_registry"], "evidence_hash",
+        trust_anchor_evidence_hash=values["trust_anchor"].evidence_hash,
+        authority_principal_digest=by_role[PrincipalRole.AUTHORITY].principal_reference_digest,
+        revocation_owner_principal_digest=by_role[PrincipalRole.REVOCATION_OWNER].principal_reference_digest,
+    )
+    envelope = reseal(
+        values["attestations"][0], "envelope_hash",
+        session_binding_hash=session.binding_hash,
+        session_evidence_digest=session.session_evidence_digest,
+        entitlement_evidence_hash=entitlement.evidence_hash,
+        observation_digest=observation.observation_digest,
+        trust_anchor_evidence_hash=values["trust_anchor"].evidence_hash,
+        authority_registry_evidence_hash=registry.evidence_hash,
+        attester_principal_evidence_hash=by_role[PrincipalRole.ATTESTER].evidence_hash,
+    )
+    verification = reseal(
+        values["verification"], "result_hash",
+        attestation_envelope_hash=envelope.envelope_hash,
+        trust_anchor_evidence_hash=values["trust_anchor"].evidence_hash,
+        authority_registry_evidence_hash=registry.evidence_hash,
+        verifier_principal_evidence_hash=by_role[PrincipalRole.VERIFIER].evidence_hash,
+    )
+    values.update(entitlement=entitlement, observation=observation,
+                  authority_registry=registry, attestations=(envelope,), verification=verification)
+    return values
+
+
+def with_lifecycle(value, **changes):
+    upstream = isinstance(value, (IBKRSessionBinding, AuthenticEntitlementEvidence))
+    seal = reseal_upstream if upstream else reseal
+    lifecycle = seal(value.lifecycle, "lifecycle_hash", **changes)
+    hash_field = "binding_hash" if isinstance(value, IBKRSessionBinding) else "evidence_hash"
+    return seal(value, hash_field, lifecycle=lifecycle)
+
+
 def test_contract_graph_preserves_every_real_and_safety_boundary():
     result = assess_contract_test(**graph())
     assert result.attestation_contract_validated and result.independent_verification_contract_validated
@@ -204,6 +259,64 @@ def test_lifecycle_causality_and_duplicate_attestations_fail_closed(condition):
         values["trust_anchor"] = reseal(values["trust_anchor"], "evidence_hash", lifecycle=lifecycle)
     with pytest.raises(ExternalTrustError):
         assess_contract_test(**values)
+
+
+@pytest.mark.parametrize("target", ("anchor", "registry", "session", "entitlement"))
+@pytest.mark.parametrize("boundary", ("between", "equal"))
+def test_material_evidence_revoked_as_of_assessment_rejects_after_full_relink(target, boundary):
+    values = graph(); now = values["assessed_at"]
+    revoked_at = now if boundary == "equal" else values["verification"].verified_at + dt.timedelta(minutes=1)
+    key = {"anchor": "trust_anchor", "registry": "authority_registry"}.get(target, target)
+    values[key] = with_lifecycle(values[key], revoked_at=revoked_at)
+    with pytest.raises(ExternalTrustError):
+        assess_contract_test(**relink(values))
+
+
+@pytest.mark.parametrize("role", tuple(PrincipalRole))
+def test_each_required_principal_revoked_after_verification_rejects_after_full_relink(role):
+    values = graph()
+    people = list(values["principals"]); index = tuple(PrincipalRole).index(role)
+    people[index] = with_lifecycle(
+        people[index], revoked_at=values["verification"].verified_at + dt.timedelta(minutes=1),
+    )
+    values["principals"] = tuple(people)
+    with pytest.raises(ExternalTrustError):
+        assess_contract_test(**relink(values))
+
+
+@pytest.mark.parametrize("target", ("anchor", "registry", "principal", "session", "entitlement"))
+@pytest.mark.parametrize("boundary", ("between", "equal"))
+def test_material_evidence_expired_as_of_assessment_rejects_after_full_relink(target, boundary):
+    values = graph(); now = values["assessed_at"]
+    expires_at = now if boundary == "equal" else values["verification"].verified_at + dt.timedelta(minutes=1)
+    if target == "principal":
+        people = list(values["principals"])
+        people[0] = with_lifecycle(people[0], expires_at=expires_at)
+        values["principals"] = tuple(people)
+    else:
+        key = {"anchor": "trust_anchor", "registry": "authority_registry"}.get(target, target)
+        values[key] = with_lifecycle(values[key], expires_at=expires_at)
+    with pytest.raises(ExternalTrustError):
+        assess_contract_test(**relink(values))
+
+
+@pytest.mark.parametrize("target", ("attestation", "verification"))
+def test_attestation_and_verification_expiry_at_assessment_boundary_rejects(target):
+    values = graph(); now = values["assessed_at"]
+    if target == "attestation":
+        values["attestations"] = (reseal(values["attestations"][0], "envelope_hash", expires_at=now),)
+        values["verification"] = reseal(
+            values["verification"], "result_hash",
+            attestation_envelope_hash=values["attestations"][0].envelope_hash,
+        )
+    else:
+        values["verification"] = reseal(values["verification"], "result_hash", expires_at=now)
+    with pytest.raises(ExternalTrustError):
+        assess_contract_test(**values)
+
+
+def test_all_material_evidence_active_through_assessment_remains_contract_test_only():
+    assert assess_contract_test(**relink(graph())).state is ProvisioningState.CONTRACT_TEST_ONLY
 
 
 def test_json_copy_construct_extras_unicode_subclass_duck_and_secrets_fail_closed():
