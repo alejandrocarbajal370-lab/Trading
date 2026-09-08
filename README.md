@@ -592,16 +592,24 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
-The exact `NEXT_BLOCK` is **External Trust Backend Provisioning Contract Foundation**, with
+The exact `NEXT_BLOCK` is **Governed Sufficient Observation Policy & Provider Admission Evidence
+Aggregation Foundation**, with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
-`NEW_PR_REQUIRED`. It binds the exact PR #35/#36 evidence to digest-only external backend and
-seven independent principal contracts: provisioning maker, provisioning checker, runtime operator,
-attester, verifier, authority, and revocation owner. Every principal identity and lifecycle is
-canonically bound. Trust-anchor and authority-registry artifact references are distinct; other
-operational evidence references may share an external root without implying trust. REAL activation,
-trust and provider admission remain
-`NOT_AUTHORIZED` / `NOT_PROVISIONED`. See ADR 0013. The machine-readable
-successor remains `UNDETERMINED`; QVM remains blocked.
+`NEW_PR_REQUIRED`. It defines a versioned, authority-referenced sufficient-observation policy and
+binds distinct observations to exact provider, adapter, dataset, security/`conId`, request,
+authenticity, provisioning, entitlement, route, temporal, material, provenance, lineage, custody
+and all ten ordered gate-evidence identities. Replays, aliases, cross-scope swaps, partial gates,
+stale/revoked evidence and mixed verifier times fail closed. A contract-test success never closes a
+REAL gate: 10/10 remain `OPEN_EXTERNAL`, and REAL observations, provider admission, external
+custody/WORM/legal, trust and entitlement remain `NOT_PROVISIONED`. See ADR 0014. The
+machine-readable successor remains `UNDETERMINED / NOT_AUTHORIZED /
+ARCHITECTURAL_DECISION_REQUIRED`; QVM remains blocked.
+
+The completed PR #37 block was **External Trust Backend Provisioning Contract Foundation**. It
+binds the PR #35/#36 graph to a digest-only external backend and seven independent principal
+contracts: provisioning maker, provisioning checker, runtime operator, attester, verifier,
+authority and revocation owner. It remains `CONTRACT_TEST_VALIDATED`; no backend, principal,
+trust anchor, authority registry, verifier, entitlement or REAL provider admission is provisioned.
 
 The completed PR #35 block was **IBKR Reproducible Read-Only Local Observation Probe
 (Unauthenticated)**, with `AUTHORIZED_TO_IMPLEMENT`,
