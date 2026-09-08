@@ -12,6 +12,7 @@ from test_external_trust_verifier import graph
 
 from governance.canonical import typed_hash
 from governance.durable_custody import (
+    SCHEMA_VERSION,
     AccessAuditEvidence,
     ArtifactKind,
     BackendProvisioningEvidence,
@@ -19,9 +20,11 @@ from governance.durable_custody import (
     CustodyReceipt,
     CustodyRole,
     DurableCustodyError,
+    DurableReplayStateEvidence,
     Lifecycle,
     LockMode,
     ProvisioningState,
+    ReplayJournalEvidence,
     WormPolicyEvidence,
     artifact_identity,
     assess_contract_test_custody,
@@ -119,6 +122,7 @@ def built(tmp_path):
     values["assessed_at"] = committed+dt.timedelta(minutes=2)
     values.update(backend=backend, policy=policy, custody_principals=actors, receipts=receipts,
                   replay_entry=entry, access_audit=audit, restore=restore)
+    values["store"] = store
     return values, store, (raw_bytes, derived_bytes)
 
 
@@ -163,6 +167,25 @@ def rebind_step3(values):
         replay_entry_hash=entry.entry_hash,
     )
     values.update(receipts=receipts, replay_entry=entry, access_audit=audit, restore=restore)
+
+
+def advance(store, values, *, committed_at):
+    content = b'{"conId":272093,"next":true}'
+    old = values["receipts"][0]
+    artifact = artifact_identity(
+        artifact_id="artifact.raw.msft.002", kind=ArtifactKind.RAW,
+        scope_id=old.artifact.scope_id, media_type=old.artifact.media_type, content=content,
+        material_digest=D("next-material"), provenance_digest=D("next-provenance"),
+        lineage_digest=D("next-lineage"),
+    )
+    receipt = reseal(
+        old, "receipt_hash", receipt_id="receipt.raw.msft.002", artifact=artifact,
+        stored_at=committed_at,
+    )
+    entry = store.store_and_consume(
+        ((receipt, content),), derive_replay_identity(receipt), committed_at=committed_at
+    )
+    return receipt, entry, content
 
 
 def test_complete_graph_is_contract_only_and_all_real_gates_stay_closed(tmp_path):
@@ -218,6 +241,76 @@ def test_fresh_process_reopens_and_validates_persisted_journal(tmp_path):
         capture_output=True,
         text=True,
     )
+
+
+def test_restore_rejects_stale_and_fabricated_unpersisted_journals(tmp_path):
+    values, store, _ = built(tmp_path)
+    old_entry = values["replay_entry"]
+    advance(store, values, committed_at=values["assessed_at"])
+    with pytest.raises(DurableCustodyError, match="current durable state"):
+        verify_restore(
+            store=store, artifact=values["receipts"][0].artifact,
+            replay_entry=old_entry, auditor=values["custody_principals"][1],
+            receipt=values["receipts"][0], verified_at=values["assessed_at"],
+            restore_id="restore.stale.msft.001",
+        )
+    fabricated = seal_contract_test(
+        ReplayJournalEvidence, "entry_hash", store_id="store.fabricated",
+        schema_version=SCHEMA_VERSION, sequence=999,
+        replay_identity=old_entry.replay_identity,
+        receipt_hashes=(values["receipts"][0].receipt_hash,),
+        previous_entry_hash="f" * 64, committed_at=old_entry.committed_at,
+    )
+    with pytest.raises(DurableCustodyError, match="current durable state"):
+        verify_restore(
+            store=store, artifact=values["receipts"][0].artifact,
+            replay_entry=fabricated, auditor=values["custody_principals"][1],
+            receipt=values["receipts"][0], verified_at=values["assessed_at"],
+            restore_id="restore.fabricated.msft.001",
+        )
+
+
+def test_assessment_rejects_membership_after_store_advances(tmp_path):
+    values, store, _ = built(tmp_path)
+    advance(store, values, committed_at=values["assessed_at"])
+    with pytest.raises(DurableCustodyError):
+        assess(values)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ("checkpoint_sequence", "journal_head_hash", "checkpoint_hash", "journal_entry_sequence"),
+)
+def test_resealed_or_constructed_membership_cannot_fabricate_persistence(tmp_path, field):
+    values, _, _ = built(tmp_path)
+    state = values["restore"].durable_state
+    replacement = state.checkpoint_sequence + 1 if "sequence" in field else "f" * 64
+    try:
+        attack = reseal(state, "evidence_hash", **{field: replacement})
+        restore = reseal(values["restore"], "evidence_hash", durable_state=attack)
+        changed = dict(values); changed["restore"] = restore
+        with pytest.raises(DurableCustodyError):
+            assess(changed)
+    except DurableCustodyError:
+        pass
+    constructed = DurableReplayStateEvidence.model_construct(**state.model_dump())
+    object.__setattr__(constructed, "checkpoint_hash", "f" * 64)
+    with pytest.raises(DurableCustodyError):
+        reseal(values["restore"], "evidence_hash", durable_state=constructed)
+
+
+def test_cross_store_membership_and_current_restart_behavior(tmp_path):
+    values, store, _ = built(tmp_path)
+    other = build_contract_test_store(tmp_path / "other.sqlite")
+    changed = dict(values); changed["store"] = other
+    with pytest.raises(DurableCustodyError):
+        assess(changed)
+    reopened = build_contract_test_store(
+        tmp_path / "custody.sqlite", expected_store_id=store.store_id,
+        expected_checkpoint=store.checkpoint,
+    )
+    values["store"] = reopened
+    assert assess(values).replay_restore_contract_validated is True
 
 
 def test_concurrent_consumers_have_one_winner(tmp_path):

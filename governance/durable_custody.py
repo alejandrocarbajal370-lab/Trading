@@ -305,11 +305,44 @@ class DurableReplayCheckpointReference(_Model):
         return self
 
 
+class DurableReplayStateEvidence(_Model):
+    """Store-issued proof that one object belongs to the current journal head."""
+
+    store_id: str = Field(pattern=IDENTIFIER)
+    schema_version: Literal[SCHEMA_VERSION]
+    checkpoint_sequence: int = Field(gt=0)
+    journal_head_hash: str = Field(pattern=SHA256)
+    checkpoint_hash: str = Field(pattern=SHA256)
+    journal_entry_sequence: int = Field(gt=0)
+    journal_entry_hash: str = Field(pattern=SHA256)
+    receipt_hash: str = Field(pattern=SHA256)
+    artifact: ArtifactIdentity
+    backend_evidence_hash: str = Field(pattern=SHA256)
+    policy_evidence_hash: str = Field(pattern=SHA256)
+    validated_at: dt.datetime
+    external_authoritative_anchor_real: Literal[ProvisioningState.NOT_PROVISIONED]
+    evidence_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_value(self):
+        _identifier(self.store_id)
+        _utc(self.validated_at)
+        object.__setattr__(self, "artifact", _rebuild(ArtifactIdentity, self.artifact))
+        if (
+            self.checkpoint_sequence != self.journal_entry_sequence
+            or self.journal_head_hash != self.journal_entry_hash
+        ):
+            raise ValueError("membership is not current journal head")
+        _hash(self, "evidence_hash")
+        return self
+
+
 class RestoreVerificationEvidence(_Model):
     restore_id: str = Field(pattern=IDENTIFIER)
     receipt_hash: str = Field(pattern=SHA256)
     artifact_identity_hash: str = Field(pattern=SHA256)
     replay_entry_hash: str = Field(pattern=SHA256)
+    durable_state: DurableReplayStateEvidence
     continuity_auditor_evidence_hash: str = Field(pattern=SHA256)
     restored_content_hash: str = Field(pattern=SHA256)
     restored_size_bytes: int = Field(gt=0)
@@ -320,6 +353,9 @@ class RestoreVerificationEvidence(_Model):
     def validate_value(self):
         _identifier(self.restore_id)
         _utc(self.verified_at)
+        object.__setattr__(
+            self, "durable_state", _rebuild(DurableReplayStateEvidence, self.durable_state)
+        )
         _hash(self, "evidence_hash")
         return self
 
@@ -487,6 +523,97 @@ class ContractTestDurableStore:
         if len(content) != identity.size_bytes:
             raise DurableCustodyError("durable object truncated")
         return receipt, content
+
+    def current_state_evidence(
+        self,
+        *,
+        artifact: ArtifactIdentity,
+        replay_entry: ReplayJournalEvidence,
+        validated_at: dt.datetime,
+    ) -> DurableReplayStateEvidence:
+        """Prove object membership in the current validated checkpoint; no history mode."""
+        identity = _rebuild(ArtifactIdentity, artifact)
+        entry = _rebuild(ReplayJournalEvidence, replay_entry)
+        _utc(validated_at)
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            checkpoint = self._checkpoint_from_connection(connection)
+            if checkpoint != self._checkpoint:
+                raise DurableCustodyError("durable store checkpoint changed or rolled back")
+            row = connection.execute(
+                "SELECT entry_json FROM journal WHERE sequence=? AND entry_hash=?",
+                (entry.sequence, entry.entry_hash),
+            ).fetchone()
+            object_row = connection.execute(
+                "SELECT receipt_json FROM objects WHERE identity_hash=?",
+                (identity.identity_hash,),
+            ).fetchone()
+            if (
+                checkpoint.sequence != entry.sequence
+                or checkpoint.journal_head_hash != entry.entry_hash
+                or row is None
+                or _rebuild(ReplayJournalEvidence, row[0]) != entry
+                or object_row is None
+            ):
+                raise DurableCustodyError("restore is not bound to current durable state")
+            receipt = _rebuild(CustodyReceipt, object_row[0])
+            if receipt.artifact != identity or receipt.receipt_hash not in entry.receipt_hashes:
+                raise DurableCustodyError("restore object is not in current durable state")
+            if validated_at < entry.committed_at:
+                raise DurableCustodyError("durable membership chronology invalid")
+            return seal_contract_test(
+                DurableReplayStateEvidence, "evidence_hash", store_id=self.store_id,
+                schema_version=SCHEMA_VERSION, checkpoint_sequence=checkpoint.sequence,
+                journal_head_hash=checkpoint.journal_head_hash,
+                checkpoint_hash=checkpoint.checkpoint_hash,
+                journal_entry_sequence=entry.sequence, journal_entry_hash=entry.entry_hash,
+                receipt_hash=receipt.receipt_hash, artifact=identity,
+                backend_evidence_hash=receipt.backend_evidence_hash,
+                policy_evidence_hash=receipt.policy_evidence_hash, validated_at=validated_at,
+                external_authoritative_anchor_real=ProvisioningState.NOT_PROVISIONED,
+            )
+        finally:
+            connection.rollback()
+            connection.close()
+
+    def validate_current_state_evidence(self, evidence: Any) -> DurableReplayStateEvidence:
+        """Revalidate a prior proof against the store's current durable head."""
+        state = _rebuild(DurableReplayStateEvidence, evidence)
+        connection = self._connect()
+        try:
+            checkpoint = self._checkpoint_from_connection(connection)
+            row = connection.execute(
+                "SELECT entry_json FROM journal WHERE sequence=? AND entry_hash=?",
+                (state.journal_entry_sequence, state.journal_entry_hash),
+            ).fetchone()
+            object_row = connection.execute(
+                "SELECT receipt_json FROM objects WHERE identity_hash=?",
+                (state.artifact.identity_hash,),
+            ).fetchone()
+            if (
+                checkpoint != self._checkpoint or state.store_id != self.store_id
+                or state.schema_version != SCHEMA_VERSION
+                or state.checkpoint_sequence != checkpoint.sequence
+                or state.journal_head_hash != checkpoint.journal_head_hash
+                or state.checkpoint_hash != checkpoint.checkpoint_hash
+                or row is None or object_row is None
+            ):
+                raise DurableCustodyError("stale or foreign durable state evidence")
+            entry = _rebuild(ReplayJournalEvidence, row[0])
+            receipt = _rebuild(CustodyReceipt, object_row[0])
+            if (
+                entry.entry_hash != state.journal_entry_hash
+                or state.receipt_hash not in entry.receipt_hashes
+                or receipt.receipt_hash != state.receipt_hash
+                or receipt.artifact != state.artifact
+                or receipt.backend_evidence_hash != state.backend_evidence_hash
+                or receipt.policy_evidence_hash != state.policy_evidence_hash
+            ):
+                raise DurableCustodyError("durable state evidence binding mismatch")
+            return state
+        finally:
+            connection.close()
 
     def _connect(self, *, initialize: bool = False) -> sqlite3.Connection:
         connection: sqlite3.Connection | None = None
@@ -698,6 +825,9 @@ def verify_restore(
     if actor.role is not CustodyRole.CONTINUITY_AUDITOR:
         raise DurableCustodyError("distinct continuity auditor required")
     _current(actor.lifecycle, verified_at)
+    state = store.current_state_evidence(
+        artifact=identity, replay_entry=entry, validated_at=verified_at
+    )
     restored_receipt, content = store.restore(identity)
     if restored_receipt != bound_receipt or bound_receipt.receipt_hash not in entry.receipt_hashes:
         raise DurableCustodyError("restore receipt/version mismatch")
@@ -706,7 +836,8 @@ def verify_restore(
     return seal_contract_test(
         RestoreVerificationEvidence, "evidence_hash", restore_id=restore_id,
         receipt_hash=bound_receipt.receipt_hash, artifact_identity_hash=identity.identity_hash,
-        replay_entry_hash=entry.entry_hash, continuity_auditor_evidence_hash=actor.evidence_hash,
+        replay_entry_hash=entry.entry_hash, durable_state=state,
+        continuity_auditor_evidence_hash=actor.evidence_hash,
         restored_content_hash=hashlib.sha256(content).hexdigest(), restored_size_bytes=len(content),
         verified_at=verified_at,
     )
@@ -717,6 +848,7 @@ def assess_contract_test_custody(
     authority_registry: Any, principals: tuple[Any, ...], attestations: tuple[Any, ...],
     verification: Any, backend: Any, policy: Any, custody_principals: tuple[Any, ...],
     receipts: tuple[Any, ...], replay_entry: Any, access_audit: Any, restore: Any,
+    store: ContractTestDurableStore,
     assessed_at: dt.datetime,
 ) -> DurableCustodyAssessment:
     """Rebuild and bind the complete Step 1→3 graph; never grant REAL status."""
@@ -749,6 +881,9 @@ def assess_contract_test_custody(
         entry = _rebuild(ReplayJournalEvidence, replay_entry)
         audit = _rebuild(AccessAuditEvidence, access_audit)
         restored = _rebuild(RestoreVerificationEvidence, restore)
+        if type(store) is not ContractTestDurableStore:
+            raise TypeError
+        state = store.validate_current_state_evidence(restored.durable_state)
         _utc(assessed_at)
         if backend.authority_registry_evidence_hash != registry.evidence_hash:
             raise ValueError
@@ -807,6 +942,15 @@ def assess_contract_test_custody(
         if restored.artifact_identity_hash != restored_receipt.artifact.identity_hash or restored.restored_content_hash != restored_receipt.artifact.content_hash or restored.restored_size_bytes != restored_receipt.artifact.size_bytes:
             raise ValueError
         if not entry.committed_at <= restored.verified_at <= assessed_at:
+            raise ValueError
+        if (
+            state.journal_entry_hash != entry.entry_hash
+            or state.receipt_hash != restored.receipt_hash
+            or state.artifact != restored_receipt.artifact
+            or state.backend_evidence_hash != backend.evidence_hash
+            or state.policy_evidence_hash != policy.evidence_hash
+            or not entry.committed_at <= state.validated_at <= restored.verified_at
+        ):
             raise ValueError
         del anchor
     except BaseException:  # noqa: BLE001
@@ -964,5 +1108,6 @@ _SEAL_FIELDS: dict[type[_Model], str] = {
     AccessAuditEvidence: "event_digest",
     ReplayJournalEvidence: "entry_hash",
     DurableReplayCheckpointReference: "checkpoint_hash",
+    DurableReplayStateEvidence: "evidence_hash",
     RestoreVerificationEvidence: "evidence_hash",
 }

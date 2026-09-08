@@ -29,6 +29,14 @@ rejection, and exact restore hash/size/version checks. Every journal receipt is 
 revalidated against the exact persisted object at open. Missing, ambiguous, swapped or corrupt
 objects fail closed.
 
+Positive restore verification is current-state only. The validated store issues a typed membership
+proof binding the exact object and receipt to the persisted journal entry, store identity, schema,
+current checkpoint sequence/hash and current journal head. Restore requires that entry to be the
+current head; a stale checkpoint, historical entry or internally coherent but unpersisted journal is
+not accepted. Assessment revalidates the proof against the store again, so a later store advance
+invalidates prior restore evidence. Historical point-in-time restore is not provisioned by this
+contract.
+
 Reopening an existing store requires a caller-custodied checkpoint reference binding the store
 identity, monotonic journal sequence and current journal head hash. A database snapshot older or
 newer than that independently retained reference fails closed, as does a missing or tampered
