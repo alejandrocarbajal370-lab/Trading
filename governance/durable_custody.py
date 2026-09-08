@@ -36,7 +36,7 @@ from governance.ibkr_real_provisioning import (
 from governance.phase7e import EvidenceGate, GateState
 
 CONTRACT_VERSION = "durable-custody-worm-replay-v1"
-SCHEMA_VERSION = "contract-test-durable-custody-schema-v1"
+SCHEMA_VERSION = "contract-test-durable-custody-schema-v2"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
 
@@ -286,6 +286,25 @@ class ReplayJournalEvidence(_Model):
         return self
 
 
+class DurableReplayCheckpointReference(_Model):
+    """Caller-custodied reference; only an external authority can make it REAL."""
+
+    store_id: str = Field(pattern=IDENTIFIER)
+    schema_version: Literal[SCHEMA_VERSION]
+    sequence: int = Field(ge=0)
+    journal_head_hash: str = Field(pattern=SHA256)
+    external_authoritative_anchor_real: Literal[ProvisioningState.NOT_PROVISIONED]
+    checkpoint_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_value(self):
+        _identifier(self.store_id)
+        if self.sequence == 0 and self.journal_head_hash != "0" * 64:
+            raise ValueError("invalid empty checkpoint")
+        _hash(self, "checkpoint_hash")
+        return self
+
+
 class RestoreVerificationEvidence(_Model):
     restore_id: str = Field(pattern=IDENTIFIER)
     receipt_hash: str = Field(pattern=SHA256)
@@ -329,11 +348,20 @@ class ContractTestDurableStore:
 
     provisioning_state = ProvisioningState.CONTRACT_TEST_ONLY
 
-    def __init__(self, path: Path, *, token: object, expected_store_id: str | None) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        token: object,
+        expected_store_id: str | None,
+        expected_checkpoint: DurableReplayCheckpointReference | None,
+    ) -> None:
         if token is not _FACTORY_TOKEN:
             raise DurableCustodyError("durable store must be factory-created")
         self._path = path
         initialize = not path.exists()
+        if not initialize and expected_checkpoint is None:
+            raise DurableCustodyError("expected checkpoint required for existing durable store")
         connection = self._connect(initialize=initialize)
         try:
             self.store_id = connection.execute(
@@ -341,8 +369,19 @@ class ContractTestDurableStore:
             ).fetchone()[0]
             if expected_store_id is not None and self.store_id != expected_store_id:
                 raise DurableCustodyError("durable store replacement detected")
+            checkpoint = self._checkpoint_from_connection(connection)
+            if expected_checkpoint is not None:
+                expected = _rebuild(DurableReplayCheckpointReference, expected_checkpoint)
+                if checkpoint != expected:
+                    raise DurableCustodyError("durable store checkpoint rollback or replacement detected")
+            self._checkpoint = checkpoint
         finally:
             connection.close()
+
+    @property
+    def checkpoint(self) -> DurableReplayCheckpointReference:
+        """Export the reference that an independent caller must persist monotonically."""
+        return self._checkpoint
 
     def store_and_consume(
         self,
@@ -366,6 +405,8 @@ class ContractTestDurableStore:
             if hashlib.sha256(content).hexdigest() != receipt.artifact.content_hash:
                 raise DurableCustodyError("artifact content mismatch")
             canonical.append((receipt, content))
+        if any(receipt.stored_at > committed_at for receipt, _ in canonical):
+            raise DurableCustodyError("storage commit chronology invalid")
         hashes = tuple(item[0].receipt_hash for item in canonical)
         identities = tuple(item[0].artifact.identity_hash for item in canonical)
         if len(set(hashes)) != len(hashes) or len(set(identities)) != len(identities):
@@ -383,6 +424,8 @@ class ContractTestDurableStore:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            if self._checkpoint_from_connection(connection) != self._checkpoint:
+                raise DurableCustodyError("durable store checkpoint changed or rolled back")
             if connection.execute(
                 "SELECT 1 FROM journal WHERE replay_identity_hash=?", (replay.identity_hash,)
             ).fetchone():
@@ -404,14 +447,15 @@ class ContractTestDurableStore:
             )
             for receipt, content in canonical:
                 connection.execute(
-                    "INSERT INTO objects(identity_hash, receipt_json, content) VALUES(?,?,?)",
-                    (receipt.artifact.identity_hash, receipt.model_dump_json(), content),
+                    "INSERT INTO objects(identity_hash,receipt_hash,receipt_json,content) VALUES(?,?,?,?)",
+                    (receipt.artifact.identity_hash, receipt.receipt_hash, receipt.model_dump_json(), content),
                 )
             connection.execute(
                 "INSERT INTO journal(sequence,replay_identity_hash,entry_json,entry_hash) VALUES(?,?,?,?)",
                 (sequence, replay.identity_hash, entry.model_dump_json(), entry.entry_hash),
             )
             connection.commit()
+            self._checkpoint = _checkpoint(self.store_id, sequence, entry.entry_hash)
             return entry
         except DurableCustodyError:
             connection.rollback()
@@ -457,7 +501,7 @@ class ContractTestDurableStore:
                 connection.execute("BEGIN IMMEDIATE")
                 connection.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL)")
                 connection.execute(
-                    "CREATE TABLE objects(identity_hash TEXT PRIMARY KEY,receipt_json TEXT NOT NULL,content BLOB NOT NULL)"
+                    "CREATE TABLE objects(identity_hash TEXT PRIMARY KEY,receipt_hash TEXT UNIQUE NOT NULL,receipt_json TEXT NOT NULL,content BLOB NOT NULL)"
                 )
                 connection.execute(
                     "CREATE TABLE journal(sequence INTEGER PRIMARY KEY,replay_identity_hash TEXT UNIQUE NOT NULL,entry_json TEXT NOT NULL,entry_hash TEXT NOT NULL)"
@@ -467,9 +511,9 @@ class ContractTestDurableStore:
                     "INSERT INTO metadata(key,value) VALUES(?,?)",
                     (("schema_version", SCHEMA_VERSION), ("store_id", store_id)),
                 )
-                connection.execute("PRAGMA user_version=1")
+                connection.execute("PRAGMA user_version=2")
                 connection.commit()
-            if version not in {0 if initialize else 1, 1}:
+            if version not in {0 if initialize else 2, 2}:
                 raise DurableCustodyError("unknown durable store schema")
             if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
                 raise DurableCustodyError("durable store integrity check failed")
@@ -478,14 +522,7 @@ class ContractTestDurableStore:
                 metadata.get("store_id")
             ):
                 raise DurableCustodyError("durable store metadata mismatch")
-            previous = "0" * 64
-            for sequence, payload, entry_hash in connection.execute(
-                "SELECT sequence,entry_json,entry_hash FROM journal ORDER BY sequence"
-            ):
-                entry = _rebuild(ReplayJournalEvidence, payload)
-                if entry.sequence != sequence or entry.previous_entry_hash != previous or entry.entry_hash != entry_hash:
-                    raise DurableCustodyError("durable replay journal rollback or corruption")
-                previous = entry.entry_hash
+            self._checkpoint_from_connection(connection)
             return connection
         except DurableCustodyError:
             if connection is not None:
@@ -496,12 +533,79 @@ class ContractTestDurableStore:
                 connection.close()
             raise DurableCustodyError("durable store unavailable or corrupt") from None
 
+    @staticmethod
+    def _checkpoint_from_connection(
+        connection: sqlite3.Connection,
+    ) -> DurableReplayCheckpointReference:
+        metadata = dict(connection.execute("SELECT key,value FROM metadata").fetchall())
+        store_id = metadata["store_id"]
+        objects: dict[str, CustodyReceipt] = {}
+        identities: set[str] = set()
+        for identity_hash, receipt_hash, receipt_json, content in connection.execute(
+            "SELECT identity_hash,receipt_hash,receipt_json,content FROM objects"
+        ):
+            receipt = _rebuild(CustodyReceipt, receipt_json)
+            payload = bytes(content)
+            if (
+                identity_hash != receipt.artifact.identity_hash
+                or receipt_hash != receipt.receipt_hash
+                or receipt_hash in objects
+                or identity_hash in identities
+                or len(payload) != receipt.artifact.size_bytes
+                or hashlib.sha256(payload).hexdigest() != receipt.artifact.content_hash
+            ):
+                raise DurableCustodyError("durable object receipt or content mismatch")
+            objects[receipt_hash] = receipt
+            identities.add(identity_hash)
+        previous = "0" * 64
+        sequence = 0
+        claimed: set[str] = set()
+        for row_sequence, payload, entry_hash in connection.execute(
+                "SELECT sequence,entry_json,entry_hash FROM journal ORDER BY sequence"
+            ):
+            sequence += 1
+            entry = _rebuild(ReplayJournalEvidence, payload)
+            if (
+                entry.store_id != store_id
+                or row_sequence != sequence
+                or entry.sequence != sequence
+                or entry.previous_entry_hash != previous
+                or entry.entry_hash != entry_hash
+            ):
+                raise DurableCustodyError("durable replay journal rollback or corruption")
+            receipts = []
+            for receipt_hash in entry.receipt_hashes:
+                if receipt_hash in claimed or receipt_hash not in objects:
+                    raise DurableCustodyError("durable journal object missing or ambiguous")
+                claimed.add(receipt_hash)
+                receipts.append(objects[receipt_hash])
+            raw = tuple(item for item in receipts if item.artifact.kind is ArtifactKind.RAW)
+            if (
+                len(raw) != 1
+                or raw[0].artifact.identity_hash != entry.replay_identity.raw_artifact_identity_hash
+                or derive_replay_identity(raw[0]) != entry.replay_identity
+                or any(item.stored_at > entry.committed_at for item in receipts)
+                or any(
+                    item.artifact.kind is ArtifactKind.DERIVED
+                    and item.artifact.raw_source_identity_hash != raw[0].artifact.identity_hash
+                    for item in receipts
+                )
+            ):
+                raise DurableCustodyError("durable journal object binding mismatch")
+            previous = entry.entry_hash
+        if claimed != set(objects):
+            raise DurableCustodyError("durable object is not bound to journal")
+        return _checkpoint(store_id, sequence, previous)
+
 
 _FACTORY_TOKEN = object()
 
 
 def build_contract_test_store(
-    database: os.PathLike[str] | str, *, expected_store_id: str | None = None
+    database: os.PathLike[str] | str,
+    *,
+    expected_store_id: str | None = None,
+    expected_checkpoint: DurableReplayCheckpointReference | dict[str, Any] | str | None = None,
 ) -> ContractTestDurableStore:
     path = Path(database)
     if not path.exists() and any(Path(f"{path}{suffix}").exists() for suffix in ("-wal", "-shm")):
@@ -512,7 +616,17 @@ def build_contract_test_store(
         raise DurableCustodyError("durable store parent must exist")
     if expected_store_id is not None:
         _identifier(expected_store_id)
-    return ContractTestDurableStore(path, token=_FACTORY_TOKEN, expected_store_id=expected_store_id)
+    checkpoint = (
+        None
+        if expected_checkpoint is None
+        else _rebuild(DurableReplayCheckpointReference, expected_checkpoint)
+    )
+    return ContractTestDurableStore(
+        path,
+        token=_FACTORY_TOKEN,
+        expected_store_id=expected_store_id,
+        expected_checkpoint=checkpoint,
+    )
 
 
 def artifact_identity(
@@ -643,16 +757,9 @@ def assess_contract_test_custody(
         for actor in actors:
             if actor.authority_registry_evidence_hash != registry.evidence_hash:
                 raise ValueError
-            _current(actor.lifecycle, entry.committed_at)
             _current(actor.lifecycle, assessed_at)
-        _current(backend.lifecycle, entry.committed_at)
         _current(backend.lifecycle, assessed_at)
-        if not policy.effective_at <= entry.committed_at < policy.retain_until:
-            raise ValueError
-        if not policy.effective_at <= assessed_at < policy.retain_until or assessed_at >= policy.expires_at:
-            raise ValueError
-        if policy.revoked_at is not None and policy.revoked_at <= assessed_at:
-            raise ValueError
+        _policy_current(policy, assessed_at)
         operator = actors[0]
         for receipt in receipts:
             if (
@@ -673,8 +780,12 @@ def assess_contract_test_custody(
                 or receipt.policy_evidence_hash != policy.evidence_hash
                 or receipt.custody_operator_evidence_hash != operator.evidence_hash
                 or receipt.stored_at < result.verified_at
+                or receipt.stored_at > entry.committed_at
             ):
                 raise ValueError
+            _current(backend.lifecycle, receipt.stored_at)
+            _current(operator.lifecycle, receipt.stored_at)
+            _policy_current(policy, receipt.stored_at)
         raw = tuple(item for item in receipts if item.artifact.kind is ArtifactKind.RAW)
         if len(raw) != 1 or any(
             item.artifact.kind is ArtifactKind.DERIVED
@@ -742,18 +853,21 @@ def seal_contract_test(model: type[T], hash_field: str, **values: Any) -> T:
 
 
 def _rebuild(model: type[T], value: Any) -> T:
-    if type(value) is str:
-        try:
+    try:
+        if type(value) is str:
             raw = json.loads(value)
-        except BaseException:  # noqa: BLE001
-            raise DurableCustodyError("invalid durable custody value") from None
-    elif type(value) is model:
-        raw = {name: _safe(object.__getattribute__(value, "__dict__")[name]) for name in model.model_fields}
-    elif type(value) is dict:
-        raw = _safe(value)
-    else:
-        raise DurableCustodyError("invalid durable custody value")
-    return model.model_validate(raw)
+        elif type(value) is model:
+            raw = {
+                name: _safe(object.__getattribute__(value, "__dict__")[name])
+                for name in model.model_fields
+            }
+        elif type(value) is dict:
+            raw = _safe(value)
+        else:
+            raise TypeError
+        return model.model_validate(raw)
+    except BaseException:  # noqa: BLE001
+        raise DurableCustodyError("invalid durable custody value") from None
 
 
 def _upstream(model: type[Any], value: Any) -> Any:
@@ -813,6 +927,27 @@ def _current(lifecycle: Lifecycle, at: dt.datetime) -> None:
         raise ValueError("lifecycle revoked")
 
 
+def _policy_current(policy: WormPolicyEvidence, at: dt.datetime) -> None:
+    if not policy.effective_at <= at < min(policy.retain_until, policy.expires_at):
+        raise ValueError("policy unavailable")
+    if policy.revoked_at is not None and policy.revoked_at <= at:
+        raise ValueError("policy revoked")
+
+
+def _checkpoint(
+    store_id: str, sequence: int, journal_head_hash: str
+) -> DurableReplayCheckpointReference:
+    return seal_contract_test(
+        DurableReplayCheckpointReference,
+        "checkpoint_hash",
+        store_id=store_id,
+        schema_version=SCHEMA_VERSION,
+        sequence=sequence,
+        journal_head_hash=journal_head_hash,
+        external_authoritative_anchor_real=ProvisioningState.NOT_PROVISIONED,
+    )
+
+
 def _policy_expiry_placeholder(receipt: CustodyReceipt) -> dt.datetime:
     # Receipt intentionally carries no caller-selected expiry; assessment owns policy validation.
     return receipt.stored_at + dt.timedelta(days=36500)
@@ -828,5 +963,6 @@ _SEAL_FIELDS: dict[type[_Model], str] = {
     ReplayIdentity: "identity_hash",
     AccessAuditEvidence: "event_digest",
     ReplayJournalEvidence: "entry_hash",
+    DurableReplayCheckpointReference: "checkpoint_hash",
     RestoreVerificationEvidence: "evidence_hash",
 }

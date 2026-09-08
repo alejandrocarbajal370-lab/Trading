@@ -1,4 +1,6 @@
 import datetime as dt
+import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -129,6 +131,40 @@ def reseal(value, field, **changes):
     return seal_contract_test(type(value), field, **raw)
 
 
+def rebind_step3(values):
+    receipts = tuple(
+        reseal(
+            item,
+            "receipt_hash",
+            backend_evidence_hash=values["backend"].evidence_hash,
+            policy_evidence_hash=values["policy"].evidence_hash,
+            custody_operator_evidence_hash=values["custody_principals"][0].evidence_hash,
+        )
+        for item in values["receipts"]
+    )
+    replay = derive_replay_identity(receipts[0])
+    entry = reseal(
+        values["replay_entry"],
+        "entry_hash",
+        replay_identity=replay,
+        receipt_hashes=tuple(item.receipt_hash for item in receipts),
+    )
+    audit = reseal(
+        values["access_audit"],
+        "event_digest",
+        receipt_hash=receipts[0].receipt_hash,
+        replay_identity_hash=replay.identity_hash,
+        operator_evidence_hash=values["custody_principals"][0].evidence_hash,
+    )
+    restore = reseal(
+        values["restore"],
+        "evidence_hash",
+        receipt_hash=receipts[0].receipt_hash,
+        replay_entry_hash=entry.entry_hash,
+    )
+    values.update(receipts=receipts, replay_entry=entry, access_audit=audit, restore=restore)
+
+
 def test_complete_graph_is_contract_only_and_all_real_gates_stay_closed(tmp_path):
     values, _, _ = built(tmp_path); result = assess(values)
     assert result.content_hash_is_worm_proof is False
@@ -144,12 +180,16 @@ def test_complete_graph_is_contract_only_and_all_real_gates_stay_closed(tmp_path
 
 def test_restart_duplicate_and_store_replacement_fail_closed(tmp_path):
     values, store, contents = built(tmp_path); path = tmp_path/"custody.sqlite"
-    reopened = build_contract_test_store(path, expected_store_id=store.store_id)
+    reopened = build_contract_test_store(
+        path, expected_store_id=store.store_id, expected_checkpoint=store.checkpoint
+    )
     batch = tuple(zip(values["receipts"], contents, strict=True))
     with pytest.raises(DurableCustodyError, match="already consumed"):
         reopened.store_and_consume(batch, values["replay_entry"].replay_identity, committed_at=values["assessed_at"])
     with pytest.raises(DurableCustodyError, match="replacement"):
-        build_contract_test_store(path, expected_store_id="store.wrong")
+        build_contract_test_store(
+            path, expected_store_id="store.wrong", expected_checkpoint=store.checkpoint
+        )
 
 
 def test_alias_or_reseal_cannot_change_semantic_replay_key(tmp_path):
@@ -166,7 +206,8 @@ def test_fresh_process_reopens_and_validates_persisted_journal(tmp_path):
     code = (
         "from governance.durable_custody import build_contract_test_store;"
         f"s=build_contract_test_store({str(tmp_path / 'custody.sqlite')!r},"
-        f"expected_store_id={store.store_id!r});"
+        f"expected_store_id={store.store_id!r},"
+        f"expected_checkpoint={store.checkpoint.model_dump_json()!r});"
         "assert s.store_id"
     )
     subprocess.run(
@@ -184,22 +225,33 @@ def test_concurrent_consumers_have_one_winner(tmp_path):
     seed = build_contract_test_store(path); batch = tuple(zip(values["receipts"], contents, strict=True))
     def attempt(_):
         try:
-            build_contract_test_store(path, expected_store_id=seed.store_id).store_and_consume(
+            contender = build_contract_test_store(
+                path, expected_store_id=seed.store_id, expected_checkpoint=seed.checkpoint
+            )
+            contender.store_and_consume(
                 batch, values["replay_entry"].replay_identity, committed_at=values["assessed_at"])
-            return True
+            return contender.checkpoint
         except DurableCustodyError:
             return False
     with ThreadPoolExecutor(max_workers=8) as pool:
-        assert sum(pool.map(attempt, range(8))) == 1
+        results = tuple(pool.map(attempt, range(8)))
+    winners = tuple(item for item in results if item is not False)
+    assert len(winners) == 1
+    assert build_contract_test_store(path, expected_checkpoint=winners[0]).checkpoint == winners[0]
 
 
 def test_partial_batch_failure_rolls_back_and_restore_fails(tmp_path):
     values, _, contents = built(tmp_path); store = build_contract_test_store(tmp_path/"rollback.sqlite")
+    checkpoint = store.checkpoint
     with pytest.raises(DurableCustodyError):
         store.store_and_consume(((values["receipts"][0], contents[0]), (values["receipts"][1], b"tamper")),
                                values["replay_entry"].replay_identity, committed_at=values["assessed_at"])
     with pytest.raises(DurableCustodyError, match="missing"):
         store.restore(values["receipts"][0].artifact)
+    assert store.checkpoint == checkpoint
+    assert build_contract_test_store(
+        tmp_path / "rollback.sqlite", expected_checkpoint=checkpoint
+    ).checkpoint == checkpoint
 
 
 @pytest.mark.parametrize("damage", ("truncate", "schema", "journal"))
@@ -212,7 +264,199 @@ def test_corruption_schema_and_journal_tamper_fail_closed(tmp_path, damage):
         else: connection.execute("UPDATE journal SET entry_hash=?", ("0"*64,))
         connection.commit(); connection.close()
     with pytest.raises(DurableCustodyError):
+        build_contract_test_store(
+            path, expected_store_id=store.store_id, expected_checkpoint=store.checkpoint
+        )
+
+
+def test_snapshot_rollback_and_checkpoint_mismatch_fail_closed(tmp_path):
+    values, _, contents = built(tmp_path)
+    path = tmp_path / "snapshot-target.sqlite"
+    old_database = tmp_path / "old.sqlite"
+    store = build_contract_test_store(path)
+    old_checkpoint = store.checkpoint
+    shutil.copy2(path, old_database)
+    store.store_and_consume(
+        tuple(zip(values["receipts"], contents, strict=True)),
+        values["replay_entry"].replay_identity,
+        committed_at=values["assessed_at"],
+    )
+    current_checkpoint = store.checkpoint
+    with pytest.raises(DurableCustodyError, match="checkpoint"):
+        build_contract_test_store(path, expected_checkpoint=old_checkpoint)
+    shutil.copy2(old_database, path)
+    with pytest.raises(DurableCustodyError, match="checkpoint"):
+        build_contract_test_store(
+            path, expected_store_id=store.store_id, expected_checkpoint=current_checkpoint
+        )
+    with pytest.raises(DurableCustodyError, match="expected checkpoint"):
         build_contract_test_store(path, expected_store_id=store.store_id)
+    # A matching rolled-back pair is locally indistinguishable; strong semantics require
+    # the independently retained current reference and never claim REAL anchoring.
+    locally_reopened = build_contract_test_store(
+        path, expected_store_id=store.store_id, expected_checkpoint=old_checkpoint
+    )
+    assert locally_reopened.checkpoint.external_authoritative_anchor_real is ProvisioningState.NOT_PROVISIONED
+    with pytest.raises(DurableCustodyError, match="checkpoint"):
+        build_contract_test_store(
+            path, expected_store_id=store.store_id, expected_checkpoint=current_checkpoint
+        )
+
+
+def test_current_database_rejects_rolled_back_tampered_or_missing_checkpoint(tmp_path):
+    _, store, _ = built(tmp_path); path = tmp_path / "custody.sqlite"
+    empty = build_contract_test_store(tmp_path / "empty.sqlite").checkpoint
+    with pytest.raises(DurableCustodyError, match="checkpoint"):
+        build_contract_test_store(path, expected_checkpoint=empty)
+    tampered = json.loads(store.checkpoint.model_dump_json())
+    tampered["journal_head_hash"] = "0" * 64
+    with pytest.raises(DurableCustodyError):
+        build_contract_test_store(path, expected_checkpoint=tampered)
+    with pytest.raises(DurableCustodyError, match="expected checkpoint"):
+        build_contract_test_store(path)
+
+
+@pytest.mark.parametrize("kind", (ArtifactKind.RAW, ArtifactKind.DERIVED))
+def test_missing_journal_object_rejects_store_open(tmp_path, kind):
+    values, store, _ = built(tmp_path); path = tmp_path / "custody.sqlite"
+    target = next(item for item in values["receipts"] if item.artifact.kind is kind)
+    connection = sqlite3.connect(path)
+    connection.execute("DELETE FROM objects WHERE identity_hash=?", (target.artifact.identity_hash,))
+    connection.commit(); connection.close()
+    with pytest.raises(DurableCustodyError, match="missing"):
+        build_contract_test_store(path, expected_checkpoint=store.checkpoint)
+
+
+@pytest.mark.parametrize("column", ("receipt_hash", "receipt_json", "content"))
+def test_object_receipt_hash_identity_size_and_content_tamper_rejects_open(tmp_path, column):
+    _, store, _ = built(tmp_path); path = tmp_path / "custody.sqlite"
+    connection = sqlite3.connect(path)
+    value = "0" * 64 if column == "receipt_hash" else ("{}" if column == "receipt_json" else b"tamper")
+    connection.execute(f"UPDATE objects SET {column}=? WHERE rowid=1", (value,))
+    connection.commit(); connection.close()
+    with pytest.raises(DurableCustodyError):
+        build_contract_test_store(path, expected_checkpoint=store.checkpoint)
+
+
+@pytest.mark.parametrize("field", ("artifact_id", "content_hash", "size_bytes"))
+def test_validly_resealed_artifact_version_hash_or_size_mismatch_rejects_open(tmp_path, field):
+    values, store, _ = built(tmp_path); path = tmp_path / "custody.sqlite"
+    receipt = values["receipts"][0]
+    replacement = {
+        "artifact_id": "artifact.raw.msft.999",
+        "content_hash": "0" * 64,
+        "size_bytes": receipt.artifact.size_bytes + 1,
+    }[field]
+    artifact = reseal(receipt.artifact, "identity_hash", **{field: replacement})
+    changed = reseal(receipt, "receipt_hash", artifact=artifact)
+    connection = sqlite3.connect(path)
+    connection.execute(
+        "UPDATE objects SET receipt_hash=?,receipt_json=? WHERE identity_hash=?",
+        (changed.receipt_hash, changed.model_dump_json(), receipt.artifact.identity_hash),
+    )
+    connection.commit(); connection.close()
+    with pytest.raises(DurableCustodyError):
+        build_contract_test_store(path, expected_checkpoint=store.checkpoint)
+
+
+@pytest.mark.parametrize("damage", ("swap", "ambiguous"))
+def test_swapped_or_ambiguous_object_mapping_rejects_open(tmp_path, damage):
+    _, store, _ = built(tmp_path); path = tmp_path / "custody.sqlite"
+    connection = sqlite3.connect(path)
+    rows = connection.execute(
+        "SELECT identity_hash,receipt_hash,receipt_json,content FROM objects ORDER BY identity_hash"
+    ).fetchall()
+    if damage == "swap":
+        connection.execute(
+            "UPDATE objects SET receipt_json=? WHERE identity_hash=?", (rows[1][2], rows[0][0])
+        )
+    else:
+        connection.execute("ALTER TABLE objects RENAME TO original_objects")
+        connection.execute(
+            "CREATE TABLE objects(identity_hash TEXT,receipt_hash TEXT,receipt_json TEXT,content BLOB)"
+        )
+        connection.executemany(
+            "INSERT INTO objects VALUES(?,?,?,?)", (rows[0], rows[0], rows[1])
+        )
+    connection.commit(); connection.close()
+    with pytest.raises(DurableCustodyError):
+        build_contract_test_store(path, expected_checkpoint=store.checkpoint)
+
+
+def test_stored_after_commit_rejected_but_equality_accepted(tmp_path):
+    values, _, contents = built(tmp_path)
+    receipt = values["receipts"][0]
+    store = build_contract_test_store(tmp_path / "chronology.sqlite")
+    with pytest.raises(DurableCustodyError, match="chronology"):
+        store.store_and_consume(
+            ((receipt, contents[0]),), derive_replay_identity(receipt),
+            committed_at=receipt.stored_at - dt.timedelta(microseconds=1),
+        )
+    store.store_and_consume(
+        ((receipt, contents[0]),), derive_replay_identity(receipt), committed_at=receipt.stored_at
+    )
+
+
+def test_assessment_rejects_stored_after_commit(tmp_path):
+    values, _, _ = built(tmp_path)
+    future = values["replay_entry"].committed_at + dt.timedelta(microseconds=1)
+    values["receipts"] = tuple(
+        reseal(item, "receipt_hash", stored_at=future) for item in values["receipts"]
+    )
+    rebind_step3(values)
+    with pytest.raises(DurableCustodyError):
+        assess(values)
+
+
+@pytest.mark.parametrize("target", ("backend", "operator", "policy"))
+@pytest.mark.parametrize("boundary", ("not-effective", "expiry", "revocation"))
+def test_storage_time_lifecycle_boundaries_fail_closed(tmp_path, target, boundary):
+    values, _, _ = built(tmp_path); stored_at = values["receipts"][0].stored_at
+    if target == "policy":
+        changes = {"effective_at": stored_at + dt.timedelta(microseconds=1)}
+        if boundary == "expiry":
+            changes = {
+                "retain_until": stored_at,
+                "expires_at": stored_at,
+                "retention_seconds": int(
+                    (stored_at - values["policy"].effective_at).total_seconds()
+                ),
+            }
+        elif boundary == "revocation":
+            changes = {"revoked_at": stored_at}
+        if "effective_at" in changes:
+            changes["retain_until"] = changes["effective_at"] + dt.timedelta(
+                seconds=values["policy"].retention_seconds
+            )
+        values["policy"] = reseal(values["policy"], "evidence_hash", **changes)
+    else:
+        index = 0
+        item = values["backend"] if target == "backend" else values["custody_principals"][index]
+        if boundary == "not-effective":
+            life = reseal(
+                item.lifecycle,
+                "lifecycle_hash",
+                effective_at=stored_at + dt.timedelta(microseconds=1),
+                verified_at=stored_at + dt.timedelta(microseconds=2),
+            )
+        else:
+            life = reseal(
+                item.lifecycle,
+                "lifecycle_hash",
+                **({"expires_at": stored_at} if boundary == "expiry" else {"revoked_at": stored_at}),
+            )
+        changed = reseal(item, "evidence_hash", lifecycle=life)
+        if target == "backend":
+            values["backend"] = changed
+            values["policy"] = reseal(
+                values["policy"], "evidence_hash", backend_evidence_hash=changed.evidence_hash
+            )
+        else:
+            actors = list(values["custody_principals"]); actors[index] = changed
+            values["custody_principals"] = tuple(actors)
+    rebind_step3(values)
+    with pytest.raises(DurableCustodyError):
+        assess(values)
 
 
 @pytest.mark.parametrize("target", ("backend", "policy", "roles", "audit", "restore", "artifact"))

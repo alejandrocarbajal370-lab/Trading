@@ -25,8 +25,25 @@ revalidated current-as-of assessment; expiry or revocation at the boundary fails
 The factory-only local SQLite adapter demonstrates `CONTRACT_TEST_ONLY` persistence across process
 restart, atomic consume-if-new, concurrent single-winner behavior, integral batch rollback,
 schema/integrity checking, journal hash-chain continuity, explicit store identity, duplicate
-rejection, and exact restore hash/size/version checks. Corrupt, truncated, replaced, rolled-back,
-missing or ambiguous state fails closed and is never silently initialized as empty.
+rejection, and exact restore hash/size/version checks. Every journal receipt is resolved and
+revalidated against the exact persisted object at open. Missing, ambiguous, swapped or corrupt
+objects fail closed.
+
+Reopening an existing store requires a caller-custodied checkpoint reference binding the store
+identity, monotonic journal sequence and current journal head hash. A database snapshot older or
+newer than that independently retained reference fails closed, as does a missing or tampered
+reference; the reference advances only after a successful database commit. A database and its old
+checkpoint copied or rolled back together remain indistinguishable to local code. Therefore this
+mechanism proves anti-rollback only relative to the independently supplied expected reference. A
+REAL guarantee requires an externally authoritative monotonic anchor, which is not provisioned.
+Local files, metadata, hashes or hidden secrets are not such an anchor and never promote this
+adapter beyond `CONTRACT_TEST_ONLY`.
+
+Temporal causality is inclusive at commit: upstream verification must precede storage,
+`stored_at <= committed_at <= restore.verified_at <= assessed_at`. Backend, custody operator and
+retention policy must be effective, unexpired and unrevoked at storage, and the relevant evidence
+must remain current through assessment. UTC is mandatory; equality at expiry or revocation fails
+closed. Corrupt or truncated state is never silently initialized as empty.
 
 Replay identity is rederived from semantic upstream scope and exact raw artifact, attestation,
 verification, backend and policy hashes. Caller aliases, metadata changes, copies or reseals cannot
