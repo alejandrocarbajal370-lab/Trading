@@ -21,14 +21,14 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_ibkr_real_provisioning_foundation_follows_completed_aggregation():
+def test_external_trust_foundation_follows_ibkr_real_provisioning():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.IBKR_REAL_PROVISIONING_AUTHENTIC_ENTITLEMENT_EVIDENCE_FOUNDATION
+        == RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.GOVERNED_SUFFICIENT_OBSERVATION_POLICY_PROVIDER_ADMISSION_EVIDENCE_AGGREGATION_FOUNDATION
+        == RoadmapBlock.IBKR_REAL_PROVISIONING_AUTHENTIC_ENTITLEMENT_EVIDENCE_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -72,7 +72,7 @@ def test_roadmap_json_copy_construct_and_direct_validation_fail_closed():
 
 def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
-    adr = (ROOT / "docs/adr/0015-ibkr-real-provisioning-authentic-entitlement-evidence-foundation.md").read_text()
+    adr = (ROOT / "docs/adr/0016-external-trust-attestation-independent-verifier-real-foundation.md").read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
         assert NEXT_BLOCK.name.value in normalized
@@ -82,7 +82,7 @@ def test_readme_adr_and_machine_readable_successor_agree_exactly():
         assert NEXT_BLOCK.merge_order.value in document
         assert NEXT_BLOCK.successor_pr in document
     assert "exact `NEXT_BLOCK`" in readme
-    assert "machine-readable successor" in adr
+    assert "named successor" in adr
 
 
 def test_next_foundation_preserves_all_frozen_safety_states():
@@ -101,9 +101,9 @@ def test_next_foundation_preserves_all_frozen_safety_states():
     assert NEXT_BLOCK.backtesting == "NOT_AUTHORIZED"
 
 
-def test_successor_after_authorized_foundation_is_undetermined_and_unauthorized():
+def test_successor_after_authorized_foundation_is_named_but_unauthorized():
     assert AFTER_NEXT_BLOCK.after == NEXT_BLOCK.name
-    assert AFTER_NEXT_BLOCK.name == "UNDETERMINED"
+    assert AFTER_NEXT_BLOCK.name == RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY
     assert AFTER_NEXT_BLOCK.implementation_authorized is False
     assert AFTER_NEXT_BLOCK.activation_real is False
     assert AFTER_NEXT_BLOCK.decision_state == "ARCHITECTURAL_DECISION_REQUIRED"

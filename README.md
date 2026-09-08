@@ -1,24 +1,25 @@
 # Trading
 
-## Approved sequence — Step 1
+## Approved sequence — Step 2
 
-The exact `NEXT_BLOCK` is **IBKR REAL Provisioning + Authentic Entitlement Evidence Foundation**
-(`CONTRACT_TEST_ONLY`; REAL `NOT_PROVISIONED`). Operational read-only session evidence is strictly
-separate from authentic entitlement evidence: connectivity, callbacks, ticks, and
-`DELAYED`/`REALTIME` mode confer no trust or provider admission. References are opaque,
-digest-only, and exclude credentials, account IDs, and raw secrets. See ADR 0015.
+Step 1, **IBKR REAL Provisioning + Authentic Entitlement Evidence Foundation**, closed in PR #39.
+The exact `NEXT_BLOCK` is **External Trust, Attestation & Independent Verifier REAL Foundation**
+(`AUTHORIZED_TO_IMPLEMENT`; `CONTRACT_TEST_ONLY`; REAL `NOT_PROVISIONED`). It binds external
+trust-anchor, authority-registry, attester and independent-verifier lifecycle evidence transitively
+to the ADR 0015 IBKR graph. Attestation and verification are separate; neither implies provider
+admission. No local signer, key, HMAC, fixture, callback or digest can confer REAL trust. See ADR
+0016.
 
-The intended later direction is **External trust / attestation / verifier REAL**, but the
-machine-readable successor remains `UNDETERMINED / NOT_AUTHORIZED /
-ARCHITECTURAL_DECISION_REQUIRED`. All 10/10 gates remain `OPEN_EXTERNAL`; REAL provider admission,
-`QVM_NOT_READY`, `INSUFFICIENT_REAL_DATA`, and `NO_TRADE` remain fixed.
+The named next sequence step is **Durable Custody + WORM + Replay**, but it remains
+`NOT_AUTHORIZED / ARCHITECTURAL_DECISION_REQUIRED`. All 10/10 gates remain `OPEN_EXTERNAL`; REAL
+trust, provider admission, `QVM_NOT_READY`, `INSUFFICIENT_REAL_DATA`, and `NO_TRADE` remain fixed.
 
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
 Phases 6 and 7A/7B/7C/7D/7E/7F are integrated; Phase 7F was squash merged as PR #25.
-The current authorized block is the contract-only **IBKR REAL Provisioning + Authentic Entitlement
-Evidence Foundation** described in
-`docs/adr/0015-ibkr-real-provisioning-authentic-entitlement-evidence-foundation.md`.
+The current authorized block is the contract-only **External Trust, Attestation & Independent
+Verifier REAL Foundation** described in
+`docs/adr/0016-external-trust-attestation-independent-verifier-real-foundation.md`.
 **Phase 7G — Governed External Provisioning Foundation** is proposed in draft form as a
 contract-test-only boundary in
 [`docs/adr/0002-phase7g-governed-external-provisioning.md`](docs/adr/0002-phase7g-governed-external-provisioning.md).
@@ -606,22 +607,14 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
-The exact `NEXT_BLOCK` is **Governed Sufficient Observation Policy & Provider Admission Evidence
-Aggregation Foundation**, with
-`AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
-`NEW_PR_REQUIRED`. It defines a versioned, authority-referenced sufficient-observation policy and
-binds distinct observations to exact provider, adapter, dataset, security/`conId`, request,
-authenticity, provisioning, entitlement, route, temporal, material, provenance, lineage, custody,
-canonical replay/custody/WORM/legal references and all ten ordered gate-evidence identities. Policy
-revocation is bound to the manifest authority registry plus its AUTHORITY and REVOCATION_OWNER;
-gate verification is bound to its VERIFIER. Semantic observation identity prevents alias/reseal
-inflation, and gate evidence is gate-specific unless typed multi-applicability is explicitly bound.
-Replays, cross-scope swaps, partial gates, stale/revoked/future evidence and broken UTC causality
-fail closed. A contract-test success never closes a
-REAL gate: 10/10 remain `OPEN_EXTERNAL`, and REAL observations, provider admission, external
-custody/WORM/legal, trust and entitlement remain `NOT_PROVISIONED`. See ADR 0014. The
-machine-readable successor remains `UNDETERMINED / NOT_AUTHORIZED /
-ARCHITECTURAL_DECISION_REQUIRED`; QVM remains blocked.
+The exact `NEXT_BLOCK` is **External Trust, Attestation & Independent Verifier REAL Foundation**,
+with `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
+`NEW_PR_REQUIRED`. It validates transitive contract bindings and lifecycle separation without
+installing a REAL trust root, authority, attester or verifier. A contract-test success never closes
+a REAL gate: 10/10 remain `OPEN_EXTERNAL`, while provider admission, custody/WORM/replay,
+legal/licensing and external trust remain `NOT_PROVISIONED`. The named next sequence step is
+**Durable Custody + WORM + Replay**, still `NOT_AUTHORIZED /
+ARCHITECTURAL_DECISION_REQUIRED`; QVM remains blocked. See ADR 0016.
 
 The completed PR #37 block was **External Trust Backend Provisioning Contract Foundation**. It
 binds the PR #35/#36 graph to a digest-only external backend and seven independent principal
