@@ -43,24 +43,37 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     def __init__(self, **data: Any) -> None:
+        failed = False
         try:
             super().__init__(**data)
         except BaseException:  # noqa: BLE001 - rejected values can contain secrets
+            failed = True
+        if failed:
             raise IBKRRealProvisioningError("invalid IBKR evidence value") from None
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any):
+        result = None
+        failed = False
         try:
-            return super().model_validate(obj, **kwargs)
+            result = super().model_validate(obj, **kwargs)
         except BaseException:  # noqa: BLE001
+            failed = True
+        if failed or result is None:
             raise IBKRRealProvisioningError("invalid IBKR evidence value") from None
+        return result
 
     @classmethod
     def model_validate_json(cls, value: str | bytes | bytearray, **kwargs: Any):
+        result = None
+        failed = False
         try:
-            return super().model_validate_json(value, **kwargs)
+            result = super().model_validate_json(value, **kwargs)
         except BaseException:  # noqa: BLE001
+            failed = True
+        if failed or result is None:
             raise IBKRRealProvisioningError("invalid IBKR evidence value") from None
+        return result
 
 
 class EvidenceLifecycle(_Model):
@@ -209,6 +222,10 @@ def assess_contract_test(
             raise ValueError("session evidence swap")
         if observation.session_binding_hash != session.binding_hash:
             raise ValueError("observation swap")
+        if entitlement.lifecycle.requested_at < session.lifecycle.effective_at:
+            raise ValueError("entitlement predates session context")
+        if observation.observed_at < session.lifecycle.effective_at:
+            raise ValueError("observation predates session context")
         if not entitlement.lifecycle.verified_at <= assessed_at < entitlement.lifecycle.expires_at:
             raise ValueError("entitlement unavailable")
         if not session.lifecycle.verified_at <= assessed_at < session.lifecycle.expires_at:
@@ -219,6 +236,10 @@ def assess_contract_test(
             raise ValueError("session revoked")
         if observation.observed_at > assessed_at:
             raise ValueError("future observation")
+        if observation.observed_at >= session.lifecycle.expires_at:
+            raise ValueError("observation outside session lifecycle")
+        if session.lifecycle.revoked_at is not None and observation.observed_at >= session.lifecycle.revoked_at:
+            raise ValueError("observation after session revocation")
     except BaseException:  # noqa: BLE001 - never retain attacker-controlled values
         failed = True
     if failed:
@@ -249,22 +270,64 @@ T = TypeVar("T", bound=_Model)
 
 
 def seal_contract_test(model: type[T], hash_field: str, **values: Any) -> T:
-    if hash_field in values:
-        raise IBKRRealProvisioningError("hash must be derived")
-    values[hash_field] = typed_hash(values)
-    return model(**values)
+    result: T | None = None
+    failed = False
+    try:
+        if model not in {EvidenceLifecycle, IBKRSessionBinding, AuthenticEntitlementEvidence, SessionObservation}:
+            raise TypeError("unsupported contract")
+        if type(hash_field) is not str or hash_field not in model.model_fields or hash_field in values:
+            raise TypeError("invalid hash field")
+        values[hash_field] = typed_hash(_safe_hash_value(values))
+        result = model(**values)
+    except BaseException:  # noqa: BLE001 - discard attacker-controlled exceptions
+        failed = True
+    if failed or result is None:
+        raise IBKRRealProvisioningError("invalid IBKR evidence value") from None
+    return result
 
 
 def _rebuild(model: type[T], value: T | dict[str, Any] | str) -> T:
-    if isinstance(value, str):
+    if type(value) is str:
         return model.model_validate_json(value)
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="python")
+    if type(value) is model:
+        value = BaseModel.model_dump(value, mode="python")
+    elif type(value) is not dict:
+        raise IBKRRealProvisioningError("invalid IBKR evidence value")
     return model.model_validate(value)
 
 
 def _deep(model: type[T], value: T | dict[str, Any]) -> T:
-    return model.model_validate(value.model_dump(mode="python") if isinstance(value, BaseModel) else value)
+    if type(value) is model:
+        value = BaseModel.model_dump(value, mode="python")
+    elif type(value) is not dict:
+        raise IBKRRealProvisioningError("invalid IBKR evidence value")
+    return model.model_validate(value)
+
+
+def _safe_hash_value(value: Any) -> Any:
+    """Reject unknown values without invoking attacker-controlled conversion hooks."""
+
+    if value is None or type(value) in {str, bool, int, float}:
+        return value
+    if type(value) is dt.datetime:
+        if value.tzinfo is not dt.UTC:
+            raise TypeError("UTC datetime required")
+        return value
+    if type(value) in {EvidenceState, MarketDataMode}:
+        return value
+    if type(value) is dict:
+        clean = {}
+        for key, item in dict.items(value):
+            if type(key) is not str:
+                raise TypeError("unsupported mapping key")
+            clean[key] = _safe_hash_value(item)
+        return clean
+    if type(value) in {list, tuple}:
+        return type(value)(_safe_hash_value(item) for item in value)
+    if type(value) in {EvidenceLifecycle, IBKRSessionBinding, AuthenticEntitlementEvidence, SessionObservation}:
+        raw = object.__getattribute__(value, "__dict__")
+        return {name: _safe_hash_value(dict.__getitem__(raw, name)) for name in type(value).model_fields}
+    raise TypeError("unsupported contract value")
 
 
 def _same_scope(left: IBKRSessionBinding, right: AuthenticEntitlementEvidence) -> bool:

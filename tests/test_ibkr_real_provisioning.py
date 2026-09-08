@@ -57,6 +57,16 @@ def graph():
         read_only=True,
         lifecycle=lifecycle,
     )
+    entitlement_lifecycle = seal_contract_test(
+        EvidenceLifecycle,
+        "lifecycle_hash",
+        requested_at=now - dt.timedelta(minutes=3),
+        available_at=now - dt.timedelta(minutes=3),
+        effective_at=now - dt.timedelta(minutes=3),
+        verified_at=now - dt.timedelta(minutes=2),
+        expires_at=now + dt.timedelta(hours=1),
+        revoked_at=None,
+    )
     entitlement = seal_contract_test(
         AuthenticEntitlementEvidence,
         "evidence_hash",
@@ -66,7 +76,7 @@ def graph():
         entitlement_authority_reference_digest=D("external-authority"),
         entitlement_evidence_digest=D("external-evidence"),
         entitlement_scope_digest=D("scope"),
-        lifecycle=lifecycle,
+        lifecycle=entitlement_lifecycle,
         state=EvidenceState.CONTRACT_TEST_ONLY,
     )
     observation = seal_contract_test(
@@ -174,3 +184,122 @@ def test_replay_reseal_and_local_self_authentication_cannot_elevate():
     result = assess_contract_test(session, replay, observation, assessed_at=now)
     assert result.authentic_entitlement_real is EvidenceState.NOT_PROVISIONED
     assert result.provider_admission_real is EvidenceState.NOT_PROVISIONED
+
+
+@pytest.mark.parametrize("hook", ("str", "repr", "model_dump", "property"))
+def test_hostile_conversion_hooks_are_never_invoked_or_leaked(hook):
+    marker = "LEAK_ACCOUNT_U1234567_PASSWORD_hunter2"
+
+    class Hostile:
+        def __str__(self):
+            raise RuntimeError(marker)
+
+        def __repr__(self):
+            raise RuntimeError(marker)
+
+        def model_dump(self):
+            raise RuntimeError(marker)
+
+        @property
+        def payload(self):
+            raise RuntimeError(marker)
+
+    hostile = Hostile()
+    assert hook in {"str", "repr", "model_dump", "property"}
+    with pytest.raises(IBKRRealProvisioningError) as exc:
+        seal_contract_test(EvidenceLifecycle, "lifecycle_hash", requested_at=hostile)
+    rendered = "".join(traceback.format_exception(exc.value))
+    assert marker not in rendered
+    assert exc.value.__cause__ is exc.value.__context__ is None
+
+
+def test_hostile_subclass_and_duck_rebuild_paths_are_contained():
+    session, entitlement, observation, now = graph()
+    marker = "LEAK_ACCOUNT_U7654321_TOKEN_secret"
+
+    class HostileSubclass(AuthenticEntitlementEvidence):
+        def model_dump(self, *args, **kwargs):
+            raise RuntimeError(marker)
+
+    class HostileDuck:
+        def model_dump(self, *args, **kwargs):
+            raise RuntimeError(marker)
+
+        def __repr__(self):
+            raise RuntimeError(marker)
+
+    hostile_values = (
+        HostileSubclass.model_construct(**entitlement.model_dump(mode="python")),
+        HostileDuck(),
+    )
+    for hostile in hostile_values:
+        with pytest.raises(IBKRRealProvisioningError) as exc:
+            assess_contract_test(session, hostile, observation, assessed_at=now)
+        rendered = "".join(traceback.format_exception(exc.value))
+        assert marker not in rendered
+        assert exc.value.__cause__ is exc.value.__context__ is None
+
+
+def test_entitlement_and_observation_must_follow_bound_session_context():
+    session, entitlement, observation, now = graph()
+    before = session.lifecycle.effective_at - dt.timedelta(microseconds=1)
+    early_lifecycle = reseal(
+        entitlement.lifecycle,
+        EvidenceLifecycle,
+        "lifecycle_hash",
+        requested_at=before - dt.timedelta(seconds=3),
+        available_at=before - dt.timedelta(seconds=2),
+        effective_at=before - dt.timedelta(seconds=1),
+        verified_at=before,
+    )
+    early_entitlement = reseal(
+        entitlement, AuthenticEntitlementEvidence, "evidence_hash", lifecycle=early_lifecycle
+    )
+    early_observation = reseal(
+        observation, SessionObservation, "observation_digest", observed_at=before
+    )
+    for candidate_entitlement, candidate_observation in (
+        (early_entitlement, observation),
+        (entitlement, early_observation),
+    ):
+        with pytest.raises(IBKRRealProvisioningError):
+            assess_contract_test(
+                session, candidate_entitlement, candidate_observation, assessed_at=now
+            )
+
+
+def test_observation_after_session_expiry_or_revocation_fails_closed():
+    session, entitlement, observation, now = graph()
+    for cutoff in ("expiry", "revocation"):
+        changes = (
+            {"expires_at": observation.observed_at}
+            if cutoff == "expiry"
+            else {"revoked_at": observation.observed_at}
+        )
+        lifecycle = reseal(session.lifecycle, EvidenceLifecycle, "lifecycle_hash", **changes)
+        changed = reseal(session, IBKRSessionBinding, "binding_hash", lifecycle=lifecycle)
+        linked_entitlement = reseal(
+            entitlement,
+            AuthenticEntitlementEvidence,
+            "evidence_hash",
+            session_binding_hash=changed.binding_hash,
+        )
+        linked_observation = reseal(
+            observation,
+            SessionObservation,
+            "observation_digest",
+            session_binding_hash=changed.binding_hash,
+        )
+        with pytest.raises(IBKRRealProvisioningError):
+            assess_contract_test(changed, linked_entitlement, linked_observation, assessed_at=now)
+
+
+def test_exact_session_effective_boundary_is_valid():
+    session, entitlement, observation, now = graph()
+    observation = reseal(
+        observation,
+        SessionObservation,
+        "observation_digest",
+        observed_at=session.lifecycle.effective_at,
+    )
+    assert assess_contract_test(session, entitlement, observation, assessed_at=now)
