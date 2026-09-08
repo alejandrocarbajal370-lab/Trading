@@ -1,10 +1,24 @@
 # Trading
 
+## Approved sequence — Step 1
+
+The exact `NEXT_BLOCK` is **IBKR REAL Provisioning + Authentic Entitlement Evidence Foundation**
+(`CONTRACT_TEST_ONLY`; REAL `NOT_PROVISIONED`). Operational read-only session evidence is strictly
+separate from authentic entitlement evidence: connectivity, callbacks, ticks, and
+`DELAYED`/`REALTIME` mode confer no trust or provider admission. References are opaque,
+digest-only, and exclude credentials, account IDs, and raw secrets. See ADR 0015.
+
+The intended later direction is **External trust / attestation / verifier REAL**, but the
+machine-readable successor remains `UNDETERMINED / NOT_AUTHORIZED /
+ARCHITECTURAL_DECISION_REQUIRED`. All 10/10 gates remain `OPEN_EXTERNAL`; REAL provider admission,
+`QVM_NOT_READY`, `INSUFFICIENT_REAL_DATA`, and `NO_TRADE` remain fixed.
+
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
 Phases 6 and 7A/7B/7C/7D/7E/7F are integrated; Phase 7F was squash merged as PR #25.
-The current authorized block is the contract-only **External Trust Backend Provisioning Contract
-Foundation** described in `docs/adr/0013-external-trust-backend-provisioning-contract-foundation.md`.
+The current authorized block is the contract-only **IBKR REAL Provisioning + Authentic Entitlement
+Evidence Foundation** described in
+`docs/adr/0015-ibkr-real-provisioning-authentic-entitlement-evidence-foundation.md`.
 **Phase 7G — Governed External Provisioning Foundation** is proposed in draft form as a
 contract-test-only boundary in
 [`docs/adr/0002-phase7g-governed-external-provisioning.md`](docs/adr/0002-phase7g-governed-external-provisioning.md).

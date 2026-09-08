@@ -21,14 +21,14 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_admission_aggregation_foundation_follows_completed_trust_backend():
+def test_ibkr_real_provisioning_foundation_follows_completed_aggregation():
     assert (
         NEXT_BLOCK.name
-        == RoadmapBlock.GOVERNED_SUFFICIENT_OBSERVATION_POLICY_PROVIDER_ADMISSION_EVIDENCE_AGGREGATION_FOUNDATION
+        == RoadmapBlock.IBKR_REAL_PROVISIONING_AUTHENTIC_ENTITLEMENT_EVIDENCE_FOUNDATION
     )
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.EXTERNAL_TRUST_BACKEND_PROVISIONING_CONTRACT_FOUNDATION
+        == RoadmapBlock.GOVERNED_SUFFICIENT_OBSERVATION_POLICY_PROVIDER_ADMISSION_EVIDENCE_AGGREGATION_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -43,7 +43,7 @@ def test_admission_aggregation_foundation_follows_completed_trust_backend():
     assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
     assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"
     assert NEXT_BLOCK.scope == tuple(NextBlockScope)
-    assert NEXT_BLOCK.evidence_states == ("OBSERVED_UNTRUSTED",)
+    assert NEXT_BLOCK.evidence_states == ("CONTRACT_TEST_ONLY", "NOT_PROVISIONED")
 
 
 def test_roadmap_rejects_self_reference_or_missing_foundation_authorization():
@@ -72,10 +72,7 @@ def test_roadmap_json_copy_construct_and_direct_validation_fail_closed():
 
 def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
-    adr = (
-        ROOT
-        / "docs/adr/0014-governed-sufficient-observation-admission-aggregation-foundation.md"
-    ).read_text()
+    adr = (ROOT / "docs/adr/0015-ibkr-real-provisioning-authentic-entitlement-evidence-foundation.md").read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
         assert NEXT_BLOCK.name.value in normalized
