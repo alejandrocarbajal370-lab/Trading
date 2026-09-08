@@ -17,14 +17,15 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from governance.canonical import typed_hash
 from governance.external_trust_backend import (
+    PrincipalRole,
     ProvisioningContractAssessment,
     ProvisioningEvidenceManifest,
 )
 from governance.ibkr_external_attestation import ProvisioningState
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "provider-admission-evidence-aggregation-v1"
-POLICY_VERSION = "governed-sufficient-observations-v1"
+CONTRACT_VERSION = "provider-admission-evidence-aggregation-v2"
+POLICY_VERSION = "governed-sufficient-observations-v2"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
 
@@ -78,6 +79,11 @@ class SufficientObservationPolicy(_Model):
     approved_at: dt.datetime
     effective_at: dt.datetime
     expires_at: dt.datetime
+    revoked_at: dt.datetime | None = None
+    authority_registry_reference_digest: str = Field(pattern=SHA256)
+    authority_principal_hash: str = Field(pattern=SHA256)
+    revocation_owner_principal_hash: str = Field(pattern=SHA256)
+    revocation_context_digest: str = Field(pattern=SHA256)
     policy_authority_reference_digest: str = Field(pattern=SHA256)
     rationale_digest: str = Field(pattern=SHA256)
     policy_hash: str = Field(pattern=SHA256)
@@ -88,10 +94,21 @@ class SufficientObservationPolicy(_Model):
         _identifier(self.adapter_id)
         _identifier(self.dataset_id)
         _identifier(self.route_id)
-        for value in (self.approved_at, self.effective_at, self.expires_at):
-            _utc(value)
+        for value in (self.approved_at, self.effective_at, self.expires_at, self.revoked_at):
+            if value is not None:
+                _utc(value)
         if not self.approved_at <= self.effective_at < self.expires_at:
             raise ValueError("invalid policy lifecycle")
+        if self.revoked_at is not None and self.revoked_at <= self.approved_at:
+            raise ValueError("invalid policy revocation lifecycle")
+        expected_context = typed_hash({
+            "contract": CONTRACT_VERSION,
+            "authority_registry": self.authority_registry_reference_digest,
+            "authority_principal": self.authority_principal_hash,
+            "revocation_owner_principal": self.revocation_owner_principal_hash,
+        })
+        if self.revocation_context_digest != expected_context:
+            raise ValueError("invalid policy revocation context")
         if self.required_gates != tuple(EvidenceGate):
             raise ValueError("policy must require all canonical gates exactly once")
         if self.minimum_observation_span <= dt.timedelta(0):
@@ -124,6 +141,10 @@ class BoundObservationEvidence(_Model):
     provenance_digest: str = Field(pattern=SHA256)
     lineage_digest: str = Field(pattern=SHA256)
     custody_receipt_digest: str = Field(pattern=SHA256)
+    replay_service_reference_digest: str = Field(pattern=SHA256)
+    custody_evidence_reference_digest: str = Field(pattern=SHA256)
+    worm_evidence_reference_digest: str = Field(pattern=SHA256)
+    legal_approval_reference_digest: str = Field(pattern=SHA256)
     evidence_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
@@ -148,6 +169,8 @@ class GateEvidenceBinding(_Model):
     route_id: str = Field(pattern=IDENTIFIER)
     policy_hash: str = Field(pattern=SHA256)
     external_evidence_digest: str = Field(pattern=SHA256)
+    applicable_gates: tuple[EvidenceGate, ...]
+    applicability_binding_digest: str = Field(pattern=SHA256)
     authority_registry_digest: str = Field(pattern=SHA256)
     trust_anchor_digest: str = Field(pattern=SHA256)
     independent_verifier_digest: str = Field(pattern=SHA256)
@@ -168,6 +191,18 @@ class GateEvidenceBinding(_Model):
             raise ValueError("invalid gate evidence lifecycle")
         if self.revoked_at is not None and self.revoked_at <= self.verified_at:
             raise ValueError("invalid gate revocation lifecycle")
+        if not self.applicable_gates or tuple(
+            gate for gate in EvidenceGate if gate in self.applicable_gates
+        ) != self.applicable_gates or self.gate not in self.applicable_gates:
+            raise ValueError("invalid gate applicability")
+        expected_applicability = typed_hash({
+            "contract": CONTRACT_VERSION,
+            "policy": self.policy_hash,
+            "external_evidence": self.external_evidence_digest,
+            "applicable_gates": [gate.value for gate in self.applicable_gates],
+        })
+        if self.applicability_binding_digest != expected_applicability:
+            raise ValueError("invalid gate applicability binding")
         _hash(self, "gate_hash")
         return self
 
@@ -206,26 +241,18 @@ class AdmissionEvidenceBundle(_Model):
             raise ValueError("duplicate observation identity")
         if len({item.evidence_hash for item in observations}) != len(observations):
             raise ValueError("duplicate observation evidence")
-        semantic_identities = {
-            (
-                item.provider,
-                item.adapter_id,
-                item.dataset_id,
-                item.security_master_id,
-                item.con_id,
-                item.request_hash,
-                item.observation_binding_hash,
-                item.observed_at,
-                item.material_digest,
-                item.provenance_digest,
-                item.lineage_digest,
-            )
-            for item in observations
-        }
+        semantic_identities = {_semantic_observation_identity(item) for item in observations}
         if len(semantic_identities) != len(observations):
             raise ValueError("same observation counted under aliases")
         if observations != tuple(sorted(observations, key=lambda item: item.observed_at)):
             raise ValueError("observations must be chronologically ordered")
+        by_external_evidence: dict[str, list[GateEvidenceBinding]] = {}
+        for gate in gates:
+            by_external_evidence.setdefault(gate.external_evidence_digest, []).append(gate)
+        for shared in by_external_evidence.values():
+            actual = tuple(item.gate for item in shared)
+            if any(item.applicable_gates != actual for item in shared):
+                raise ValueError("external evidence reused without bound multi-applicability")
         _hash(self, "bundle_hash")
         return self
 
@@ -291,6 +318,8 @@ def aggregate_contract_test_admission_evidence(
             raise ValueError("provisioning assessment binding mismatch")
         if package.authenticity_assessment_hash != provisioning.authenticity_assessment_hash:
             raise ValueError("authenticity assessment binding mismatch")
+        if provisioning.observation_binding_hash != manifest.observation_binding_hash:
+            raise ValueError("canonical observation binding mismatch")
         expected_manifest = (
             package.provider,
             package.security_master_id,
@@ -307,10 +336,38 @@ def aggregate_contract_test_admission_evidence(
         )
         if expected_manifest != actual_manifest:
             raise ValueError("upstream manifest lineage swap")
+        principals = {principal.role: principal for principal in manifest.principals}
+        authority = principals[PrincipalRole.AUTHORITY]
+        revocation_owner = principals[PrincipalRole.REVOCATION_OWNER]
+        verifier = principals[PrincipalRole.VERIFIER]
+        for principal in manifest.principals:
+            if not principal.available_at <= assessed_at < principal.expires_at:
+                raise ValueError("policy authority context unavailable")
+            if principal.revoked_at is not None and assessed_at >= principal.revoked_at:
+                raise ValueError("policy authority context revoked")
+        expected_policy_authority = typed_hash({
+            "contract": CONTRACT_VERSION,
+            "authority_registry": manifest.authority_registry_reference_digest,
+            "authority_principal": authority.principal_hash,
+        })
+        if (
+            rule.authority_registry_reference_digest
+            != manifest.authority_registry_reference_digest
+            or rule.authority_principal_hash != authority.principal_hash
+            or rule.revocation_owner_principal_hash != revocation_owner.principal_hash
+            or rule.policy_authority_reference_digest != expected_policy_authority
+        ):
+            raise ValueError("policy authority mismatch")
+        if not rule.approved_at <= assessed_at:
+            raise ValueError("policy approval is future or unavailable")
         if not rule.effective_at <= assessed_at < rule.expires_at:
             raise ValueError("policy unavailable at assessment time")
+        if rule.revoked_at is not None and assessed_at >= rule.revoked_at:
+            raise ValueError("policy revoked at assessment time")
         if package.assembled_at > assessed_at:
             raise ValueError("bundle assembled in the future")
+        if package.assembled_at < max(manifest.effective_at, provisioning.assessed_at):
+            raise ValueError("bundle predates required upstream evidence")
         if len(package.observations) < rule.minimum_distinct_observations:
             raise ValueError("insufficient distinct observations")
         if package.observations[-1].observed_at - package.observations[0].observed_at < rule.minimum_observation_span:
@@ -328,9 +385,30 @@ def aggregate_contract_test_admission_evidence(
                 raise ValueError("observation entitlement swap")
             if observation.provisioning_assessment_hash != provisioning.assessment_hash:
                 raise ValueError("observation provisioning swap")
+            if observation.observation_binding_hash != manifest.observation_binding_hash:
+                raise ValueError("observation binding swap")
+            references = (
+                observation.replay_service_reference_digest,
+                observation.custody_evidence_reference_digest,
+                observation.worm_evidence_reference_digest,
+                observation.legal_approval_reference_digest,
+            )
+            canonical_references = (
+                manifest.replay_service_reference_digest,
+                manifest.custody_evidence_reference_digest,
+                manifest.worm_evidence_reference_digest,
+                manifest.legal_approval_reference_digest,
+            )
+            if references != canonical_references:
+                raise ValueError("observation replay, custody, WORM or legal swap")
+            if not (
+                observation.observed_at <= observation.authenticated_at
+                <= observation.verifier_time <= package.assembled_at <= assessed_at
+            ):
+                raise ValueError("invalid observation aggregation causality")
             if assessed_at - observation.observed_at > rule.maximum_observation_age:
                 raise ValueError("stale observation")
-            if abs(observation.verifier_time - assessed_at) > rule.maximum_verifier_skew:
+            if assessed_at - observation.verifier_time > rule.maximum_verifier_skew:
                 raise ValueError("mixed verifier time")
         for gate in package.gates:
             _same_scope(rule, gate)
@@ -344,6 +422,10 @@ def aggregate_contract_test_admission_evidence(
                 or gate.trust_anchor_digest != manifest.trust_anchor_reference_digest
             ):
                 raise ValueError("gate authority or trust-anchor swap")
+            if gate.independent_verifier_digest != verifier.external_identity_digest:
+                raise ValueError("gate verifier swap")
+            if gate.verified_at > package.assembled_at:
+                raise ValueError("bundle predates gate evidence")
             if not gate.verified_at <= assessed_at < gate.expires_at:
                 raise ValueError("stale or future gate evidence")
             if gate.revoked_at is not None and assessed_at >= gate.revoked_at:
@@ -412,6 +494,25 @@ def _same_scope(policy: SufficientObservationPolicy, value: Any) -> None:
         raise ValueError("provider, dataset, security or route swap")
     if hasattr(value, "adapter_id") and value.adapter_id != policy.adapter_id:
         raise ValueError("adapter swap")
+
+
+def _semantic_observation_identity(value: BoundObservationEvidence) -> str:
+    """Derive identity from governed immutable content, never caller aliases or seals."""
+    return typed_hash({
+        "contract": CONTRACT_VERSION,
+        "provider": value.provider,
+        "adapter": value.adapter_id,
+        "dataset": value.dataset_id,
+        "security_master": value.security_master_id,
+        "con_id": value.con_id,
+        "request": value.request_hash,
+        "canonical_binding": value.observation_binding_hash,
+        "observed_at": value.observed_at,
+        "material": value.material_digest,
+        "provenance": value.provenance_digest,
+        "lineage": value.lineage_digest,
+        "custody_receipt": value.custody_receipt_digest,
+    })
 
 
 def _deep(expected: type[T], value: Any) -> T:

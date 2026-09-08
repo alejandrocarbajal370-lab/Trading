@@ -18,32 +18,41 @@ provisioned REAL evidence can be evaluated; it does not provide that external ev
 
 ## Governed sufficient-observation policy
 
-The policy is a content-addressed, authority-referenced, versioned object. It pins provider,
+The remediated v2 policy is a content-addressed, authority-referenced, versioned object. It pins provider,
 adapter, dataset, permanent security identity and route; a minimum count of distinct observations;
-a minimum time span; maximum age; verifier-time skew; approval/effective/expiry lifecycle; all ten
-canonical gates; and a separate rationale digest. Contract tests use three distinct observations
+a minimum time span; maximum age; verifier-time skew; approval/effective/expiry/revocation
+lifecycle; all ten canonical gates; and a separate rationale digest. Its authority registry,
+AUTHORITY principal, REVOCATION_OWNER principal and derived revocation context are bound to the
+post-#37 manifest. Contract tests use three distinct observations
 over at least twenty minutes solely to exercise the mechanism. Those numbers are fixture policy
 data, not an assertion that they are commercially, statistically or operationally sufficient for
 REAL admission. A future external governance decision must provision the approved policy.
 
 Observation IDs and evidence hashes must both be unique, the sequence is chronological, and age
-and verifier-time rules are rechecked at assessment time. Duplicate/replayed observations,
-alias-based double counting, inadequate span, stale observations and mixed verifier times fail
-closed.
+and verifier-time rules are rechecked at assessment time. A semantic identity is independently
+derived from the canonical observation binding plus governed material, provenance, lineage,
+timestamp and custody receipt, so aliases, wrappers and reseals cannot add another count.
+Duplicate/replayed observations, inadequate span, future/stale observations and mixed verifier
+times fail closed.
 
 ## Exact aggregation and gate semantics
 
 The bundle binds the exact provider, adapter, dataset, security-master ID, IBKR `conId`, request,
 observation binding, authenticity assessment, provisioning backend/manifest/assessment,
 entitlement reference, route, observation/authentication/verifier timestamps, material,
-provenance, lineage, custody receipt, policy and ten ordered gate-evidence hashes. Each gate record
+provenance, lineage, custody receipt, canonical replay/custody/WORM/legal references, policy and ten
+ordered gate-evidence hashes. Each gate record
 also binds provider, dataset, security, `conId`, request, route and policy plus external evidence,
-authority registry, trust anchor, independent verifier and lifecycle references.
+authority registry, trust anchor, the manifest's authorized VERIFIER and lifecycle references.
+Gate evidence is gate-specific by default; reuse is rejected unless every affected gate carries
+the same explicit, ordered, typed and content-bound multi-applicability declaration.
 
 Public boundaries deeply reconstruct nested primitives and reject extras, mutated model copies,
 constructed models, Unicode/noncanonical aliases, hash mismatches, cross-provider, adapter,
 dataset, security, request, observation, assessment, backend, entitlement, route, policy or gate
-swaps. Future, unavailable, expired or revoked evidence fails closed. Bundle resealing cannot alter
+swaps. Explicit UTC causality requires observation <= authentication <= verifier time <= assembly
+<= assessment, while preserving the upstream observation/authenticity/manifest/provisioning order.
+Future, unavailable, expired or revoked evidence fails closed. Bundle resealing cannot alter
 semantics because every nested hash and upstream binding is independently revalidated.
 
 `CONTRACT_TEST_ONLY` gate records never derive `VERIFIED`. A successful aggregation means only

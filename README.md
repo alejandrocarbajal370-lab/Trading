@@ -597,9 +597,13 @@ Aggregation Foundation**, with
 `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
 `NEW_PR_REQUIRED`. It defines a versioned, authority-referenced sufficient-observation policy and
 binds distinct observations to exact provider, adapter, dataset, security/`conId`, request,
-authenticity, provisioning, entitlement, route, temporal, material, provenance, lineage, custody
-and all ten ordered gate-evidence identities. Replays, aliases, cross-scope swaps, partial gates,
-stale/revoked evidence and mixed verifier times fail closed. A contract-test success never closes a
+authenticity, provisioning, entitlement, route, temporal, material, provenance, lineage, custody,
+canonical replay/custody/WORM/legal references and all ten ordered gate-evidence identities. Policy
+revocation is bound to the manifest authority registry plus its AUTHORITY and REVOCATION_OWNER;
+gate verification is bound to its VERIFIER. Semantic observation identity prevents alias/reseal
+inflation, and gate evidence is gate-specific unless typed multi-applicability is explicitly bound.
+Replays, cross-scope swaps, partial gates, stale/revoked/future evidence and broken UTC causality
+fail closed. A contract-test success never closes a
 REAL gate: 10/10 remain `OPEN_EXTERNAL`, and REAL observations, provider admission, external
 custody/WORM/legal, trust and entitlement remain `NOT_PROVISIONED`. See ADR 0014. The
 machine-readable successor remains `UNDETERMINED / NOT_AUTHORIZED /
