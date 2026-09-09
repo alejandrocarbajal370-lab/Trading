@@ -16,8 +16,10 @@ has nine independent capability rows: receive/access, internal research, durable
 retention, derived data/artifacts, replay/audit, redistribution, paper-trading use, and
 live-execution use. Every row starts `REVIEW_REQUIRED`; only matching current requirement and
 evidence can make that row `CONTRACT_TEST_ONLY`. Missing rows never inherit permission from another
-row. A denied or ambiguous row blocks, while an unknown row requires review. Storage and replay
-also remain under review without an explicit retention row.
+row. A denied or ambiguous row blocks, while an unknown row requires review. Durable storage and
+replay/audit additionally depend on the semantic state of retention: missing, unknown,
+not-provisioned, or review-required retention keeps both dependents under review, and denied or
+ambiguous retention blocks both. A permitted retention row never overrides a denied dependent.
 
 Evidence is content-addressed to the exact requirement ID/version/hash and policy ID/version/hash,
 as well as jurisdiction, scope, use class, provider, dataset, route and legal subject/entity. A v1
@@ -31,9 +33,14 @@ distinct from one another. The internal evidence operator, reviewer and approver
 assessment actors. This complements ADR 0016 without duplicating its trust roles or provisioning an
 external trust path.
 `LegalAssessmentEvidence` is an internal synthesis and cannot self-promote. `LegalAdmissionDecision`
-enforces distinct evidence operator, reviewer and approver identities and preserves all REAL states
-as `NOT_PROVISIONED`. External counsel and authorities are source identities, not new internal trust
-roles; the seven ADR 0016 trust roles are not duplicated.
+enforces distinct evidence operator, reviewer and approver identities and represents every REAL
+state only as `NOT_PROVISIONED`. Its ordinary `model_copy(update=...)` and public
+`model_construct(...)` paths perform full validation, including the hash and fixed safety fields,
+so they cannot widen a decision. The official decision-ingress boundary accepts only the exact DTO,
+a plain dictionary, or JSON, then reconstructs and fully revalidates it; subclasses, duck wrappers,
+stale hashes, and externally reconstructed forbidden states fail closed. External counsel and
+authorities are source identities, not new internal trust roles; the seven ADR 0016 trust roles are
+not duplicated.
 
 ## Architecture versus legal truth
 
@@ -44,13 +51,13 @@ graph reaches only `CONTRACT_TEST_ONLY`. The REAL entry point fails closed becau
 authority registry, trust anchor, external verification and legal admission policy are not
 provisioned.
 
-Committed data contains opaque reference identifiers, versions, metadata and digests only. It must not
-contain account numbers, TIN/RFC, passport data, personal addresses, credentials, secrets or the
-contents of privileged legal advice. Error and string representations are deliberately generic or
-redacted. Public `repr`, `str`, `model_dump`, `model_dump_json` and validation/error boundaries do
-not disclose identifier values: serialization replaces identifier-bearing fields with deterministic
-opaque digest references. Internal hashing and validation use the original validated values through
-a private trusted path; public serialized output is deliberately not a round-trip persistence format.
+Public DTOs contain opaque, versioned digest references, versions, metadata and content digests only.
+Raw account numbers, TIN/RFC, passport data, personal addresses, credentials, secrets, and privileged
+legal-advice contents are canonicalized outside model storage and never retained as public model
+attributes. Hashing uses the canonical opaque references; it does not require retaining the raw input.
+Consequently direct or base Pydantic serialization, nested/container serialization, JSON round trips,
+copies, `repr`, `str`, model dictionaries, and generic validation errors expose only opaque references,
+not the original identifier. Public serialization remains safely round-trippable through validation.
 
 ## Point-in-time and conflict semantics
 

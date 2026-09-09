@@ -16,6 +16,10 @@ from governance.phase7e import EvidenceGate, GateState
 CONTRACT_VERSION = "licensing-legal-governance-v2"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
+OPAQUE_PREFIX = "opaque:v1:"
+_OPAQUE_FIELDS = {
+    "provider_ref", "dataset_ref", "route_ref",
+}
 
 
 class LegalGovernanceError(ValueError):
@@ -114,6 +118,30 @@ class _Model(BaseModel):
 
     def __repr_args__(self):
         return [("redacted", True)]
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonicalize_public_identifiers(cls, value: Any):
+        if type(value) is not dict:
+            return value
+        return {
+            key: _opaque(item) if _is_opaque_field(key) and type(item) is str else item
+            for key, item in value.items()
+        }
+
+    def model_copy(self, *, update: dict[str, Any] | None = None, deep: bool = False):
+        """Copy only through full validation; Pydantic's unchecked update is unsafe here."""
+        raw = BaseModel.model_dump(self, mode="python")
+        if update:
+            raw.update(update)
+        del deep  # full validation reconstructs all nested immutable values
+        return type(self).model_validate(raw)
+
+    @classmethod
+    def model_construct(cls, _fields_set: set[str] | None = None, **values: Any):
+        """Keep the public construction API validated despite Pydantic's unsafe default."""
+        del _fields_set
+        return cls.model_validate(values)
 
     def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         """Public serialization is a disclosure boundary, not a persistence format."""
@@ -343,6 +371,11 @@ class LegalAdmissionDecision(_Model):
         return self
 
 
+def validate_legal_admission_decision(value: Any) -> LegalAdmissionDecision:
+    """Official boundary for external, copied, constructed, or serialized decisions."""
+    return _rebuild(LegalAdmissionDecision, value)
+
+
 def assess_contract_test_legal(
     *, jurisdictions: tuple[Any, ...], requirements: tuple[Any, ...],
     evidence: tuple[Any, ...], reliance_claims: tuple[Any, ...], assessed_at: dt.datetime,
@@ -443,9 +476,14 @@ def assess_contract_test_legal(
             if (requirement.status is RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY
                     and requirement.right_status is RightStatus.GRANTED_CONTRACT_TEST_ONLY):
                 capability_states[requirement.capability] = AdmissionState.CONTRACT_TEST_ONLY
-        if LegalCapability.RETENTION not in requirements_by_capability:
+        retention_state = capability_states[LegalCapability.RETENTION]
+        if retention_state is not AdmissionState.CONTRACT_TEST_ONLY:
             for dependent in (LegalCapability.DURABLE_STORAGE, LegalCapability.REPLAY_AUDIT):
-                capability_states[dependent] = AdmissionState.REVIEW_REQUIRED
+                if (retention_state is AdmissionState.BLOCKED
+                        or capability_states[dependent] is AdmissionState.BLOCKED):
+                    capability_states[dependent] = AdmissionState.BLOCKED
+                else:
+                    capability_states[dependent] = AdmissionState.REVIEW_REQUIRED
         assessment = seal_contract_test(
             LegalAssessmentEvidence, "assessment_hash", assessment_id=assessment_id,
             assessed_at=assessed_at, jurisdiction_hashes=tuple(j.reference_hash for j in js),
@@ -506,6 +544,7 @@ def seal_contract_test(model: type[T], hash_field: str, **values: Any) -> T:
     try:
         if _SEAL_FIELDS.get(model) != hash_field or hash_field in values:
             raise TypeError
+        values = _canonicalize_identifiers(values)
         values[hash_field] = typed_hash(values)
         return model(**values)
     except LegalGovernanceError:
@@ -575,9 +614,32 @@ def _same_route(left: Any, right: Any) -> bool:
 def _redact(value: Any, key: str = "") -> Any:
     sensitive = key.endswith("_id") or key in {"provider_ref", "dataset_ref", "route_ref"}
     if sensitive and isinstance(value, str):
-        return f"opaque:{typed_hash(value)[:16]}"
+        try:
+            return _opaque(value)
+        except ValueError:
+            return f"{OPAQUE_PREFIX}{typed_hash(value)}"
     if isinstance(value, dict):
         return {item_key: _redact(item, item_key) for item_key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_redact(item) for item in value]
     return value
+
+
+def _is_opaque_field(key: str) -> bool:
+    return key.endswith("_id") or key in _OPAQUE_FIELDS
+
+
+def _opaque(value: str) -> str:
+    if value.startswith(OPAQUE_PREFIX):
+        digest = value.removeprefix(OPAQUE_PREFIX)
+        if len(digest) != 64 or any(character not in "0123456789abcdef" for character in digest):
+            raise ValueError
+        return value
+    return f"{OPAQUE_PREFIX}{typed_hash(value)}"
+
+
+def _canonicalize_identifiers(values: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: _opaque(value) if _is_opaque_field(key) and type(value) is str else value
+        for key, value in values.items()
+    }

@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+from copy import copy, deepcopy
 
 import pytest
 from pydantic import BaseModel
@@ -7,6 +8,7 @@ from pydantic import BaseModel
 from governance.legal_governance import (
     AdmissionState,
     EvidenceSourceType,
+    LegalAdmissionDecision,
     LegalCapability,
     LegalEvidenceReference,
     LegalGovernanceError,
@@ -19,6 +21,7 @@ from governance.legal_governance import (
     VerificationState,
     assess_contract_test_legal,
     seal_contract_test,
+    validate_legal_admission_decision,
 )
 
 UTC = dt.UTC
@@ -198,10 +201,11 @@ def test_copy_construct_json_hash_mismatch_and_reseal_never_widen_rights():
                      RightStatus.DENIED),
     })
     requirement = requirements[0]
-    forged = (
+    with pytest.raises(LegalGovernanceError):
         requirement.model_copy(update={
-            "right_status": RightStatus.GRANTED_CONTRACT_TEST_ONLY}),
-        LegalRequirementRecord.model_construct(
+            "right_status": RightStatus.GRANTED_CONTRACT_TEST_ONLY})
+    forged = (
+        BaseModel.model_construct.__func__(LegalRequirementRecord,
             **{**trusted(requirement),
                "right_status": RightStatus.GRANTED_CONTRACT_TEST_ONLY}),
         json.dumps({**BaseModel.model_dump(requirement, mode="json"),
@@ -240,3 +244,140 @@ def test_public_serialization_uses_only_opaque_identifier_digests():
     assert dumped["subject_id"].startswith("opaque:")
     assert dumped["issuer_id"].startswith("opaque:")
     assert dumped["provider_ref"].startswith("opaque:")
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"legal_licensing_real": "REAL"},
+        {"live_execution_enabled": True},
+        {"legal_licensing_real": "REAL", "live_execution_enabled": True},
+        {"decision_state": AdmissionState.BLOCKED},
+    ],
+)
+def test_decision_model_copy_update_revalidates_all_fields_and_hash(update):
+    jurisdiction, requirements, evidence = graph()
+    _, decision = assess(jurisdiction, requirements, evidence)
+    with pytest.raises(LegalGovernanceError):
+        decision.model_copy(update=update)
+    assert decision.model_copy() == decision
+    assert copy(decision) == decision
+    assert deepcopy(decision) == decision
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        {"legal_licensing_real": "REAL"},
+        {"live_execution_enabled": True},
+        {"legal_licensing_real": "REAL", "live_execution_enabled": True},
+    ],
+)
+def test_official_decision_boundary_rejects_construct_json_subclass_duck_and_nested_forgery(
+    forbidden,
+):
+    jurisdiction, requirements, evidence = graph()
+    _, decision = assess(jurisdiction, requirements, evidence)
+    raw = BaseModel.model_dump(decision, mode="python")
+    forged_raw = {**raw, **forbidden}
+    with pytest.raises(LegalGovernanceError):
+        LegalAdmissionDecision.model_construct(**forged_raw)
+    constructed = BaseModel.model_construct.__func__(LegalAdmissionDecision, **forged_raw)
+
+    class DecisionSubclass(LegalAdmissionDecision):
+        pass
+
+    class Duck:
+        def __init__(self):
+            self.__dict__.update(forged_raw)
+
+    class Envelope(BaseModel):
+        decision: dict
+
+    candidates = (
+        constructed,
+        json.dumps(forged_raw, default=str),
+        BaseModel.model_construct.__func__(DecisionSubclass, **forged_raw),
+        Duck(),
+        Envelope(decision=forged_raw).model_dump()["decision"],
+        json.loads(Envelope(decision=forged_raw).model_dump_json())["decision"],
+    )
+    for candidate in candidates:
+        with pytest.raises(LegalGovernanceError):
+            validate_legal_admission_decision(candidate)
+    assert validate_legal_admission_decision(decision) == decision
+    assert validate_legal_admission_decision(decision.model_dump_json()) == decision
+
+
+@pytest.mark.parametrize(
+    ("status", "right", "expected"),
+    [
+        (RequirementStatus.UNKNOWN, RightStatus.GRANTED_CONTRACT_TEST_ONLY,
+         AdmissionState.REVIEW_REQUIRED),
+        (RequirementStatus.REQUIRES_EXTERNAL_REVIEW, RightStatus.GRANTED_CONTRACT_TEST_ONLY,
+         AdmissionState.REVIEW_REQUIRED),
+        (RequirementStatus.NOT_PROVISIONED, RightStatus.GRANTED_CONTRACT_TEST_ONLY,
+         AdmissionState.REVIEW_REQUIRED),
+        (RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY, RightStatus.UNKNOWN,
+         AdmissionState.REVIEW_REQUIRED),
+        (RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY, RightStatus.AMBIGUOUS,
+         AdmissionState.BLOCKED),
+        (RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY, RightStatus.DENIED,
+         AdmissionState.BLOCKED),
+    ],
+)
+def test_retention_state_semantically_caps_storage_and_replay(status, right, expected):
+    jurisdiction, requirements, evidence = graph(overrides={
+        LegalCapability.RETENTION: (status, right),
+    })
+    _, decision = assess(jurisdiction, requirements, evidence)
+    assert capability_state(decision, LegalCapability.DURABLE_STORAGE) is expected
+    assert capability_state(decision, LegalCapability.REPLAY_AUDIT) is expected
+
+
+@pytest.mark.parametrize(
+    "denied",
+    [LegalCapability.DURABLE_STORAGE, LegalCapability.REPLAY_AUDIT],
+)
+def test_permitted_retention_does_not_override_denied_dependent(denied):
+    jurisdiction, requirements, evidence = graph(overrides={
+        denied: (RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY, RightStatus.DENIED),
+    })
+    _, decision = assess(jurisdiction, requirements, evidence)
+    assert capability_state(decision, denied) is AdmissionState.BLOCKED
+
+
+def test_raw_sensitive_identifiers_never_enter_public_model_storage_or_serialization():
+    jurisdiction, _, evidence = graph()
+    secrets = {
+        "subject_id": "synthetic-rfc-xaxx010101000",
+        "issuer_id": "synthetic-passport-p00000001",
+        "authority_id": "synthetic-account-000111222",
+        "verifier_id": "synthetic-address-123-example-street",
+        "provider_ref": "synthetic-provider-secret",
+    }
+    item = reseal(evidence[0], LegalEvidenceReference, "reference_hash", **secrets)
+
+    class Envelope(BaseModel):
+        item: LegalEvidenceReference
+
+    rendered = [
+        repr(item), str(item), repr(item.__dict__), repr(type(item).model_fields),
+        repr(item.model_dump()), item.model_dump_json(),
+        repr(BaseModel.model_dump(item)),
+        Envelope(item=item).model_dump_json(),
+        json.dumps([BaseModel.model_dump(item, mode="json")]),
+        json.dumps({"item": BaseModel.model_dump(item, mode="json")}),
+        repr(copy(item)), repr(deepcopy(item)), item.model_copy().model_dump_json(),
+        LegalEvidenceReference.model_validate_json(
+            json.dumps(BaseModel.model_dump(item, mode="json"))
+        ).model_dump_json(),
+    ]
+    for secret in secrets.values():
+        assert secret not in "\n".join(rendered)
+        assert secret not in repr(item.__dict__)
+    assert item.subject_id.startswith("opaque:v1:")
+    assert item.provider_ref.startswith("opaque:v1:")
+    with pytest.raises(LegalGovernanceError) as error:
+        assess(jurisdiction, (), (item,))
+    assert all(secret not in repr(error.value) for secret in secrets.values())
