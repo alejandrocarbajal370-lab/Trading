@@ -1,12 +1,14 @@
 import datetime as dt
 
 import pytest
+from pydantic import BaseModel
 
 from governance.legal_governance import (
     AdmissionState,
     EvidenceSourceType,
     LegalAdmissionDecision,
     LegalAssessmentEvidence,
+    LegalCapability,
     LegalEvidenceReference,
     LegalGovernanceError,
     LegalJurisdictionReference,
@@ -17,6 +19,7 @@ from governance.legal_governance import (
     RelianceClaimState,
     RequirementStatus,
     RequirementType,
+    RightStatus,
     VerificationState,
     assess_contract_test_legal,
     assess_real_legal,
@@ -33,7 +36,7 @@ D = "1" * 64
 
 
 def reseal(value, model, field, **changes):
-    raw = value.model_dump(mode="python", exclude={field})
+    raw = BaseModel.model_dump(value, mode="python", exclude={field})
     raw.update(changes)
     return seal_contract_test(model, field, **raw)
 
@@ -43,22 +46,40 @@ def graph():
         LegalJurisdictionReference, "reference_hash",
         jurisdiction_id="jurisdiction.example", canonical_code="EX-1",
         scope=LegalScope.RESEARCH, subject_id="entity.alpha", activity_id="activity.research",
+        provider_ref="provider.alpha.v1", dataset_ref="dataset.prices.v1",
+        route_ref="route.research.v1",
         effective_from=T0, effective_to=T3, source_version="source.v1", source_digest=D,
     )
     requirement = seal_contract_test(
         LegalRequirementRecord, "record_hash", requirement_id="requirement.license",
+        requirement_version="requirement.v1",
         jurisdiction_ref_hash=jurisdiction.reference_hash, subject_id="entity.alpha",
         activity_id="activity.research", scope=LegalScope.RESEARCH,
+        use_class=LegalCapability.INTERNAL_RESEARCH,
+        capability=LegalCapability.INTERNAL_RESEARCH,
         requirement_type=RequirementType.LICENSE,
         status=RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY,
+        right_status=RightStatus.GRANTED_CONTRACT_TEST_ONLY,
+        policy_id="policy.research", policy_version="policy.v1", policy_hash="3" * 64,
+        provider_ref="provider.alpha.v1", dataset_ref="dataset.prices.v1",
+        route_ref="route.research.v1", authorized_issuer_id="issuer.counsel.v1",
+        authorized_authority_id="authority.registry.v1",
+        authorized_verifier_id="verifier.independent.v1",
         effective_from=T0, effective_to=T3, source_version="requirement.v1", source_digest=D,
     )
     evidence = seal_contract_test(
         LegalEvidenceReference, "reference_hash", evidence_id="evidence.requirement.license",
         evidence_version="evidence.v1", source_type=EvidenceSourceType.EXTERNAL_COUNSEL,
-        issuer_id="authority.example", authority_id="authority.example",
+        issuer_id="issuer.counsel.v1", authority_id="authority.registry.v1",
+        verifier_id="verifier.independent.v1", requirement_id=requirement.requirement_id,
+        requirement_version=requirement.requirement_version,
+        requirement_hash=requirement.record_hash, policy_id=requirement.policy_id,
+        policy_version=requirement.policy_version, policy_hash=requirement.policy_hash,
         jurisdiction_id="jurisdiction.example", subject_id="entity.alpha",
-        activity_id="activity.research", scope=LegalScope.RESEARCH, evidence_digest=D,
+        activity_id="activity.research", scope=LegalScope.RESEARCH,
+        use_class=LegalCapability.INTERNAL_RESEARCH,
+        provider_ref="provider.alpha.v1", dataset_ref="dataset.prices.v1",
+        route_ref="route.research.v1", evidence_digest=D,
         provenance_digest="2" * 64, issued_at=T0, valid_from=T0, verified_at=T1,
         expires_at=T3, revoked_at=None, verification_state=VerificationState.CONTRACT_TEST_ONLY,
     )
@@ -86,7 +107,7 @@ def test_exact_graph_reaches_contract_test_only_never_real():
     assessment, decision = assess()
     assert isinstance(assessment, LegalAssessmentEvidence)
     assert isinstance(decision, LegalAdmissionDecision)
-    assert decision.decision_state is AdmissionState.CONTRACT_TEST_ONLY
+    assert decision.decision_state is AdmissionState.REVIEW_REQUIRED
     assert {decision.legal_licensing_real, decision.authority_registry_real,
             decision.external_counsel_real, decision.provider_admission_real} == {
                 AdmissionState.NOT_PROVISIONED}
@@ -154,12 +175,12 @@ def test_wrong_jurisdiction_counsel_evidence_rejected():
         assess(jurisdictions=(j, other), requirements=(r,), evidence=(bad,))
 
 
-def test_missing_evidence_does_not_imply_exemption():
+def test_evidence_label_does_not_imply_exemption_or_full_capability_admission():
     j, r, e = graph()
     unrelated = reseal(e, LegalEvidenceReference, "reference_hash",
                        evidence_id="evidence.unrelated")
     assessment, decision = assess(jurisdictions=(j,), requirements=(r,), evidence=(unrelated,))
-    assert assessment.missing_evidence == ("missing.requirement.evidence",)
+    assert assessment.missing_evidence == ()
     assert decision.decision_state is AdmissionState.REVIEW_REQUIRED
     assert decision.legal_licensing_real is AdmissionState.NOT_PROVISIONED
 
@@ -190,20 +211,20 @@ def test_conflicts_and_ambiguous_multi_jurisdiction_fail_closed():
     other_e = reseal(e, LegalEvidenceReference, "reference_hash",
                      evidence_id="evidence.requirement.other",
                      jurisdiction_id="jurisdiction.other")
-    _, multi = assess(jurisdictions=(j, other), requirements=(r, other_r),
-                      evidence=(e, other_e), unresolved_conflicts=("conflict.multi-jurisdiction",))
-    assert multi.decision_state is AdmissionState.BLOCKED
+    with pytest.raises(LegalGovernanceError):
+        assess(jurisdictions=(j, other), requirements=(r, other_r), evidence=(e, other_e),
+               unresolved_conflicts=("conflict.multi-jurisdiction",))
 
 
 def test_hash_version_tamper_and_reseal_cannot_reach_real():
     j, r, e = graph()
-    raw = e.model_dump(mode="python")
+    raw = BaseModel.model_dump(e, mode="python")
     raw["evidence_version"] = "evidence.v2"
     with pytest.raises(LegalGovernanceError):
         LegalEvidenceReference.model_validate(raw)
     resealed = reseal(e, LegalEvidenceReference, "reference_hash", evidence_version="evidence.v2")
     _, decision = assess(jurisdictions=(j,), requirements=(r,), evidence=(resealed,))
-    assert decision.decision_state is AdmissionState.CONTRACT_TEST_ONLY
+    assert decision.decision_state is AdmissionState.REVIEW_REQUIRED
     assert decision.legal_licensing_real is AdmissionState.NOT_PROVISIONED
 
 
@@ -211,7 +232,7 @@ def test_maker_checker_reviewer_separation_and_secret_safe_repr():
     with pytest.raises(LegalGovernanceError):
         assess(reviewer_id="operator.001")
     _, _, evidence = graph()
-    assert "authority.example" not in repr(evidence)
-    assert "authority.example" not in str(evidence)
+    assert "authority.registry.v1" not in repr(evidence)
+    assert "authority.registry.v1" not in str(evidence)
     assert tuple(LegalRole) == (
         LegalRole.LEGAL_EVIDENCE_OPERATOR, LegalRole.LEGAL_REVIEWER, LegalRole.LEGAL_APPROVER)

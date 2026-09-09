@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from governance.canonical import typed_hash
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "licensing-legal-governance-v1"
+CONTRACT_VERSION = "licensing-legal-governance-v2"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{2,127}$"
 
@@ -58,6 +58,25 @@ class RequirementStatus(StrEnum):
     EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY = "EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY"
 
 
+class LegalCapability(StrEnum):
+    RECEIVE_ACCESS = "RECEIVE_ACCESS"
+    INTERNAL_RESEARCH = "INTERNAL_RESEARCH"
+    DURABLE_STORAGE = "DURABLE_STORAGE"
+    RETENTION = "RETENTION"
+    DERIVED_DATA_ARTIFACTS = "DERIVED_DATA_ARTIFACTS"
+    REPLAY_AUDIT = "REPLAY_AUDIT"
+    REDISTRIBUTION = "REDISTRIBUTION"
+    PAPER_TRADING_USE = "PAPER_TRADING_USE"
+    LIVE_EXECUTION_USE = "LIVE_EXECUTION_USE"
+
+
+class RightStatus(StrEnum):
+    UNKNOWN = "UNKNOWN"
+    AMBIGUOUS = "AMBIGUOUS"
+    DENIED = "DENIED"
+    GRANTED_CONTRACT_TEST_ONLY = "GRANTED_CONTRACT_TEST_ONLY"
+
+
 class EvidenceSourceType(StrEnum):
     EXTERNAL_COUNSEL = "EXTERNAL_COUNSEL"
     REGULATOR = "REGULATOR"
@@ -96,6 +115,18 @@ class _Model(BaseModel):
     def __repr_args__(self):
         return [("redacted", True)]
 
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        """Public serialization is a disclosure boundary, not a persistence format."""
+        return _redact(BaseModel.model_dump(self, **kwargs))
+
+    def model_dump_json(self, **kwargs: Any) -> str:
+        # Pydantic's serializer bypasses model_dump overrides, so redact explicitly.
+        allowed = {"include", "exclude", "by_alias", "exclude_unset", "exclude_defaults",
+                   "exclude_none", "round_trip", "warnings", "fallback", "serialize_as_any"}
+        dump_kwargs = {key: value for key, value in kwargs.items() if key in allowed}
+        raw = BaseModel.model_dump(self, mode="json", **dump_kwargs)
+        return json.dumps(_redact(raw), separators=(",", ":"), ensure_ascii=True)
+
     @classmethod
     def model_validate(cls, obj: Any, **kwargs: Any):
         try:
@@ -117,6 +148,9 @@ class LegalJurisdictionReference(_Model):
     scope: LegalScope
     subject_id: str = Field(pattern=IDENTIFIER)
     activity_id: str = Field(pattern=IDENTIFIER)
+    provider_ref: str = Field(pattern=IDENTIFIER)
+    dataset_ref: str = Field(pattern=IDENTIFIER)
+    route_ref: str = Field(pattern=IDENTIFIER)
     effective_from: dt.datetime
     effective_to: dt.datetime | None = None
     source_version: str = Field(pattern=IDENTIFIER)
@@ -125,7 +159,8 @@ class LegalJurisdictionReference(_Model):
 
     @model_validator(mode="after")
     def validate_value(self):
-        _ids(self.jurisdiction_id, self.subject_id, self.activity_id, self.source_version)
+        _ids(self.jurisdiction_id, self.subject_id, self.activity_id, self.provider_ref,
+             self.dataset_ref, self.route_ref, self.source_version)
         _utc(self.effective_from)
         if self.effective_to is not None:
             _utc(self.effective_to)
@@ -137,12 +172,25 @@ class LegalJurisdictionReference(_Model):
 
 class LegalRequirementRecord(_Model):
     requirement_id: str = Field(pattern=IDENTIFIER)
+    requirement_version: str = Field(pattern=IDENTIFIER)
     jurisdiction_ref_hash: str = Field(pattern=SHA256)
     subject_id: str = Field(pattern=IDENTIFIER)
     activity_id: str = Field(pattern=IDENTIFIER)
     scope: LegalScope
+    use_class: LegalCapability
+    capability: LegalCapability
     requirement_type: RequirementType
     status: RequirementStatus
+    right_status: RightStatus
+    policy_id: str = Field(pattern=IDENTIFIER)
+    policy_version: str = Field(pattern=IDENTIFIER)
+    policy_hash: str = Field(pattern=SHA256)
+    provider_ref: str = Field(pattern=IDENTIFIER)
+    dataset_ref: str = Field(pattern=IDENTIFIER)
+    route_ref: str = Field(pattern=IDENTIFIER)
+    authorized_issuer_id: str = Field(pattern=IDENTIFIER)
+    authorized_authority_id: str = Field(pattern=IDENTIFIER)
+    authorized_verifier_id: str = Field(pattern=IDENTIFIER)
     effective_from: dt.datetime
     effective_to: dt.datetime | None = None
     source_version: str = Field(pattern=IDENTIFIER)
@@ -151,7 +199,12 @@ class LegalRequirementRecord(_Model):
 
     @model_validator(mode="after")
     def validate_value(self):
-        _ids(self.requirement_id, self.subject_id, self.activity_id, self.source_version)
+        _ids(self.requirement_id, self.requirement_version, self.subject_id, self.activity_id,
+             self.policy_id, self.policy_version, self.provider_ref, self.dataset_ref,
+             self.route_ref, self.authorized_issuer_id, self.authorized_authority_id,
+             self.authorized_verifier_id, self.source_version)
+        if self.use_class is not self.capability:
+            raise ValueError
         _window(self.effective_from, self.effective_to)
         _hash(self, "record_hash")
         return self
@@ -163,10 +216,21 @@ class LegalEvidenceReference(_Model):
     source_type: EvidenceSourceType
     issuer_id: str = Field(pattern=IDENTIFIER)
     authority_id: str = Field(pattern=IDENTIFIER)
+    verifier_id: str = Field(pattern=IDENTIFIER)
+    requirement_id: str = Field(pattern=IDENTIFIER)
+    requirement_version: str = Field(pattern=IDENTIFIER)
+    requirement_hash: str = Field(pattern=SHA256)
+    policy_id: str = Field(pattern=IDENTIFIER)
+    policy_version: str = Field(pattern=IDENTIFIER)
+    policy_hash: str = Field(pattern=SHA256)
     jurisdiction_id: str = Field(pattern=IDENTIFIER)
     subject_id: str = Field(pattern=IDENTIFIER)
     activity_id: str = Field(pattern=IDENTIFIER)
     scope: LegalScope
+    use_class: LegalCapability
+    provider_ref: str = Field(pattern=IDENTIFIER)
+    dataset_ref: str = Field(pattern=IDENTIFIER)
+    route_ref: str = Field(pattern=IDENTIFIER)
     evidence_digest: str = Field(pattern=SHA256)
     provenance_digest: str = Field(pattern=SHA256)
     issued_at: dt.datetime
@@ -180,7 +244,9 @@ class LegalEvidenceReference(_Model):
     @model_validator(mode="after")
     def validate_value(self):
         _ids(self.evidence_id, self.evidence_version, self.issuer_id, self.authority_id,
-             self.jurisdiction_id, self.subject_id, self.activity_id)
+             self.verifier_id, self.requirement_id, self.requirement_version, self.policy_id,
+             self.policy_version, self.jurisdiction_id, self.subject_id, self.activity_id,
+             self.provider_ref, self.dataset_ref, self.route_ref)
         for value in (self.issued_at, self.valid_from, self.verified_at,
                       self.expires_at, self.revoked_at):
             if value is not None:
@@ -246,6 +312,7 @@ class LegalAdmissionDecision(_Model):
     assessment_hash: str = Field(pattern=SHA256)
     assessed_at: dt.datetime
     decision_state: AdmissionState
+    capability_states: tuple[tuple[LegalCapability, AdmissionState], ...]
     operator_id: str = Field(pattern=IDENTIFIER)
     reviewer_id: str = Field(pattern=IDENTIFIER)
     approver_id: str = Field(pattern=IDENTIFIER)
@@ -269,6 +336,8 @@ class LegalAdmissionDecision(_Model):
         if len({self.operator_id, self.reviewer_id, self.approver_id}) != 3:
             raise ValueError
         if self.gate_states != tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate):
+            raise ValueError
+        if tuple(capability for capability, _ in self.capability_states) != tuple(LegalCapability):
             raise ValueError
         _hash(self, "decision_hash")
         return self
@@ -300,11 +369,25 @@ def assess_contract_test_legal(
             raise ValueError
         for jurisdiction in js:
             _current(jurisdiction.effective_from, jurisdiction.effective_to, assessed_at)
+        capability_states: dict[LegalCapability, AdmissionState] = {
+            capability: AdmissionState.REVIEW_REQUIRED for capability in LegalCapability
+        }
+        requirements_by_capability: dict[LegalCapability, LegalRequirementRecord] = {}
         for requirement in rs:
             jurisdiction = by_hash.get(requirement.jurisdiction_ref_hash)
-            if jurisdiction is None or not _same_scope(jurisdiction, requirement):
+            if (jurisdiction is None or not _same_scope(jurisdiction, requirement)
+                    or not _same_route(jurisdiction, requirement)
+                    or requirement.capability in requirements_by_capability):
                 raise ValueError
+            requirements_by_capability[requirement.capability] = requirement
             _current(requirement.effective_from, requirement.effective_to, assessed_at)
+            if (requirement.status is RequirementStatus.UNKNOWN
+                    or requirement.status is RequirementStatus.REQUIRES_EXTERNAL_REVIEW
+                    or requirement.status is RequirementStatus.NOT_PROVISIONED
+                    or requirement.right_status is RightStatus.UNKNOWN):
+                capability_states[requirement.capability] = AdmissionState.REVIEW_REQUIRED
+            elif requirement.right_status in (RightStatus.AMBIGUOUS, RightStatus.DENIED):
+                capability_states[requirement.capability] = AdmissionState.BLOCKED
         requirements_by_hash = {item.record_hash: item for item in rs}
         for claim in cs:
             requirement = requirements_by_hash.get(claim.requirement_record_hash)
@@ -318,7 +401,7 @@ def assess_contract_test_legal(
             matching = [j for j in js if j.jurisdiction_id == item.jurisdiction_id]
             if len(matching) != 1 or not _same_scope(matching[0], item):
                 raise ValueError
-            if item.issuer_id != item.authority_id:
+            if len({item.issuer_id, item.authority_id, item.verifier_id}) != 3:
                 raise ValueError
             if item.verification_state is not VerificationState.CONTRACT_TEST_ONLY:
                 raise ValueError
@@ -327,16 +410,42 @@ def assess_contract_test_legal(
             _current(item.valid_from, item.expires_at, assessed_at)
             if item.revoked_at is not None and item.revoked_at <= assessed_at:
                 raise ValueError
-        evidence_by_requirement = {
-            e.evidence_id.removeprefix("evidence."): e for e in es
-        }
+        evidence_by_requirement = {e.requirement_hash: e for e in es}
+        if len(evidence_by_requirement) != len(es):
+            raise ValueError
+        if not set(evidence_by_requirement) <= set(requirements_by_hash):
+            raise ValueError
         for requirement in rs:
-            item = evidence_by_requirement.get(requirement.requirement_id)
+            item = evidence_by_requirement.get(requirement.record_hash)
             jurisdiction = by_hash[requirement.jurisdiction_ref_hash]
-            if item is not None and item.jurisdiction_id != jurisdiction.jurisdiction_id:
+            if item is None:
+                missing_evidence = tuple(sorted({*missing_evidence,
+                    f"missing.capability.{requirement.capability.value.lower()}"}))
+                continue
+            expected = (
+                requirement.requirement_id, requirement.requirement_version,
+                requirement.record_hash, requirement.policy_id, requirement.policy_version,
+                requirement.policy_hash, jurisdiction.jurisdiction_id, requirement.subject_id,
+                requirement.activity_id, requirement.scope, requirement.use_class,
+                requirement.provider_ref, requirement.dataset_ref, requirement.route_ref,
+                requirement.authorized_issuer_id, requirement.authorized_authority_id,
+                requirement.authorized_verifier_id,
+            )
+            actual = (
+                item.requirement_id, item.requirement_version, item.requirement_hash,
+                item.policy_id, item.policy_version, item.policy_hash, item.jurisdiction_id,
+                item.subject_id, item.activity_id, item.scope, item.use_class,
+                item.provider_ref, item.dataset_ref, item.route_ref, item.issuer_id,
+                item.authority_id, item.verifier_id,
+            )
+            if actual != expected:
                 raise ValueError
-        if not {r.requirement_id for r in rs} <= set(evidence_by_requirement):
-            missing_evidence = tuple(sorted({*missing_evidence, "missing.requirement.evidence"}))
+            if (requirement.status is RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY
+                    and requirement.right_status is RightStatus.GRANTED_CONTRACT_TEST_ONLY):
+                capability_states[requirement.capability] = AdmissionState.CONTRACT_TEST_ONLY
+        if LegalCapability.RETENTION not in requirements_by_capability:
+            for dependent in (LegalCapability.DURABLE_STORAGE, LegalCapability.REPLAY_AUDIT):
+                capability_states[dependent] = AdmissionState.REVIEW_REQUIRED
         assessment = seal_contract_test(
             LegalAssessmentEvidence, "assessment_hash", assessment_id=assessment_id,
             assessed_at=assessed_at, jurisdiction_hashes=tuple(j.reference_hash for j in js),
@@ -347,13 +456,19 @@ def assess_contract_test_legal(
             reviewer_id=reviewer_id, reviewer_role=LegalRole.LEGAL_REVIEWER,
             state=VerificationState.CONTRACT_TEST_ONLY,
         )
-        state = (AdmissionState.BLOCKED if unresolved_conflicts else
-                 AdmissionState.REVIEW_REQUIRED if missing_evidence else
-                 AdmissionState.CONTRACT_TEST_ONLY)
+        if unresolved_conflicts or AdmissionState.BLOCKED in capability_states.values():
+            state = AdmissionState.BLOCKED
+        elif missing_evidence or AdmissionState.REVIEW_REQUIRED in capability_states.values():
+            state = AdmissionState.REVIEW_REQUIRED
+        else:
+            state = AdmissionState.CONTRACT_TEST_ONLY
         decision = seal_contract_test(
             LegalAdmissionDecision, "decision_hash", contract_version=CONTRACT_VERSION,
             assessment_hash=assessment.assessment_hash,
-            assessed_at=assessed_at, decision_state=state, operator_id=operator_id,
+            assessed_at=assessed_at, decision_state=state,
+            capability_states=tuple((capability, capability_states[capability])
+                                    for capability in LegalCapability),
+            operator_id=operator_id,
             reviewer_id=reviewer_id, approver_id=approver_id,
             legal_licensing_real=AdmissionState.NOT_PROVISIONED,
             authority_registry_real=AdmissionState.NOT_PROVISIONED,
@@ -450,3 +565,19 @@ def _current(start: dt.datetime, end: dt.datetime | None, at: dt.datetime) -> No
 def _same_scope(left: Any, right: Any) -> bool:
     return (left.subject_id, left.activity_id, left.scope) == (
         right.subject_id, right.activity_id, right.scope)
+
+
+def _same_route(left: Any, right: Any) -> bool:
+    return (left.provider_ref, left.dataset_ref, left.route_ref) == (
+        right.provider_ref, right.dataset_ref, right.route_ref)
+
+
+def _redact(value: Any, key: str = "") -> Any:
+    sensitive = key.endswith("_id") or key in {"provider_ref", "dataset_ref", "route_ref"}
+    if sensitive and isinstance(value, str):
+        return f"opaque:{typed_hash(value)[:16]}"
+    if isinstance(value, dict):
+        return {item_key: _redact(item, item_key) for item_key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact(item) for item in value]
+    return value
