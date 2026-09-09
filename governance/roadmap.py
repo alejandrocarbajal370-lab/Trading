@@ -58,6 +58,7 @@ class RoadmapBlock(StrEnum):
         "External Trust, Attestation & Independent Verifier REAL Foundation"
     )
     DURABLE_CUSTODY_WORM_REPLAY = "Durable Custody + WORM + Replay"
+    LICENSING_LEGAL = "Licensing/legal"
     TAX_LOT_TAX_AWARE_PORTFOLIO_GOVERNANCE = (
         "Tax Lot & Tax-Aware Portfolio Governance"
     )
@@ -114,13 +115,14 @@ class TaxAwareScope(StrEnum):
 
 
 class NextBlockScope(StrEnum):
-    EXTERNAL_TRUST_ANCHOR_PROVISIONING_EVIDENCE = "EXTERNAL_TRUST_ANCHOR_PROVISIONING_EVIDENCE"
-    EXTERNAL_AUTHORITY_REGISTRY_EVIDENCE = "EXTERNAL_AUTHORITY_REGISTRY_EVIDENCE"
-    EXTERNAL_ATTESTER_LIFECYCLE_EVIDENCE = "EXTERNAL_ATTESTER_LIFECYCLE_EVIDENCE"
-    EXTERNAL_INDEPENDENT_VERIFIER_LIFECYCLE_EVIDENCE = "EXTERNAL_INDEPENDENT_VERIFIER_LIFECYCLE_EVIDENCE"
-    TRANSITIVE_IBKR_SESSION_ENTITLEMENT_OBSERVATION_BINDING = "TRANSITIVE_IBKR_SESSION_ENTITLEMENT_OBSERVATION_BINDING"
-    DISTINCT_ATTESTATION_AND_INDEPENDENT_VERIFICATION = "DISTINCT_ATTESTATION_AND_INDEPENDENT_VERIFICATION"
-    NO_LOCAL_SELF_AUTHENTICATION = "NO_LOCAL_SELF_AUTHENTICATION"
+    DURABLE_BACKEND_DEPLOYMENT_EVIDENCE = "DURABLE_BACKEND_DEPLOYMENT_EVIDENCE"
+    IMMUTABLE_WORM_POLICY_EVIDENCE = "IMMUTABLE_WORM_POLICY_EVIDENCE"
+    RAW_DERIVED_CUSTODY_RECEIPTS = "RAW_DERIVED_CUSTODY_RECEIPTS"
+    PERSISTENT_ATOMIC_REPLAY = "PERSISTENT_ATOMIC_REPLAY"
+    RESTORE_CONTINUITY_INTEGRITY_EVIDENCE = "RESTORE_CONTINUITY_INTEGRITY_EVIDENCE"
+    ACCESS_AUDIT_EVIDENCE = "ACCESS_AUDIT_EVIDENCE"
+    TRANSITIVE_STEP_1_STEP_2_BINDING = "TRANSITIVE_STEP_1_STEP_2_BINDING"
+    NO_LOCAL_SELF_ATTESTED_REAL_WORM = "NO_LOCAL_SELF_ATTESTED_REAL_WORM"
 
 
 class MergeOrder(StrEnum):
@@ -133,11 +135,9 @@ class NextBlockAuthorization(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     current_block: Literal[
-        RoadmapBlock.IBKR_REAL_PROVISIONING_AUTHENTIC_ENTITLEMENT_EVIDENCE_FOUNDATION
-    ]
-    name: Literal[
         RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
     ]
+    name: Literal[RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY]
     foundation_implementation: Literal[
         ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
     ]
@@ -153,6 +153,8 @@ class NextBlockAuthorization(BaseModel):
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
     trust_root: Literal["NOT_PROVISIONED"]
     durable_replay: Literal["NOT_PROVISIONED"]
+    external_custody: Literal["NOT_PROVISIONED"]
+    worm_retention: Literal["NOT_PROVISIONED"]
     independent_verifier: Literal["NOT_PROVISIONED"]
     real_route: Literal["QVM_NOT_READY"]
     global_readiness: Literal["INSUFFICIENT_REAL_DATA"]
@@ -179,8 +181,8 @@ class NextBlockAuthorization(BaseModel):
 
 
 NEXT_BLOCK = NextBlockAuthorization(
-    current_block=RoadmapBlock.IBKR_REAL_PROVISIONING_AUTHENTIC_ENTITLEMENT_EVIDENCE_FOUNDATION,
-    name=RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION,
+    current_block=RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION,
+    name=RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY,
     foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
     implementation_authorized=True,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
@@ -194,6 +196,8 @@ NEXT_BLOCK = NextBlockAuthorization(
     gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
     trust_root="NOT_PROVISIONED",
     durable_replay="NOT_PROVISIONED",
+    external_custody="NOT_PROVISIONED",
+    worm_retention="NOT_PROVISIONED",
     independent_verifier="NOT_PROVISIONED",
     real_route="QVM_NOT_READY",
     global_readiness="INSUFFICIENT_REAL_DATA",
@@ -210,17 +214,17 @@ class AfterNextBlockCandidate(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     after: Literal[
-        RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
+        RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY
     ]
-    name: Literal[RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY]
+    name: Literal[RoadmapBlock.LICENSING_LEGAL]
     implementation_authorized: Literal[False]
     activation_real: Literal[False]
     decision_state: Literal["ARCHITECTURAL_DECISION_REQUIRED"]
 
 
 AFTER_NEXT_BLOCK = AfterNextBlockCandidate(
-    after=RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION,
-    name=RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY,
+    after=RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY,
+    name=RoadmapBlock.LICENSING_LEGAL,
     implementation_authorized=False,
     activation_real=False,
     decision_state="ARCHITECTURAL_DECISION_REQUIRED",

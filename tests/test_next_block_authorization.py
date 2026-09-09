@@ -21,14 +21,11 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_external_trust_foundation_follows_ibkr_real_provisioning():
-    assert (
-        NEXT_BLOCK.name
-        == RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
-    )
+def test_durable_custody_foundation_follows_external_trust():
+    assert NEXT_BLOCK.name == RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY
     assert (
         NEXT_BLOCK.current_block
-        == RoadmapBlock.IBKR_REAL_PROVISIONING_AUTHENTIC_ENTITLEMENT_EVIDENCE_FOUNDATION
+        == RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
     )
     assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
     assert (
@@ -72,7 +69,7 @@ def test_roadmap_json_copy_construct_and_direct_validation_fail_closed():
 
 def test_readme_adr_and_machine_readable_successor_agree_exactly():
     readme = (ROOT / "README.md").read_text()
-    adr = (ROOT / "docs/adr/0016-external-trust-attestation-independent-verifier-real-foundation.md").read_text()
+    adr = (ROOT / "docs/adr/0017-durable-custody-worm-replay-foundation.md").read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
         assert NEXT_BLOCK.name.value in normalized
@@ -92,6 +89,8 @@ def test_next_foundation_preserves_all_frozen_safety_states():
     assert len(NEXT_BLOCK.gate_states) == 10
     assert NEXT_BLOCK.trust_root == "NOT_PROVISIONED"
     assert NEXT_BLOCK.durable_replay == "NOT_PROVISIONED"
+    assert NEXT_BLOCK.external_custody == "NOT_PROVISIONED"
+    assert NEXT_BLOCK.worm_retention == "NOT_PROVISIONED"
     assert NEXT_BLOCK.independent_verifier == "NOT_PROVISIONED"
     assert NEXT_BLOCK.real_route == "QVM_NOT_READY"
     assert NEXT_BLOCK.global_readiness == "INSUFFICIENT_REAL_DATA"
@@ -101,9 +100,9 @@ def test_next_foundation_preserves_all_frozen_safety_states():
     assert NEXT_BLOCK.backtesting == "NOT_AUTHORIZED"
 
 
-def test_successor_after_authorized_foundation_is_named_but_unauthorized():
+def test_licensing_legal_successor_is_named_but_unauthorized():
     assert AFTER_NEXT_BLOCK.after == NEXT_BLOCK.name
-    assert AFTER_NEXT_BLOCK.name == RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY
+    assert AFTER_NEXT_BLOCK.name == RoadmapBlock.LICENSING_LEGAL
     assert AFTER_NEXT_BLOCK.implementation_authorized is False
     assert AFTER_NEXT_BLOCK.activation_real is False
     assert AFTER_NEXT_BLOCK.decision_state == "ARCHITECTURAL_DECISION_REQUIRED"
