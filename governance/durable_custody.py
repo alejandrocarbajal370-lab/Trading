@@ -7,12 +7,14 @@ external custody nor WORM storage and can never activate a REAL route.
 from __future__ import annotations
 
 import datetime as dt
+import fcntl
 import hashlib
 import json
 import os
 import sqlite3
 import unicodedata
 import uuid
+from contextlib import contextmanager
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, Literal, TypeVar
@@ -457,50 +459,51 @@ class ContractTestDurableStore:
         ):
             raise DurableCustodyError("derived artifact lineage mismatch")
 
-        connection = self._connect()
-        try:
-            connection.execute("BEGIN IMMEDIATE")
-            if self._checkpoint_from_connection(connection) != self._checkpoint:
-                raise DurableCustodyError("durable store checkpoint changed or rolled back")
-            if connection.execute(
-                "SELECT 1 FROM journal WHERE replay_identity_hash=?", (replay.identity_hash,)
-            ).fetchone():
-                raise DurableCustodyError("replay identity already consumed")
-            row = connection.execute(
-                "SELECT sequence, entry_hash FROM journal ORDER BY sequence DESC LIMIT 1"
-            ).fetchone()
-            sequence, previous = (1, "0" * 64) if row is None else (row[0] + 1, row[1])
-            entry = seal_contract_test(
-                ReplayJournalEvidence,
-                "entry_hash",
-                store_id=self.store_id,
-                schema_version=SCHEMA_VERSION,
-                sequence=sequence,
-                replay_identity=replay,
-                receipt_hashes=hashes,
-                previous_entry_hash=previous,
-                committed_at=committed_at,
-            )
-            for receipt, content in canonical:
-                connection.execute(
-                    "INSERT INTO objects(identity_hash,receipt_hash,receipt_json,content) VALUES(?,?,?,?)",
-                    (receipt.artifact.identity_hash, receipt.receipt_hash, receipt.model_dump_json(), content),
+        with self._coordination_lock(exclusive=True):
+            connection = self._connect()
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                if self._checkpoint_from_connection(connection) != self._checkpoint:
+                    raise DurableCustodyError("durable store checkpoint changed or rolled back")
+                if connection.execute(
+                    "SELECT 1 FROM journal WHERE replay_identity_hash=?", (replay.identity_hash,)
+                ).fetchone():
+                    raise DurableCustodyError("replay identity already consumed")
+                row = connection.execute(
+                    "SELECT sequence, entry_hash FROM journal ORDER BY sequence DESC LIMIT 1"
+                ).fetchone()
+                sequence, previous = (1, "0" * 64) if row is None else (row[0] + 1, row[1])
+                entry = seal_contract_test(
+                    ReplayJournalEvidence,
+                    "entry_hash",
+                    store_id=self.store_id,
+                    schema_version=SCHEMA_VERSION,
+                    sequence=sequence,
+                    replay_identity=replay,
+                    receipt_hashes=hashes,
+                    previous_entry_hash=previous,
+                    committed_at=committed_at,
                 )
-            connection.execute(
-                "INSERT INTO journal(sequence,replay_identity_hash,entry_json,entry_hash) VALUES(?,?,?,?)",
-                (sequence, replay.identity_hash, entry.model_dump_json(), entry.entry_hash),
-            )
-            connection.commit()
-            self._checkpoint = _checkpoint(self.store_id, sequence, entry.entry_hash)
-            return entry
-        except DurableCustodyError:
-            connection.rollback()
-            raise
-        except (OSError, sqlite3.Error):
-            connection.rollback()
-            raise DurableCustodyError("durable batch commit unavailable or ambiguous") from None
-        finally:
-            connection.close()
+                for receipt, content in canonical:
+                    connection.execute(
+                        "INSERT INTO objects(identity_hash,receipt_hash,receipt_json,content) VALUES(?,?,?,?)",
+                        (receipt.artifact.identity_hash, receipt.receipt_hash, receipt.model_dump_json(), content),
+                    )
+                connection.execute(
+                    "INSERT INTO journal(sequence,replay_identity_hash,entry_json,entry_hash) VALUES(?,?,?,?)",
+                    (sequence, replay.identity_hash, entry.model_dump_json(), entry.entry_hash),
+                )
+                connection.commit()
+                self._checkpoint = _checkpoint(self.store_id, sequence, entry.entry_hash)
+                return entry
+            except DurableCustodyError:
+                connection.rollback()
+                raise
+            except (OSError, sqlite3.Error):
+                connection.rollback()
+                raise DurableCustodyError("durable batch commit unavailable or ambiguous") from None
+            finally:
+                connection.close()
 
     def restore(self, artifact: ArtifactIdentity) -> tuple[CustodyReceipt, bytes]:
         identity = _rebuild(ArtifactIdentity, artifact)
@@ -582,7 +585,9 @@ class ContractTestDurableStore:
         state = _rebuild(DurableReplayStateEvidence, evidence)
         connection = self._connect()
         try:
+            connection.execute("BEGIN")
             checkpoint = self._checkpoint_from_connection(connection)
+            self._validation_hook("snapshot_fixed")
             row = connection.execute(
                 "SELECT entry_json FROM journal WHERE sequence=? AND entry_hash=?",
                 (state.journal_entry_sequence, state.journal_entry_hash),
@@ -611,9 +616,39 @@ class ContractTestDurableStore:
                 or receipt.policy_evidence_hash != state.policy_evidence_hash
             ):
                 raise DurableCustodyError("durable state evidence binding mismatch")
-            return state
+            self._validation_hook("snapshot_validated")
         finally:
+            connection.rollback()
             connection.close()
+
+        # The read transaction above provides one WAL snapshot for metadata, journal,
+        # receipts and object bytes.  This shared coordination window makes the final
+        # current-head comparison the operation's linearization point: every writer
+        # takes the exclusive side through commit and checkpoint publication.
+        self._validation_hook("before_current_head_check")
+        with self._coordination_lock(exclusive=False):
+            current = self._connect()
+            try:
+                if self._checkpoint_from_connection(current) != checkpoint:
+                    raise DurableCustodyError("durable state advanced during validation")
+                self._validation_hook("current_head_validated")
+                return state
+            finally:
+                current.close()
+
+    def _validation_hook(self, phase: str) -> None:
+        """Deterministic test seam; production validation has no hook behavior."""
+
+    @contextmanager
+    def _coordination_lock(self, *, exclusive: bool):
+        lock_path = self._path.with_name(f"{self._path.name}.coordination.lock")
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+            yield
+        finally:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            os.close(descriptor)
 
     def _connect(self, *, initialize: bool = False) -> sqlite3.Connection:
         connection: sqlite3.Connection | None = None

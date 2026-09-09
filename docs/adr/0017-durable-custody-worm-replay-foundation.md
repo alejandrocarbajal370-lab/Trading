@@ -37,6 +37,15 @@ not accepted. Assessment revalidates the proof against the store again, so a lat
 invalidates prior restore evidence. Historical point-in-time restore is not provisioned by this
 contract.
 
+Assessment reads checkpoint, metadata, journal, receipts and object bytes in one explicit SQLite
+read transaction, which fixes one coherent WAL snapshot without taking a write reservation. Before
+a positive result it closes that snapshot and compares its checkpoint with the current head while
+holding the shared side of a local coordination lock. Store commits hold the exclusive side through
+database commit and checkpoint publication. Thus an advance committed during snapshot validation is
+observed and rejected; a writer that reaches the final comparison waits until that assessment's
+linearization point has completed. This coordination is local contract-test infrastructure, not an
+external monotonic anchor and not a REAL custody or anti-rollback claim.
+
 Reopening an existing store requires a caller-custodied checkpoint reference binding the store
 identity, monotonic journal sequence and current journal head hash. A database snapshot older or
 newer than that independently retained reference fails closed, as does a missing or tampered

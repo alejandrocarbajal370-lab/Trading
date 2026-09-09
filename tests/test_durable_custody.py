@@ -6,6 +6,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Thread
 
 import pytest
 from test_external_trust_verifier import graph
@@ -275,6 +276,88 @@ def test_assessment_rejects_membership_after_store_advances(tmp_path):
     advance(store, values, committed_at=values["assessed_at"])
     with pytest.raises(DurableCustodyError):
         assess(values)
+
+
+@pytest.mark.parametrize(
+    "pause_phase", ("snapshot_fixed", "snapshot_validated", "before_current_head_check")
+)
+def test_assessment_rejects_advance_during_current_state_revalidation(
+    tmp_path, monkeypatch, pause_phase
+):
+    values, store, _ = built(tmp_path)
+    writer = build_contract_test_store(
+        tmp_path / "custody.sqlite",
+        expected_store_id=store.store_id,
+        expected_checkpoint=store.checkpoint,
+    )
+    paused = Event()
+    advanced = Event()
+
+    def hook(phase):
+        if phase == pause_phase:
+            paused.set()
+            assert advanced.wait(5), "writer did not commit while assessment was paused"
+
+    monkeypatch.setattr(store, "_validation_hook", hook)
+
+    def write():
+        assert paused.wait(5), "assessment did not reach deterministic pause"
+        advance(writer, values, committed_at=values["assessed_at"])
+        advanced.set()
+
+    thread = Thread(target=write)
+    thread.start()
+    with pytest.raises(DurableCustodyError, match="failed closed"):
+        assess(values)
+    thread.join(5)
+    assert not thread.is_alive()
+    assert writer.checkpoint.sequence == 2
+
+
+def test_writer_before_snapshot_requires_new_current_membership(tmp_path):
+    values, store, _ = built(tmp_path)
+    receipt, entry, _ = advance(store, values, committed_at=values["assessed_at"])
+    with pytest.raises(DurableCustodyError):
+        assess(values)
+    current = store.current_state_evidence(
+        artifact=receipt.artifact,
+        replay_entry=entry,
+        validated_at=values["assessed_at"],
+    )
+    assert current.checkpoint_sequence == 2
+
+
+def test_writer_cannot_commit_between_final_generation_check_and_return(
+    tmp_path, monkeypatch
+):
+    values, store, _ = built(tmp_path)
+    writer = build_contract_test_store(
+        tmp_path / "custody.sqlite",
+        expected_store_id=store.store_id,
+        expected_checkpoint=store.checkpoint,
+    )
+    writer_started = Event()
+    writer_finished = Event()
+    thread = None
+
+    def write():
+        writer_started.set()
+        advance(writer, values, committed_at=values["assessed_at"])
+        writer_finished.set()
+
+    def hook(phase):
+        nonlocal thread
+        if phase == "current_head_validated":
+            thread = Thread(target=write)
+            thread.start()
+            assert writer_started.wait(5)
+            assert not writer_finished.wait(0.1)
+
+    monkeypatch.setattr(store, "_validation_hook", hook)
+    assert assess(values).state is ProvisioningState.CONTRACT_TEST_ONLY
+    assert thread is not None
+    thread.join(5)
+    assert writer_finished.is_set()
 
 
 @pytest.mark.parametrize(
