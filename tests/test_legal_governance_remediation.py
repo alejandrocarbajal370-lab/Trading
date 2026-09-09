@@ -192,20 +192,26 @@ def test_stale_policy_requirement_and_cross_binding_reuse_rejected(target, chang
 
 
 def test_copy_construct_json_hash_mismatch_and_reseal_never_widen_rights():
-    jurisdiction, requirements, evidence = graph()
+    capability = LegalCapability.RECEIVE_ACCESS
+    jurisdiction, requirements, evidence = graph(overrides={
+        capability: (RequirementStatus.EXTERNALLY_VERIFIED_CONTRACT_TEST_ONLY,
+                     RightStatus.DENIED),
+    })
     requirement = requirements[0]
     forged = (
-        requirement.model_copy(update={"right_status": RightStatus.DENIED}),
+        requirement.model_copy(update={
+            "right_status": RightStatus.GRANTED_CONTRACT_TEST_ONLY}),
         LegalRequirementRecord.model_construct(
-            **{**trusted(requirement), "right_status": RightStatus.DENIED}),
+            **{**trusted(requirement),
+               "right_status": RightStatus.GRANTED_CONTRACT_TEST_ONLY}),
         json.dumps({**BaseModel.model_dump(requirement, mode="json"),
-                    "right_status": RightStatus.DENIED}),
+                    "right_status": RightStatus.GRANTED_CONTRACT_TEST_ONLY}),
     )
     for item in forged:
         with pytest.raises(LegalGovernanceError):
             assess(jurisdiction, (item, *requirements[1:]), evidence)
     resealed = reseal(requirement, LegalRequirementRecord, "record_hash",
-                      right_status=RightStatus.DENIED)
+                      right_status=RightStatus.GRANTED_CONTRACT_TEST_ONLY)
     with pytest.raises(LegalGovernanceError):
         assess(jurisdiction, (resealed, *requirements[1:]), evidence)
 
