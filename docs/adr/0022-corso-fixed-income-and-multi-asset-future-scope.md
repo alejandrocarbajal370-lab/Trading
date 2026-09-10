@@ -12,7 +12,8 @@ contracts where compatibility could be affected.
 CORSO must evolve from its current equity/QVM research foundation into a governed multi-asset
 Investment OS with three distinct capabilities:
 
-1. **Equity / renta variable.** Preserve the current QVM/equity research stack.
+1. **Equity / renta variable.** Preserve the current US QVM/equity research stack and define a
+   separate future Mexican Equity scope where market-specific methodology requires it.
 2. **Fixed Income / renta fija.** Build a future governed debt/bond valuation and risk model,
    separate from equity QVM wherever metrics or methodologies are not comparable.
 3. **Multi-Asset Portfolio Construction.** Later combine governed Equity and Fixed Income outputs
@@ -21,6 +22,33 @@ Investment OS with three distinct capabilities:
 Fixed Income is a parallel future vertical, not a replacement for QVM. This ADR records required
 scope only. It does not authorize implementation, scoring, ranking, capital allocation, portfolio
 construction, recommendations or backtesting.
+
+## Future Mexican Equity scope
+
+Mexican Equity is an explicit future CORSO vertical. Its eligible universe may include shares
+listed on governed Mexican markets only after a future, governed universe and security master
+define instrument, issuer, listing, venue, currency and eligibility identity. Mexican Equity must
+be treated separately by market, currency and applicable microstructure rules; the current US
+Equity/QVM engine must not be assumed to transfer without local methodology, recalibration and
+validation.
+
+Before any use, a separately authorized future capability must govern and validate local
+methodology; point-in-time data and lineage; corporate actions; trading calendars and market
+microstructure; liquidity and market depth; transaction costs; FX and reporting-currency effects;
+and other locally applicable conventions. This scope does not select or provision a local data
+provider, create a Mexican security master, or implement a Mexican Equity model.
+
+Any future Mexican Equity universe, including an index or universe proxy used for research,
+backtesting or selection, must preserve historical constituent membership point-in-time. A current
+security master or a current constituent list is not sufficient. Governed membership must include
+`effective_from` / `effective_to` or equivalent point-in-time semantics and, where applicable,
+preserve universe entries and exits, ticker or listing changes, mergers, spin-offs, delistings and
+share-class changes. The universe must never be reconstructed retrospectively using only current
+constituents. Any future Mexican Equity backtest or selection must fail closed when historical
+constituent coverage is insufficient. This requirement explicitly prevents survivorship bias and
+look-ahead in universe construction; it does not create or populate a security master.
+
+Mexican Equity remains **FUTURE / NOT IMPLEMENTED / NOT AUTHORIZED**.
 
 ## Future Fixed Income model scope
 
@@ -90,6 +118,64 @@ silently treat different sovereign or reference curves as equivalent risk-free b
 
 No current vendor, country curve, rate or universal curve methodology is selected by this scope.
 
+### Future Mexican Fixed Income scope
+
+Mexican Fixed Income is explicitly within the future governed Fixed Income engine. Subject to a
+future governed universe, instrument eligibility and data availability, its scope must be able to
+cover Mexican sovereign/government debt, including CETES, Bonos M, Udibonos and other eligible
+government instruments where applicable; Mexican corporate debt; Mexican bank and financial debt;
+and eligible instruments denominated in MXN or other currencies.
+
+Future methodology must govern appropriate local curves and references, instrument and settlement
+conventions, and inflation/indexation treatment for Udibonos and other instruments where applicable.
+It must also address credit/default risk; recovery and LGD; liquidity; taxes and withholding; FX
+and reporting currency; and relevant Mexican legal, market and cash-flow conventions. A sovereign
+MXN curve is a benchmark/reference curve, not automatically a risk-free curve: the future method
+must distinguish it from a separately justified risk-free or near-risk-free methodology where
+applicable and identify the actual curve used.
+
+This scope does not select or provision local data providers, a Mexican debt security master, local
+curves, a Mexican tax engine or a Mexican debt valuation/risk model. Mexican Fixed Income remains
+**FUTURE / NOT IMPLEMENTED / NOT AUTHORIZED**.
+
+### Future nominal versus real/inflation-linked methodology
+
+The future Mexican Fixed Income layer must explicitly distinguish nominal debt, including CETES
+and Bonos M where methodologically applicable, from real, inflation-linked or indexed debt,
+including Udibonos. It must preserve and must not mix nominal versus real yield basis; nominal
+versus real/reference curves; inflation/indexation basis; accrued and indexed-principal mechanics
+where applicable; and duration, DV01 and other risk sensitivities consistent with the instrument's
+basis. Expected-inflation or breakeven decomposition must be governed when methodologically
+applicable.
+
+Comparisons and spread attribution must not combine incompatible nominal and real bases. Any
+conversion or comparison between nominal and real/inflation-linked instruments requires a governed
+methodology and appropriate point-in-time inputs; inflation assumptions or breakevens must never be
+silently supplied by default. This section authorizes no pricing, curve construction or risk-model
+implementation.
+
+## Future local-asset versus MXN base-currency return governance
+
+Any future cross-currency performance, comparison or portfolio layer must preserve two distinct
+return concepts:
+
+- `LOCAL_ASSET_RETURN`: the asset return in its own currency and applicable local-return basis; and
+- `BASE_CURRENCY_RETURN_MXN`: the asset return expressed in the portfolio's MXN base/reporting
+  currency.
+
+For non-MXN assets, a governed decomposition must separately identify FX return with point-in-time
+lineage and combine it consistently with local asset return. Where appropriate for the instrument,
+period and return convention, the conceptual relationship is
+`R_MXN = (1 + R_LOCAL) * (1 + R_FX) - 1`; the exact convention must be documented and governed
+before use. A USD or other local-currency return must never be compared directly with an MXN return
+without consistent conversion.
+
+Future performance attribution must distinguish asset return, FX contribution and combined
+base-currency return. Fees, taxes and cash flows must be incorporated in the appropriate governed
+layer without omission or double counting. Any future optimization or portfolio comparison must
+operate in a coherent reporting/base currency while retaining local asset return for diagnosis and
+attribution. This requirement implements no performance engine, optimizer or portfolio comparison.
+
 ## Future portfolio objective
 
 An approximately `50% Fixed Income / 50% Equity` portfolio is an initial allocation to study, not
@@ -109,13 +195,27 @@ authorized tax-aware effects; transaction costs and turnover; stress/scenario be
 appropriate risk-adjusted and after-cost/after-tax metrics; portfolio constraints; and the user
 mandate. This requirement defines future scope only and does not create real portfolio construction.
 
+When separately implemented, validated and authorized, the future portfolio layer must be able to
+compare and combine US Equity, Mexican Equity, applicable US/global Fixed Income, Mexican Fixed
+Income, and cash or low-risk sleeves where appropriate. It must evaluate alternative mixes and
+justify which is more attractive under the governed capital-preservation-first objective using
+expected return, volatility and other risk, drawdown, correlation and diversification, liquidity,
+costs, taxes, FX, concentration and appropriate risk-adjusted metrics. The initial 50/50 scenario
+is never a fixed optimal target.
+
 ## Target architecture
 
 ```text
-Equity canonical data       -> Equity/QVM model          \
-Fixed Income canonical data -> FI valuation/risk model    +-> governed multi-asset portfolio construction
-FX / macro / tax / liquidity / constraints              /    -> candidate allocations -> human review
+US Equity canonical data       -> US Equity/QVM engine            \
+Mexican Equity canonical data  -> future Mexican Equity engine     \
+Fixed Income canonical data    -> future FI valuation/risk engine   +-> future governed multi-asset portfolio layer
+FX / macro / tax / liquidity / constraints                         /    -> candidate allocations -> human review
 ```
+
+CORSO must use separate Equity engine(s), a Fixed Income engine, and a future multi-asset portfolio
+layer whenever asset-class or market methodology requires it. It must not force one formula across
+stocks and bonds or assume one market's model is valid in another market without governed
+recalibration and validation.
 
 CORSO may eventually propose allocations or rebalances only for human review. ADR 0020 remains
 binding: execution is `HUMAN_ONLY` and manual at Broker X outside CORSO. CORSO must not submit,
@@ -159,5 +259,9 @@ their corresponding phases.
 - portfolio construction: `NOT_AUTHORIZED / NOT IMPLEMENTED`
 - Fixed Income scoring/ranking: `NOT_AUTHORIZED / NOT IMPLEMENTED`
 - capital-allocation recommendations: `NOT_AUTHORIZED / NOT IMPLEMENTED`
+- Mexican Equity model and security master: `NOT_AUTHORIZED / NOT_IMPLEMENTED`
+- Mexican debt model, local curves and tax engine: `NOT_AUTHORIZED / NOT_IMPLEMENTED`
+- local Mexican data providers: `NOT_PROVISIONED`
 
-**NO FIXED-INCOME MODEL / PORTFOLIO OPTIMIZER IMPLEMENTED. THIS ADR DOES NOT MODIFY STEP 6 STATUS.**
+**NO FIXED-INCOME MODEL, MEXICAN EQUITY MODEL, MEXICAN DEBT MODEL OR PORTFOLIO OPTIMIZER IS
+IMPLEMENTED. THIS ADR DOES NOT MODIFY STEP 6 STATUS.**
