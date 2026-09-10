@@ -12,6 +12,9 @@ from governance.sufficient_observation_policy import (
     CONTRACT_VERSION,
     COUNTING_SEMANTICS_VERSION,
     DEPENDENCY_CONTRACTS,
+    ContractTestDependencyArtifactResolver,
+    ContractTestSourceEventResolver,
+    DependencyArtifactRecord,
     DependencyArtifactReference,
     DependencyAssurance,
     DependencyKind,
@@ -27,6 +30,8 @@ from governance.sufficient_observation_policy import (
     SufficiencyAssessment,
     SufficientObservationPolicy,
     admit_real_policy,
+    build_contract_test_dependency_artifact,
+    build_contract_test_source_event_record,
     evaluate_sufficiency,
     opaque_reference,
     seal_contract_test,
@@ -34,6 +39,7 @@ from governance.sufficient_observation_policy import (
 
 UTC = dt.UTC
 NOW = dt.datetime(2026, 9, 10, 2, 0, tzinfo=UTC)
+_RESOLVERS = None
 
 
 def digest(value: str) -> str:
@@ -48,10 +54,23 @@ def dependency(kind, *, provider, dataset, route, entity, capability, policy, in
                source_event, payload, available_at=None, verified_at=None, expires_at=None,
                revoked_at=None):
     source_contract, source_contract_version = DEPENDENCY_CONTRACTS[kind]
-    return seal_contract_test(
+    record = build_contract_test_dependency_artifact(
+        kind=kind, source_contract=source_contract,
+        source_contract_version=source_contract_version,
+        provider_ref=provider, source_event_ref_digest=source_event,
+        payload_digest=payload, dataset_ref=dataset, route_ref=route, entity_ref=entity,
+        capability_id=capability, policy_id=policy.policy_id,
+        policy_version=policy.policy_version,
+        available_at=available_at or NOW-dt.timedelta(minutes=55),
+        effective_at=NOW-dt.timedelta(minutes=50),
+        verified_at=verified_at or NOW-dt.timedelta(minutes=45),
+        expires_at=expires_at or NOW+dt.timedelta(days=1), revoked_at=revoked_at,
+        contract_provenance_digest=digest(f"pr38-42-provenance-{kind}-{index}"),
+    )
+    reference = seal_contract_test(
         DependencyArtifactReference, "reference_hash", kind=kind,
         source_contract=source_contract, source_contract_version=source_contract_version,
-        artifact_digest=digest(f"artifact-{kind}-{index}"), provider_ref=provider,
+        artifact_digest=record.artifact_digest, provider_ref=provider,
         source_event_ref_digest=source_event, payload_digest=payload,
         dataset_ref=dataset, route_ref=route, entity_ref=entity, capability_id=capability,
         policy_id=policy.policy_id, policy_version=policy.policy_version,
@@ -61,6 +80,7 @@ def dependency(kind, *, provider, dataset, route, entity, capability, policy, in
         expires_at=expires_at or NOW+dt.timedelta(days=1), revoked_at=revoked_at,
         assurance=DependencyAssurance.CONTRACT_TEST_ONLY,
     )
+    return reference, record
 
 
 def reseal(value, model, field, **changes):
@@ -70,6 +90,7 @@ def reseal(value, model, field, **changes):
 
 
 def graph(*, status=PolicyStatus.APPROVED_FOR_EVIDENCE_COLLECTION):
+    global _RESOLVERS
     criteria = []
     for observation_class in ObservationClass:
         gate = CLASS_GATE[observation_class]
@@ -109,6 +130,8 @@ def graph(*, status=PolicyStatus.APPROVED_FOR_EVIDENCE_COLLECTION):
         exception_policy_ref="policy.exception.requires-review.v1",
     )
     observations = []
+    event_records = []
+    artifact_records = []
     for class_index, observation_class in enumerate(ObservationClass):
         criterion = next(x for x in criteria if x.observation_class is observation_class)
         for index in range(2):
@@ -117,14 +140,33 @@ def graph(*, status=PolicyStatus.APPROVED_FOR_EVIDENCE_COLLECTION):
             dataset = criterion.allowed_dataset_refs[0]
             entity = opaque(f"instrument.{class_index}")
             route = opaque(f"route.{class_index}")
-            source_event = digest(f"event-{class_index}-{index}")
             payload = digest(f"p-{class_index}-{index}")
-            artifacts = tuple(dependency(
+            provenance = digest(f"prov-{class_index}-{index}")
+            attestation = digest(f"att-{class_index}-{index}")
+            custody_lineage = digest(f"custody-lineage-{class_index}-{index}")
+            event_record = build_contract_test_source_event_record(
+                provider_ref=provider, instrument_ref=entity, dataset_ref=dataset,
+                observation_type="point-in-time",
+                provider_event_key_ref=opaque(f"provider-event.{class_index}.{index}"),
+                session_ref=f"session.{class_index}.{index}", session_date=start.date(),
+                window_start=start, window_end=start+dt.timedelta(minutes=1),
+                available_at=start+dt.timedelta(minutes=2),
+                market_data_mode=criterion.allowed_modes[0], payload_digest=payload,
+                provenance_digest=provenance, attestation_ref_digest=attestation,
+                custody_lineage_digest=custody_lineage, policy_id=policy.policy_id,
+                policy_version=policy.policy_version,
+                counting_semantics_version=policy.counting_semantics_version,
+            )
+            source_event = event_record.record_digest
+            event_records.append(event_record)
+            pairs = tuple(dependency(
                 kind, provider=provider, dataset=dataset, route=route, entity=entity,
                 capability=criterion.capability_id, policy=policy,
                 index=f"{class_index}-{index}-{kind.value}",
-                source_event=source_event, payload=payload,
+                source_event=event_record.canonical_event_key, payload=payload,
             ) for kind in DependencyKind)
+            artifacts = tuple(pair[0] for pair in pairs)
+            artifact_records.extend(pair[1] for pair in pairs)
             observations.append(seal_contract_test(
                 ObservationEvidence, "evidence_hash",
                 observation_ref=f"observation.{class_index}.{index}",
@@ -139,20 +181,27 @@ def graph(*, status=PolicyStatus.APPROVED_FOR_EVIDENCE_COLLECTION):
                 window_start=start, window_end=start+dt.timedelta(minutes=1),
                 available_at=start+dt.timedelta(minutes=2),
                 market_data_mode=criterion.allowed_modes[0], payload_digest=payload,
-                provenance_digest=digest(f"prov-{class_index}-{index}"),
-                attestation_ref_digest=digest(f"att-{class_index}-{index}"),
+                provenance_digest=provenance, attestation_ref_digest=attestation,
+                custody_lineage_digest=custody_lineage,
                 source_event_ref_digest=source_event,
                 local_wrapper_digest=digest(f"wrapper-{class_index}-{index}"),
                 present_provenance_fields=criterion.required_provenance_fields,
                 missing_fraction_ppm=0, dependency_artifacts=artifacts,
             ))
+    _RESOLVERS = (
+        ContractTestSourceEventResolver(tuple(event_records)),
+        ContractTestDependencyArtifactResolver(tuple(artifact_records)),
+    )
     return policy, tuple(observations)
 
 
 def assess(policy=None, observations=None):
     base_policy, base_observations = graph()
+    event_resolver, artifact_resolver = _RESOLVERS
     return evaluate_sufficiency(
-        policy=policy or base_policy, observations=observations or base_observations, assessed_at=NOW
+        policy=policy or base_policy, observations=observations or base_observations, assessed_at=NOW,
+        source_event_resolver=event_resolver,
+        dependency_artifact_resolver=artifact_resolver,
     )
 
 
@@ -171,6 +220,7 @@ def test_foundation_can_only_reach_conservative_pre_verification_state():
     result = assess()
     assert result.state is EvaluationState.SUFFICIENT_FOR_EXTERNAL_VERIFICATION
     assert result.contract_validation_state == "CONTRACT_TEST_VALIDATED"
+    assert result.package_assurance == "LOCAL_PACKAGE_COMPLETENESS_ONLY"
     assert result.real_policy_approval is ProvisioningState.NOT_PROVISIONED
     assert result.real_provider_admission is ProvisioningState.NOT_PROVISIONED
     assert result.gate_states == tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate)
@@ -222,8 +272,12 @@ def test_same_source_event_different_representation_counts_once(field):
     alias = reseal(pair[0], ObservationEvidence, "evidence_hash",
                    observation_ref=f"observation.alias.{field}", **{field: digest(field)})
     gate = market_result(assess(policy, (*rest, *pair, alias)))
-    assert gate.accepted_count == 2 and gate.duplicate_count == 1
-    assert ReasonCode.DUPLICATE_OBSERVATION in gate.reason_codes
+    if field == "local_wrapper_digest":
+        assert gate.accepted_count == 2 and gate.duplicate_count == 1
+        assert ReasonCode.DUPLICATE_OBSERVATION in gate.reason_codes
+    else:
+        assert gate.accepted_count == 1 and gate.state is EvaluationState.REVIEW_REQUIRED
+        assert ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED in gate.reason_codes
 
 
 @pytest.mark.parametrize("changes", [
@@ -282,7 +336,8 @@ def test_source_event_identity_is_required_and_cross_provider_aggregation_is_exp
         provider_ref=second_provider, dependency_artifacts=other_artifacts,
     )
     gate = market_result(assess(changed_policy, (*rebound, cross_provider)))
-    assert gate.accepted_count == 3
+    assert gate.accepted_count == 1
+    assert ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED in gate.reason_codes
 
 
 def test_cross_provider_events_do_not_combine_without_policy_permission():
@@ -305,7 +360,8 @@ def test_cross_provider_events_do_not_combine_without_policy_permission():
                    observation_ref="observation.cross-provider.denied", provider_ref=second_provider,
                    dependency_artifacts=artifacts)
     gate = market_result(assess(changed_policy, (*rebound, cross)))
-    assert gate.accepted_count == 0 and ReasonCode.PROVIDER_MISMATCH in gate.reason_codes
+    assert gate.accepted_count == 1
+    assert ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED in gate.reason_codes
 
 
 def test_same_window_different_payload_is_deterministic_review_and_not_counted():
@@ -375,7 +431,10 @@ def test_stale_observation_rejected_under_governed_maximum_age():
 def test_materially_changed_v2_does_not_silently_reuse_v1_evidence():
     policy, observations = graph()
     v2 = reseal(policy, SufficientObservationPolicy, "content_hash", policy_version="v2")
-    result = evaluate_sufficiency(policy=v2, observations=observations, assessed_at=NOW)
+    result = evaluate_sufficiency(
+        policy=v2, observations=observations, assessed_at=NOW,
+        source_event_resolver=_RESOLVERS[0], dependency_artifact_resolver=_RESOLVERS[1],
+    )
     assert result.state is EvaluationState.REVIEW_REQUIRED
     assert all(ReasonCode.POLICY_VERSION_MISMATCH in x.reason_codes for x in result.gate_results)
 
@@ -392,7 +451,10 @@ def test_expired_replaced_or_revoked_policy_invalidates_future_counting():
     for unavailable in variants:
         rebound = tuple(reseal(x, ObservationEvidence, "evidence_hash",
                                policy_hash=unavailable.content_hash) for x in observations)
-        result = evaluate_sufficiency(policy=unavailable, observations=rebound, assessed_at=NOW)
+        result = evaluate_sufficiency(
+            policy=unavailable, observations=rebound, assessed_at=NOW,
+            source_event_resolver=_RESOLVERS[0], dependency_artifact_resolver=_RESOLVERS[1],
+        )
         assert result.state is EvaluationState.REVIEW_REQUIRED
         assert all(ReasonCode.OUTSIDE_POLICY_WINDOW in x.reason_codes for x in result.gate_results)
 
@@ -423,6 +485,87 @@ def test_naked_dependency_enums_and_fabricated_digest_cannot_create_truth():
         artifact.model_copy(update={"artifact_digest": digest("fabricated")})
 
 
+def test_resolvers_are_mandatory_and_arbitrary_event_digest_never_counts():
+    policy, pair, rest = market_pair()
+    no_resolvers = evaluate_sufficiency(policy=policy, observations=(*rest, *pair), assessed_at=NOW)
+    assert no_resolvers.state is EvaluationState.NOT_PROVISIONED
+    assert all(item.accepted_count == 0 for item in no_resolvers.gate_results)
+    minted = reseal(
+        pair[0], ObservationEvidence, "evidence_hash",
+        observation_ref="observation.minted-event",
+        source_event_ref_digest=digest("caller-minted-unregistered-event"),
+        session_ref="session.minted", window_start=NOW-dt.timedelta(minutes=10),
+        window_end=NOW-dt.timedelta(minutes=9), available_at=NOW-dt.timedelta(minutes=8),
+    )
+    gate = market_result(assess(policy, (*rest, *pair, minted)))
+    assert gate.accepted_count == 2
+    assert gate.state is EvaluationState.NOT_PROVISIONED
+    assert ReasonCode.SOURCE_EVENT_NOT_PROVISIONED in gate.reason_codes
+
+
+def test_source_event_hash_mismatch_rejected_and_alias_counts_once():
+    policy, pair, rest = market_pair()
+    records = tuple(set(_RESOLVERS[0]._records.values()))
+    original = _RESOLVERS[0].resolve(pair[0].source_event_ref_digest)
+    forged = BaseModel.model_construct.__func__(
+        type(original), **{
+            **BaseModel.model_dump(original, mode="python"),
+            "record_digest": digest("wrong-content-hash"),
+        }
+    )
+    with pytest.raises(ObservationPolicyError):
+        ContractTestSourceEventResolver((forged,))
+    raw = BaseModel.model_dump(original, mode="python", exclude={"record_digest"})
+    raw["aliases"] = (original.record_digest, digest("source-event-alias"))
+    replacement = build_contract_test_source_event_record(**{
+        key: value for key, value in raw.items()
+        if key not in {"resolver_version", "assurance", "canonical_event_key"}
+    })
+    resolver = ContractTestSourceEventResolver(tuple(
+        replacement if item == original else item for item in records
+    ))
+    alias = reseal(
+        pair[0], ObservationEvidence, "evidence_hash",
+        observation_ref="observation.resolved-alias",
+        source_event_ref_digest=digest("source-event-alias"),
+    )
+    result = evaluate_sufficiency(
+        policy=policy, observations=(*rest, *pair, alias), assessed_at=NOW,
+        source_event_resolver=resolver, dependency_artifact_resolver=_RESOLVERS[1],
+    )
+    gate = market_result(result)
+    assert gate.accepted_count == 2 and gate.duplicate_count == 1
+
+
+def test_fabricated_or_wrong_content_dependency_artifact_fails_closed():
+    policy, pair, rest = market_pair()
+    artifact = pair[0].dependency_artifacts[0]
+    fabricated = reseal(
+        artifact, DependencyArtifactReference, "reference_hash",
+        artifact_digest=digest("nonexistent-dependency-artifact"),
+    )
+    observation = reseal(
+        pair[0], ObservationEvidence, "evidence_hash",
+        dependency_artifacts=(fabricated, *pair[0].dependency_artifacts[1:]),
+    )
+    gate = market_result(assess(policy, (*rest, observation, pair[1])))
+    assert gate.accepted_count == 1 and gate.state is EvaluationState.NOT_PROVISIONED
+    assert ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED in gate.reason_codes
+    record = _RESOLVERS[1].resolve(artifact.artifact_digest)
+    wrong_hash = BaseModel.model_construct.__func__(
+        DependencyArtifactRecord, **{
+            **BaseModel.model_dump(record, mode="python"),
+            "artifact_digest": digest("wrong-content-hash"),
+        }
+    )
+    with pytest.raises(ObservationPolicyError):
+        ContractTestDependencyArtifactResolver((wrong_hash,))
+    with pytest.raises(ObservationPolicyError):
+        seal_contract_test(DependencyArtifactRecord, "artifact_digest", **BaseModel.model_dump(
+            record, mode="python", exclude={"artifact_digest"}
+        ))
+
+
 @pytest.mark.parametrize("field,value", [
     ("provider_ref", opaque("wrong-provider")), ("dataset_ref", opaque("wrong-dataset")),
     ("route_ref", opaque("wrong-route")), ("entity_ref", opaque("wrong-entity")),
@@ -448,6 +591,15 @@ def test_wrong_dependency_contract_is_rejected_at_construction():
     with pytest.raises(ObservationPolicyError):
         reseal(artifact, DependencyArtifactReference, "reference_hash",
                source_contract="licensing-legal-governance", source_contract_version="v2")
+    record = _RESOLVERS[1].resolve(artifact.artifact_digest)
+    for changes in (
+        {"canonical_schema": "fake.schema.v1"},
+        {"contract_provenance_digest": digest("locally-reconstructed-fake")},
+        {"source_contract_version": "v999"},
+        {"kind": DependencyKind.LEGAL_RIGHT},
+    ):
+        with pytest.raises(ObservationPolicyError):
+            record.model_copy(update=changes)
 
 
 @pytest.mark.parametrize("changes", [
@@ -550,7 +702,9 @@ def test_evidence_availability_is_point_in_time_and_boundary_is_inclusive():
     assert gate.accepted_count == 1
     assert ReasonCode.EVIDENCE_NOT_AVAILABLE_AS_OF in gate.reason_codes
     boundary = reseal(pair[0], ObservationEvidence, "evidence_hash", available_at=NOW)
-    assert market_result(assess(policy, (*rest, boundary, pair[1]))).accepted_count == 2
+    boundary_result = market_result(assess(policy, (*rest, boundary, pair[1])))
+    assert boundary_result.accepted_count == 1
+    assert ReasonCode.EVIDENCE_NOT_AVAILABLE_AS_OF not in boundary_result.reason_codes
 
 
 def test_impossible_or_non_utc_availability_fails_closed():

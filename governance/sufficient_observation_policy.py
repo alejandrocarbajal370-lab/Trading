@@ -10,7 +10,7 @@ import datetime as dt
 import json
 import unicodedata
 from enum import StrEnum
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -18,11 +18,13 @@ from governance.canonical import typed_hash
 from governance.ibkr_external_attestation import ProvisioningState
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "governed-sufficient-observation-policy-v2"
+CONTRACT_VERSION = "governed-sufficient-observation-policy-v3"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{1,127}$"
 OPAQUE = r"^opaque:v1:[0-9a-f]{64}$"
-COUNTING_SEMANTICS_VERSION = "source-event-dominant-v2"
+COUNTING_SEMANTICS_VERSION = "resolved-source-event-dominant-v3"
+SOURCE_EVENT_RESOLVER_VERSION = "contract-test-source-event-resolver-v1"
+DEPENDENCY_RESOLVER_VERSION = "contract-test-dependency-artifact-resolver-v1"
 DEPENDENCY_CONTRACTS = {
     "TRUST_VERIFIER": ("external-trust-attestation-independent-verifier", "v1"),
     "AUTHORITY_REGISTRY": ("trust-anchor-authority-contract", "v1"),
@@ -108,6 +110,10 @@ class ReasonCode(StrEnum):
     CUSTODY_REVIEW_REQUIRED = "CUSTODY_REVIEW_REQUIRED"
     DEPENDENCY_BINDING_MISMATCH = "DEPENDENCY_BINDING_MISMATCH"
     DEPENDENCY_NOT_AVAILABLE_AS_OF = "DEPENDENCY_NOT_AVAILABLE_AS_OF"
+    SOURCE_EVENT_NOT_PROVISIONED = "SOURCE_EVENT_NOT_PROVISIONED"
+    SOURCE_EVENT_REVIEW_REQUIRED = "SOURCE_EVENT_REVIEW_REQUIRED"
+    DEPENDENCY_ARTIFACT_NOT_PROVISIONED = "DEPENDENCY_ARTIFACT_NOT_PROVISIONED"
+    DEPENDENCY_ARTIFACT_REVIEW_REQUIRED = "DEPENDENCY_ARTIFACT_REVIEW_REQUIRED"
     COUNT_BELOW_MINIMUM = "COUNT_BELOW_MINIMUM"
     DISTINCT_SESSIONS_BELOW_MINIMUM = "DISTINCT_SESSIONS_BELOW_MINIMUM"
     DISTINCT_DATES_BELOW_MINIMUM = "DISTINCT_DATES_BELOW_MINIMUM"
@@ -219,6 +225,12 @@ class SufficientObservationPolicy(_Model):
     policy_id: str = Field(pattern=IDENTIFIER)
     policy_version: str = Field(pattern=IDENTIFIER)
     counting_semantics_version: Literal[COUNTING_SEMANTICS_VERSION] = COUNTING_SEMANTICS_VERSION
+    source_event_resolver_version: Literal[SOURCE_EVENT_RESOLVER_VERSION] = (
+        SOURCE_EVENT_RESOLVER_VERSION
+    )
+    dependency_resolver_version: Literal[DEPENDENCY_RESOLVER_VERSION] = (
+        DEPENDENCY_RESOLVER_VERSION
+    )
     status: PolicyStatus
     created_at: dt.datetime
     reviewed_at: dt.datetime | None = None
@@ -243,6 +255,7 @@ class SufficientObservationPolicy(_Model):
     @model_validator(mode="after")
     def validate_value(self):
         _ids(self.policy_id, self.policy_version, self.counting_semantics_version,
+             self.source_event_resolver_version, self.dependency_resolver_version,
              self.exception_policy_ref)
         _opaque_values(self.jurisdiction_context_ref, self.use_context_ref)
         for value in (self.created_at, self.reviewed_at, self.effective_from, self.effective_to,
@@ -279,6 +292,167 @@ class SufficientObservationPolicy(_Model):
                 raise ValueError
         _hash(self, "content_hash")
         return self
+
+
+class SourceEventIdentityRecord(_Model):
+    """Canonical, resolver-owned identity for one provider event (contract-test only)."""
+
+    resolver_version: Literal[SOURCE_EVENT_RESOLVER_VERSION] = SOURCE_EVENT_RESOLVER_VERSION
+    assurance: Literal[DependencyAssurance.CONTRACT_TEST_ONLY]
+    provider_ref: str = Field(pattern=OPAQUE)
+    instrument_ref: str = Field(pattern=OPAQUE)
+    dataset_ref: str = Field(pattern=OPAQUE)
+    observation_type: str = Field(pattern=IDENTIFIER)
+    provider_event_key_ref: str = Field(pattern=OPAQUE)
+    canonical_event_key: str = Field(pattern=SHA256)
+    session_ref: str = Field(pattern=IDENTIFIER)
+    session_date: dt.date
+    window_start: dt.datetime
+    window_end: dt.datetime
+    available_at: dt.datetime
+    market_data_mode: MarketDataMode
+    payload_digest: str = Field(pattern=SHA256)
+    provenance_digest: str = Field(pattern=SHA256)
+    attestation_ref_digest: str = Field(pattern=SHA256)
+    custody_lineage_digest: str = Field(pattern=SHA256)
+    policy_id: str = Field(pattern=IDENTIFIER)
+    policy_version: str = Field(pattern=IDENTIFIER)
+    counting_semantics_version: Literal[COUNTING_SEMANTICS_VERSION]
+    aliases: tuple[str, ...] = ()
+    record_digest: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_value(self):
+        _ids(self.observation_type, self.session_ref, self.policy_id, self.policy_version,
+             self.counting_semantics_version, self.resolver_version)
+        _opaque_values(self.provider_ref, self.instrument_ref, self.dataset_ref,
+                       self.provider_event_key_ref)
+        _utc(self.window_start)
+        _utc(self.window_end)
+        _utc(self.available_at)
+        if self.window_start > self.window_end or self.available_at < self.window_end:
+            raise ValueError
+        if self.session_date != self.window_start.date():
+            raise ValueError
+        if len(set(self.aliases)) != len(self.aliases) or self.record_digest in self.aliases:
+            raise ValueError
+        if any(not _is_sha256(value) for value in self.aliases):
+            raise ValueError
+        expected_key = typed_hash({
+            "provider": self.provider_ref,
+            "instrument": self.instrument_ref,
+            "dataset": self.dataset_ref,
+            "observation_type": self.observation_type,
+            "provider_event_key": self.provider_event_key_ref,
+        })
+        if self.canonical_event_key != expected_key:
+            raise ValueError
+        _hash(self, "record_digest")
+        return self
+
+
+class DependencyArtifactRecord(_Model):
+    """Canonical resolver record; its content, not its reference, establishes membership."""
+
+    resolver_version: Literal[DEPENDENCY_RESOLVER_VERSION] = DEPENDENCY_RESOLVER_VERSION
+    assurance: Literal[DependencyAssurance.CONTRACT_TEST_ONLY]
+    kind: DependencyKind
+    source_contract: str = Field(pattern=IDENTIFIER)
+    source_contract_version: str = Field(pattern=IDENTIFIER)
+    canonical_schema: str = Field(pattern=IDENTIFIER)
+    provider_ref: str = Field(pattern=OPAQUE)
+    dataset_ref: str = Field(pattern=OPAQUE)
+    route_ref: str = Field(pattern=OPAQUE)
+    entity_ref: str = Field(pattern=OPAQUE)
+    capability_id: str = Field(pattern=IDENTIFIER)
+    policy_id: str = Field(pattern=IDENTIFIER)
+    policy_version: str = Field(pattern=IDENTIFIER)
+    source_event_ref_digest: str = Field(pattern=SHA256)
+    payload_digest: str = Field(pattern=SHA256)
+    available_at: dt.datetime
+    effective_at: dt.datetime
+    verified_at: dt.datetime
+    expires_at: dt.datetime
+    revoked_at: dt.datetime | None = None
+    contract_provenance_digest: str = Field(pattern=SHA256)
+    artifact_digest: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_value(self):
+        _ids(self.resolver_version, self.source_contract, self.source_contract_version,
+             self.canonical_schema, self.capability_id, self.policy_id, self.policy_version)
+        expected_contract = DEPENDENCY_CONTRACTS[self.kind]
+        if (self.source_contract, self.source_contract_version) != expected_contract:
+            raise ValueError
+        if self.canonical_schema != f"{self.source_contract}.{self.source_contract_version}":
+            raise ValueError
+        expected_provenance = typed_hash({
+            "kind": self.kind,
+            "source_contract": self.source_contract,
+            "source_contract_version": self.source_contract_version,
+            "canonical_schema": self.canonical_schema,
+            "assurance": DependencyAssurance.CONTRACT_TEST_ONLY,
+        })
+        if self.contract_provenance_digest != expected_provenance:
+            raise ValueError
+        _opaque_values(self.provider_ref, self.dataset_ref, self.route_ref, self.entity_ref)
+        for value in (self.available_at, self.effective_at, self.verified_at,
+                      self.expires_at, self.revoked_at):
+            if value is not None:
+                _utc(value)
+        if not self.available_at <= self.effective_at <= self.verified_at < self.expires_at:
+            raise ValueError
+        if self.revoked_at is not None and self.revoked_at < self.available_at:
+            raise ValueError
+        _hash(self, "artifact_digest")
+        return self
+
+
+class SourceEventResolver(Protocol):
+    resolver_version: str
+
+    def resolve(self, reference: str) -> SourceEventIdentityRecord | None: ...
+
+
+class DependencyArtifactResolver(Protocol):
+    resolver_version: str
+
+    def resolve(self, reference: str) -> DependencyArtifactRecord | None: ...
+
+
+class ContractTestSourceEventResolver:
+    resolver_version = SOURCE_EVENT_RESOLVER_VERSION
+
+    def __init__(self, records: tuple[SourceEventIdentityRecord, ...]):
+        resolved = tuple(_deep(SourceEventIdentityRecord, item) for item in records)
+        index: dict[str, SourceEventIdentityRecord] = {}
+        canonical: dict[str, SourceEventIdentityRecord] = {}
+        for item in resolved:
+            prior = canonical.get(item.canonical_event_key)
+            if prior is not None and prior != item:
+                raise ObservationPolicyError("conflicting canonical source-event registry")
+            canonical[item.canonical_event_key] = item
+            for reference in (item.record_digest, *item.aliases):
+                if reference in index and index[reference] != item:
+                    raise ObservationPolicyError("conflicting source-event alias")
+                index[reference] = item
+        self._records = index
+
+    def resolve(self, reference: str) -> SourceEventIdentityRecord | None:
+        return self._records.get(reference)
+
+
+class ContractTestDependencyArtifactResolver:
+    resolver_version = DEPENDENCY_RESOLVER_VERSION
+
+    def __init__(self, records: tuple[DependencyArtifactRecord, ...]):
+        resolved = tuple(_deep(DependencyArtifactRecord, item) for item in records)
+        if len({item.artifact_digest for item in resolved}) != len(resolved):
+            raise ObservationPolicyError("duplicate dependency artifact")
+        self._records = {item.artifact_digest: item for item in resolved}
+
+    def resolve(self, reference: str) -> DependencyArtifactRecord | None:
+        return self._records.get(reference)
 
 
 class DependencyArtifactReference(_Model):
@@ -350,6 +524,7 @@ class ObservationEvidence(_Model):
     payload_digest: str = Field(pattern=SHA256)
     provenance_digest: str = Field(pattern=SHA256)
     attestation_ref_digest: str = Field(pattern=SHA256)
+    custody_lineage_digest: str = Field(pattern=SHA256)
     source_event_ref_digest: str = Field(pattern=SHA256)
     local_wrapper_digest: str = Field(pattern=SHA256)
     present_provenance_fields: tuple[str, ...]
@@ -402,6 +577,7 @@ class ObservationEvidence(_Model):
             "underlying": self.underlying_event_identity(),
             "provenance": self.provenance_digest,
             "attestation": self.attestation_ref_digest,
+            "custody_lineage": self.custody_lineage_digest,
             "wrapper": self.local_wrapper_digest,
         })
 
@@ -432,6 +608,7 @@ class SufficiencyAssessment(_Model):
     state: EvaluationState
     gate_results: tuple[GateEvaluation, ...]
     contract_validation_state: Literal["CONTRACT_TEST_VALIDATED"]
+    package_assurance: Literal["LOCAL_PACKAGE_COMPLETENESS_ONLY"]
     real_policy_approval: Literal[ProvisioningState.NOT_PROVISIONED]
     real_provider_admission: Literal[ProvisioningState.NOT_PROVISIONED]
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
@@ -455,16 +632,25 @@ class SufficiencyAssessment(_Model):
 
 
 def evaluate_sufficiency(
-    *, policy: Any, observations: tuple[Any, ...], assessed_at: dt.datetime
+    *, policy: Any, observations: tuple[Any, ...], assessed_at: dt.datetime,
+    source_event_resolver: SourceEventResolver | None = None,
+    dependency_artifact_resolver: DependencyArtifactResolver | None = None,
 ) -> SufficiencyAssessment:
     """Deterministically evaluate contract evidence without making a REAL admission."""
     try:
         rule = _deep(SufficientObservationPolicy, policy)
         evidence = tuple(_deep(ObservationEvidence, item) for item in observations)
         _utc(assessed_at)
+        if (source_event_resolver is None
+                or source_event_resolver.resolver_version != rule.source_event_resolver_version):
+            source_event_resolver = None
+        if (dependency_artifact_resolver is None
+                or dependency_artifact_resolver.resolver_version != rule.dependency_resolver_version):
+            dependency_artifact_resolver = None
         results = tuple(
             sorted(
-                (_evaluate_gate(rule, criterion, evidence, assessed_at)
+                (_evaluate_gate(rule, criterion, evidence, assessed_at,
+                                source_event_resolver, dependency_artifact_resolver)
                  for criterion in rule.criteria),
                 key=lambda item: item.gate.value,
             )
@@ -486,6 +672,7 @@ def evaluate_sufficiency(
             state=overall,
             gate_results=results,
             contract_validation_state="CONTRACT_TEST_VALIDATED",
+            package_assurance="LOCAL_PACKAGE_COMPLETENESS_ONLY",
             real_policy_approval=ProvisioningState.NOT_PROVISIONED,
             real_provider_admission=ProvisioningState.NOT_PROVISIONED,
             gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
@@ -502,9 +689,10 @@ def evaluate_sufficiency(
         raise ObservationPolicyError("invalid sufficient-observation evaluation") from None
 
 
-def _evaluate_gate(policy, criterion, evidence, now):
+def _evaluate_gate(policy, criterion, evidence, now, event_resolver, artifact_resolver):
     reasons: set[ReasonCode] = set()
-    candidates: list[ObservationEvidence] = []
+    candidates: list[tuple[ObservationEvidence, SourceEventIdentityRecord]] = []
+    conflicted_event_keys: set[str] = set()
     policy_unavailable = (
         now < policy.effective_from
         or policy.effective_to is not None and now >= policy.effective_to
@@ -516,14 +704,20 @@ def _evaluate_gate(policy, criterion, evidence, now):
     for item in evidence:
         if item.gate is not criterion.gate or item.observation_class is not criterion.observation_class:
             continue
-        item_reasons = _observation_reasons(policy, criterion, item, now)
+        item_reasons, event = _observation_reasons(
+            policy, criterion, item, now, event_resolver, artifact_resolver
+        )
         reasons.update(item_reasons)
-        if not item_reasons and not policy_unavailable:
-            candidates.append(item)
+        if event is not None and ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED in item_reasons:
+            conflicted_event_keys.add(event.canonical_event_key)
+        if not item_reasons and not policy_unavailable and event is not None:
+            candidates.append((item, event))
     if not evidence:
         reasons.add(ReasonCode.NO_OBSERVATIONS)
-    providers = {item.provider_ref for item in candidates}
-    datasets = {item.dataset_ref for item in candidates}
+    candidates = [pair for pair in candidates if pair[1].canonical_event_key
+                  not in conflicted_event_keys]
+    providers = {item.provider_ref for item, _ in candidates}
+    datasets = {item.dataset_ref for item, _ in candidates}
     if len(providers) > 1 and not criterion.allow_cross_provider_aggregation:
         reasons.add(ReasonCode.PROVIDER_MISMATCH)
         candidates = []
@@ -531,15 +725,20 @@ def _evaluate_gate(policy, criterion, evidence, now):
         reasons.add(ReasonCode.DATASET_MISMATCH)
         candidates = []
     by_event: dict[str, list[ObservationEvidence]] = {}
-    for item in sorted(candidates, key=lambda x: (
-        x.underlying_event_identity(), x.conflict_identity(), x.representation_identity(),
-        x.evidence_hash,
+    for item, event in sorted(candidates, key=lambda x: (
+        x[1].canonical_event_key, x[0].conflict_identity(), x[0].representation_identity(),
+        x[0].evidence_hash,
     )):
-        by_event.setdefault(item.underlying_event_identity(), []).append(item)
+        by_event.setdefault(event.canonical_event_key, []).append(item)
     unique: list[ObservationEvidence] = []
     duplicate_count = 0
     for event_identity, representations in sorted(by_event.items()):
-        conflicts = {item.conflict_identity() for item in representations}
+        conflicts = {typed_hash({
+            "canonical_event": event_identity, "session": item.session_ref,
+            "session_date": item.session_date, "window_start": item.window_start,
+            "window_end": item.window_end, "mode": item.market_data_mode,
+            "payload": item.payload_digest,
+        }) for item in representations}
         duplicate_count += len(representations) - 1
         if len(conflicts) > 1:
             reasons.add(ReasonCode.SAME_WINDOW_CONFLICT)
@@ -549,7 +748,8 @@ def _evaluate_gate(policy, criterion, evidence, now):
         unique.append(min(representations, key=lambda item: (
             item.representation_identity(), item.evidence_hash
         )))
-    identities = tuple(sorted(item.underlying_event_identity() for item in unique))
+    identities = tuple(sorted(by_event_identity for by_event_identity, representations
+                              in by_event.items() if any(item in unique for item in representations)))
     sessions = len({item.session_ref for item in unique})
     dates = len({item.session_date for item in unique})
     if len(unique) < criterion.minimum_observation_count:
@@ -565,13 +765,15 @@ def _evaluate_gate(policy, criterion, evidence, now):
         reasons.add(ReasonCode.POLICY_NOT_COLLECTION_APPROVED)
     dependency_not_provisioned = any(code in reasons for code in (
         ReasonCode.TRUST_NOT_PROVISIONED, ReasonCode.LEGAL_NOT_PROVISIONED,
-        ReasonCode.CUSTODY_NOT_PROVISIONED,
+        ReasonCode.CUSTODY_NOT_PROVISIONED, ReasonCode.SOURCE_EVENT_NOT_PROVISIONED,
+        ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED,
     ))
     review = any(code in reasons for code in (
         ReasonCode.TRUST_REVIEW_REQUIRED, ReasonCode.LEGAL_REVIEW_REQUIRED,
         ReasonCode.CUSTODY_REVIEW_REQUIRED, ReasonCode.POLICY_VERSION_MISMATCH,
         ReasonCode.SAME_WINDOW_CONFLICT, ReasonCode.POLICY_NOT_COLLECTION_APPROVED,
-        ReasonCode.OUTSIDE_POLICY_WINDOW,
+        ReasonCode.OUTSIDE_POLICY_WINDOW, ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED,
+        ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED,
     ))
     insufficient = any(code in reasons for code in (
         ReasonCode.NO_OBSERVATIONS, ReasonCode.COUNT_BELOW_MINIMUM,
@@ -591,8 +793,30 @@ def _evaluate_gate(policy, criterion, evidence, now):
     )
 
 
-def _observation_reasons(policy, criterion, item, now):
+def _observation_reasons(policy, criterion, item, now, event_resolver, artifact_resolver):
     reasons: set[ReasonCode] = set()
+    event = None if event_resolver is None else event_resolver.resolve(item.source_event_ref_digest)
+    if event is None:
+        reasons.add(ReasonCode.SOURCE_EVENT_NOT_PROVISIONED)
+    else:
+        event = _deep(SourceEventIdentityRecord, event)
+        expected_event = (
+            item.provider_ref, item.instrument_ref, item.dataset_ref, item.observation_type,
+            item.session_ref, item.session_date, item.window_start, item.window_end,
+            item.available_at, item.market_data_mode, item.payload_digest,
+            item.provenance_digest, item.attestation_ref_digest, item.custody_lineage_digest,
+            item.policy_id, item.policy_version, item.counting_semantics_version,
+        )
+        actual_event = (
+            event.provider_ref, event.instrument_ref, event.dataset_ref, event.observation_type,
+            event.session_ref, event.session_date, event.window_start, event.window_end,
+            event.available_at, event.market_data_mode, event.payload_digest,
+            event.provenance_digest, event.attestation_ref_digest, event.custody_lineage_digest,
+            event.policy_id, event.policy_version, event.counting_semantics_version,
+        )
+        if expected_event != actual_event:
+            reasons.add(ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED)
+            reasons.add(ReasonCode.SAME_WINDOW_CONFLICT)
     if (item.policy_id, item.policy_version, item.policy_hash, item.counting_semantics_version) != (
         policy.policy_id, policy.policy_version, policy.content_hash, policy.counting_semantics_version
     ):
@@ -634,9 +858,32 @@ def _observation_reasons(policy, criterion, item, now):
         if artifact is None:
             reasons.add(_dependency_code(kind, provisioned=False))
             continue
+        record = None if artifact_resolver is None else artifact_resolver.resolve(
+            artifact.artifact_digest
+        )
+        if record is None:
+            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED)
+            reasons.add(_dependency_code(kind, provisioned=False))
+            continue
+        record = _deep(DependencyArtifactRecord, record)
+        reference_content = BaseModel.model_dump(
+            artifact, mode="python", exclude={"reference_hash", "artifact_digest"}
+        )
+        record_content = BaseModel.model_dump(
+            record, mode="python", exclude={
+                "resolver_version", "canonical_schema", "contract_provenance_digest",
+                "artifact_digest",
+            }
+        )
+        if reference_content != record_content:
+            reasons.add(ReasonCode.DEPENDENCY_BINDING_MISMATCH)
+            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED)
+            reasons.add(_dependency_code(kind, provisioned=True))
+            continue
         expected = (item.provider_ref, item.dataset_ref, item.route_ref, item.instrument_ref,
                     item.capability_id, item.policy_id, item.policy_version,
-                    item.source_event_ref_digest, item.payload_digest)
+                    event.canonical_event_key if event is not None else item.source_event_ref_digest,
+                    item.payload_digest)
         actual = (artifact.provider_ref, artifact.dataset_ref, artifact.route_ref,
                   artifact.entity_ref, artifact.capability_id, artifact.policy_id,
                   artifact.policy_version, artifact.source_event_ref_digest,
@@ -650,7 +897,7 @@ def _observation_reasons(policy, criterion, item, now):
         if (now < artifact.effective_at or now >= artifact.expires_at
                 or artifact.revoked_at is not None and now >= artifact.revoked_at):
             reasons.add(_dependency_code(kind, provisioned=True))
-    return reasons
+    return reasons, event
 
 
 def _dependency_code(kind: DependencyKind, *, provisioned: bool) -> ReasonCode:
@@ -666,7 +913,51 @@ def admit_real_policy(*args: Any, **kwargs: Any) -> None:
     raise ObservationPolicyError("REAL sufficient-observation policy is NOT_PROVISIONED")
 
 
+def build_contract_test_source_event_record(**values: Any) -> SourceEventIdentityRecord:
+    """Build a fully bound canonical fixture record; this grants no REAL assurance."""
+    values = dict(values)
+    values["resolver_version"] = SOURCE_EVENT_RESOLVER_VERSION
+    values["assurance"] = DependencyAssurance.CONTRACT_TEST_ONLY
+    values["canonical_event_key"] = typed_hash({
+        "provider": values["provider_ref"],
+        "instrument": values["instrument_ref"],
+        "dataset": values["dataset_ref"],
+        "observation_type": values["observation_type"],
+        "provider_event_key": values["provider_event_key_ref"],
+    })
+    return _seal_record(SourceEventIdentityRecord, "record_digest", values)
+
+
+def build_contract_test_dependency_artifact(**values: Any) -> DependencyArtifactRecord:
+    """Adapt validated PR38-42 contract-test content into a scoped resolver record."""
+    values = dict(values)
+    values["resolver_version"] = DEPENDENCY_RESOLVER_VERSION
+    values["assurance"] = DependencyAssurance.CONTRACT_TEST_ONLY
+    values["canonical_schema"] = (
+        f"{values['source_contract']}.{values['source_contract_version']}"
+    )
+    values["contract_provenance_digest"] = typed_hash({
+        "kind": values["kind"],
+        "source_contract": values["source_contract"],
+        "source_contract_version": values["source_contract_version"],
+        "canonical_schema": values["canonical_schema"],
+        "assurance": DependencyAssurance.CONTRACT_TEST_ONLY,
+    })
+    return _seal_record(DependencyArtifactRecord, "artifact_digest", values)
+
+
 T = TypeVar("T", bound=BaseModel)
+
+
+def _seal_record(expected: type[T], hash_field: str, values: dict[str, Any]) -> T:
+    try:
+        raw = BaseModel.model_construct.__func__(expected, **values, **{hash_field: "0" * 64})
+        digest = typed_hash(BaseModel.model_dump(
+            raw, mode="json", exclude={hash_field}, warnings=False
+        ))
+        return expected(**values, **{hash_field: digest})
+    except BaseException:  # noqa: BLE001
+        raise ObservationPolicyError("invalid contract-test resolver record") from None
 
 
 def seal_contract_test(expected: type[T], hash_field: str, **values: Any) -> T:
@@ -733,6 +1024,10 @@ def _opaque_values(*values: str) -> None:
            or any(character not in "0123456789abcdef" for character in value[10:])
            for value in values):
         raise ValueError
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 _SEAL_FIELDS: dict[type[BaseModel], str] = {

@@ -29,15 +29,19 @@ expiry and revocation stop future counting under the unavailable policy.
 
 ## Observation identity and deterministic counting
 
-Counting uses `source-event-dominant-v2`, which is bound into the policy content hash and every
-observation. The underlying-event key binds policy/counting version, provider, instrument, dataset,
-observation type and the required source-event digest. Representation identity separately binds
-provenance, attestation and local-wrapper digests. Conflict identity separately binds payload,
-mode, session/date and window. Thus additional wrappers, provenance or attestation references for
-one source event never increase count, sessions, dates or span. If any representation of that event
-disagrees on payload, mode, session/date or window, the entire source event is excluded and the gate
-requires review. A missing or malformed source-event digest fails model construction; local wrapper
-identity is never used as a fallback. Ordering is canonical and independent of input order.
+Counting uses `resolved-source-event-dominant-v3`; its resolver semantics version is bound into the
+policy hash. A caller-provided digest is only a reference: syntax and resealing do not establish
+identity or truth. Every countable observation must resolve to canonical content whose digest is
+recomputed. The record binds provider, instrument, dataset/product, observation type, provider
+event key, session/date/window, mode, payload, provenance, attestation, custody lineage, PIT
+availability and policy/counting semantics. Missing records are not provisioned. Hash or binding
+disagreement excludes the whole canonical event and requires review.
+
+Resolver aliases map to one canonical event key and count once. Conflicting records for a canonical
+key invalidate the registry; conflicting representations exclude that event. Distinct provider
+events remain distinct only after resolution and only aggregate when policy explicitly permits it.
+Ordering is canonical. The deterministic in-memory registry is `CONTRACT_TEST_ONLY`; no REAL
+provider source-event registry is provisioned.
 
 Providers and datasets are allow-listed per criterion. Multiple providers, datasets or modes do not
 combine unless that exact criterion explicitly allows the aggregation. Policy v1 observations do
@@ -53,15 +57,16 @@ gate, observation class, capability, provider, dataset and mode before counting.
 
 Each criterion independently defines minimum observations, sessions, dates and span, maximum age,
 permitted missingness, required provenance fields, trust/authority requirements, legal rights and
-custody/WORM/replay requirements. Critical dependency states are not caller-supplied enums.
-`ObservationEvidence` requires separately content-addressed, typed artifact references for
-trust/verifier, authority registry, legal right and custody/WORM/replay when the criterion requires
-them. Each reference binds provider, dataset, route, entity/instrument, capability and policy
-version, source-event and payload digests, plus an allow-listed PR38–42 source-contract identity,
-artifact digest and lifecycle. Missing artifacts yield
-`NOT_PROVISIONED`; binding mismatch, future availability/verification, expiry or revocation yields
-`REVIEW_REQUIRED`. These references are deliberately limited to `CONTRACT_TEST_ONLY`; no local
-hash, fixture, seal or reference can assert external verification.
+custody/WORM/replay requirements. Critical dependency states are not caller-supplied enums, and a
+caller-provided artifact digest is only a reference. Each required trust/verifier, authority
+registry, legal right and custody/WORM/replay reference must resolve to canonical registry content.
+The evaluator reconstructs the typed record, recomputes its content hash, checks its exact
+allow-listed PR38–42 contract kind/version/schema and provenance, and compares provider, dataset,
+route, entity, capability, policy, resolved canonical source event, payload and lifecycle bindings.
+Absence fails as `NOT_PROVISIONED`; hash/schema/binding disagreement and future, expired or revoked
+content require review. `seal_contract_test()` cannot seal resolver records or create membership.
+The in-memory registry accepts validated canonical records only and is `CONTRACT_TEST_ONLY`; REAL
+external artifact resolution remains `NOT_PROVISIONED`.
 
 All timestamps use strict UTC. Observation event/window time is distinct from evidence
 `available_at`, and dependency availability/effective/verification times are distinct again.
@@ -87,6 +92,10 @@ replay and provider admission remain `NOT_PROVISIONED`. Gate #2 and all 10/10 ga
 `OPEN_EXTERNAL`. The safety state remains `QVM_NOT_READY`, `INSUFFICIENT_REAL_DATA`,
 `trade_decision=NO_TRADE`, `signals_generated=false`, `live_execution_enabled=false`, and
 backtesting `NOT_AUTHORIZED`.
+
+`SUFFICIENT_FOR_EXTERNAL_VERIFICATION` means only local package completeness/readiness for a later
+external verifier. The assessment says `LOCAL_PACKAGE_COMPLETENESS_ONLY`; it does not mean evidence
+authenticity, external verification success, provider approval/admission, or any REAL conclusion.
 
 Step 6—capturing sufficient authentic evidence—has not started. This change does not capture bulk
 or REAL evidence, close a gate, admit a provider, score QVM, create a shortlist, backtest, construct
