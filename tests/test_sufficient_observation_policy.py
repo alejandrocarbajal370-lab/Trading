@@ -27,6 +27,7 @@ from governance.sufficient_observation_policy import (
     ObservationPolicyError,
     PolicyStatus,
     ReasonCode,
+    SourceEventAssurance,
     SufficiencyAssessment,
     SufficientObservationPolicy,
     admit_real_policy,
@@ -54,23 +55,11 @@ def dependency(kind, *, provider, dataset, route, entity, capability, policy, in
                source_event, payload, available_at=None, verified_at=None, expires_at=None,
                revoked_at=None):
     source_contract, source_contract_version = DEPENDENCY_CONTRACTS[kind]
-    record = build_contract_test_dependency_artifact(
-        kind=kind, source_contract=source_contract,
-        source_contract_version=source_contract_version,
-        provider_ref=provider, source_event_ref_digest=source_event,
-        payload_digest=payload, dataset_ref=dataset, route_ref=route, entity_ref=entity,
-        capability_id=capability, policy_id=policy.policy_id,
-        policy_version=policy.policy_version,
-        available_at=available_at or NOW-dt.timedelta(minutes=55),
-        effective_at=NOW-dt.timedelta(minutes=50),
-        verified_at=verified_at or NOW-dt.timedelta(minutes=45),
-        expires_at=expires_at or NOW+dt.timedelta(days=1), revoked_at=revoked_at,
-        contract_provenance_digest=digest(f"pr38-42-provenance-{kind}-{index}"),
-    )
+    artifact_digest = digest(f"unprovisioned-canonical-artifact-{kind}-{index}")
     reference = seal_contract_test(
         DependencyArtifactReference, "reference_hash", kind=kind,
         source_contract=source_contract, source_contract_version=source_contract_version,
-        artifact_digest=record.artifact_digest, provider_ref=provider,
+        artifact_digest=artifact_digest, provider_ref=provider,
         source_event_ref_digest=source_event, payload_digest=payload,
         dataset_ref=dataset, route_ref=route, entity_ref=entity, capability_id=capability,
         policy_id=policy.policy_id, policy_version=policy.policy_version,
@@ -80,7 +69,7 @@ def dependency(kind, *, provider, dataset, route, entity, capability, policy, in
         expires_at=expires_at or NOW+dt.timedelta(days=1), revoked_at=revoked_at,
         assurance=DependencyAssurance.CONTRACT_TEST_ONLY,
     )
-    return reference, record
+    return reference, None
 
 
 def reseal(value, model, field, **changes):
@@ -166,7 +155,7 @@ def graph(*, status=PolicyStatus.APPROVED_FOR_EVIDENCE_COLLECTION):
                 source_event=event_record.canonical_event_key, payload=payload,
             ) for kind in DependencyKind)
             artifacts = tuple(pair[0] for pair in pairs)
-            artifact_records.extend(pair[1] for pair in pairs)
+            artifact_records.extend(pair[1] for pair in pairs if pair[1] is not None)
             observations.append(seal_contract_test(
                 ObservationEvidence, "evidence_hash",
                 observation_ref=f"observation.{class_index}.{index}",
@@ -218,8 +207,8 @@ def market_result(result):
 
 def test_foundation_can_only_reach_conservative_pre_verification_state():
     result = assess()
-    assert result.state is EvaluationState.SUFFICIENT_FOR_EXTERNAL_VERIFICATION
-    assert result.contract_validation_state == "CONTRACT_TEST_VALIDATED"
+    assert result.state is EvaluationState.NOT_PROVISIONED
+    assert result.contract_validation_state == "CONTRACT_MECHANICS_VALIDATED"
     assert result.package_assurance == "LOCAL_PACKAGE_COMPLETENESS_ONLY"
     assert result.real_policy_approval is ProvisioningState.NOT_PROVISIONED
     assert result.real_provider_admission is ProvisioningState.NOT_PROVISIONED
@@ -231,6 +220,48 @@ def test_foundation_can_only_reach_conservative_pre_verification_state():
     assert result.backtesting == "NOT_AUTHORIZED"
     with pytest.raises(ObservationPolicyError, match="NOT_PROVISIONED"):
         admit_real_policy(object())
+
+
+def test_synthetic_source_events_are_explicit_and_cannot_reach_sufficiency():
+    policy, observations = graph()
+    event = _RESOLVERS[0].resolve(observations[0].source_event_ref_digest)
+    assert event.assurance is SourceEventAssurance.SYNTHETIC_TEST_EVENT_IDENTITY
+    assert event.canonical_upstream_observation_digest is None
+    result = assess(policy, observations)
+    assert result.state is EvaluationState.NOT_PROVISIONED
+    assert all(ReasonCode.SOURCE_EVENT_NOT_PROVISIONED in gate.reason_codes
+               for gate in result.gate_results)
+
+
+def test_local_dependency_factory_and_56_caller_records_cannot_create_membership():
+    with pytest.raises(ObservationPolicyError, match="canonical upstream"):
+        build_contract_test_dependency_artifact(kind=DependencyKind.TRUST_VERIFIER)
+    forged = tuple(BaseModel.model_construct.__func__(
+        DependencyArtifactRecord, artifact_digest=digest(f"forged-{index}")
+    ) for index in range(56))
+    with pytest.raises(ObservationPolicyError, match="canonical dependency"):
+        ContractTestDependencyArtifactResolver(forged)
+    assert assess().state is EvaluationState.NOT_PROVISIONED
+
+
+def test_caller_implemented_resolver_cannot_bypass_controlled_adapter():
+    policy, observations = graph()
+
+    class CallerResolver:
+        resolver_version = policy.dependency_resolver_version
+
+        def resolve(self, reference):
+            del reference
+            return object()
+
+    result = evaluate_sufficiency(
+        policy=policy, observations=observations, assessed_at=NOW,
+        source_event_resolver=_RESOLVERS[0],
+        dependency_artifact_resolver=CallerResolver(),
+    )
+    assert result.state is EvaluationState.NOT_PROVISIONED
+    assert all(ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED in gate.reason_codes
+               for gate in result.gate_results)
 
 
 def test_policy_is_versioned_content_addressed_gate_specific_and_provisional():
@@ -549,21 +580,15 @@ def test_fabricated_or_wrong_content_dependency_artifact_fails_closed():
         dependency_artifacts=(fabricated, *pair[0].dependency_artifacts[1:]),
     )
     gate = market_result(assess(policy, (*rest, observation, pair[1])))
-    assert gate.accepted_count == 1 and gate.state is EvaluationState.NOT_PROVISIONED
+    assert gate.accepted_count == 2 and gate.state is EvaluationState.NOT_PROVISIONED
     assert ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED in gate.reason_codes
-    record = _RESOLVERS[1].resolve(artifact.artifact_digest)
     wrong_hash = BaseModel.model_construct.__func__(
-        DependencyArtifactRecord, **{
-            **BaseModel.model_dump(record, mode="python"),
-            "artifact_digest": digest("wrong-content-hash"),
-        }
+        DependencyArtifactRecord, artifact_digest=digest("wrong-content-hash")
     )
     with pytest.raises(ObservationPolicyError):
         ContractTestDependencyArtifactResolver((wrong_hash,))
     with pytest.raises(ObservationPolicyError):
-        seal_contract_test(DependencyArtifactRecord, "artifact_digest", **BaseModel.model_dump(
-            record, mode="python", exclude={"artifact_digest"}
-        ))
+        seal_contract_test(DependencyArtifactRecord, "artifact_digest")
 
 
 @pytest.mark.parametrize("field,value", [
@@ -591,15 +616,12 @@ def test_wrong_dependency_contract_is_rejected_at_construction():
     with pytest.raises(ObservationPolicyError):
         reseal(artifact, DependencyArtifactReference, "reference_hash",
                source_contract="licensing-legal-governance", source_contract_version="v2")
-    record = _RESOLVERS[1].resolve(artifact.artifact_digest)
-    for changes in (
-        {"canonical_schema": "fake.schema.v1"},
-        {"contract_provenance_digest": digest("locally-reconstructed-fake")},
-        {"source_contract_version": "v999"},
-        {"kind": DependencyKind.LEGAL_RIGHT},
-    ):
-        with pytest.raises(ObservationPolicyError):
-            record.model_copy(update=changes)
+    assert _RESOLVERS[1].resolve(artifact.artifact_digest) is None
+    with pytest.raises(ObservationPolicyError, match="canonical upstream"):
+        build_contract_test_dependency_artifact(
+            canonical_schema="fake.schema.v1",
+            contract_provenance_digest=digest("locally-reconstructed-fake"),
+        )
 
 
 @pytest.mark.parametrize("changes", [

@@ -10,6 +10,7 @@ import datetime as dt
 import json
 import unicodedata
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Literal, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -18,13 +19,13 @@ from governance.canonical import typed_hash
 from governance.ibkr_external_attestation import ProvisioningState
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "governed-sufficient-observation-policy-v3"
+CONTRACT_VERSION = "governed-sufficient-observation-policy-v4"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{1,127}$"
 OPAQUE = r"^opaque:v1:[0-9a-f]{64}$"
-COUNTING_SEMANTICS_VERSION = "resolved-source-event-dominant-v3"
-SOURCE_EVENT_RESOLVER_VERSION = "contract-test-source-event-resolver-v1"
-DEPENDENCY_RESOLVER_VERSION = "contract-test-dependency-artifact-resolver-v1"
+COUNTING_SEMANTICS_VERSION = "canonical-upstream-event-required-v4"
+SOURCE_EVENT_RESOLVER_VERSION = "canonical-upstream-source-event-resolver-v2"
+DEPENDENCY_RESOLVER_VERSION = "canonical-upstream-dependency-resolver-v2"
 DEPENDENCY_CONTRACTS = {
     "TRUST_VERIFIER": ("external-trust-attestation-independent-verifier", "v1"),
     "AUTHORITY_REGISTRY": ("trust-anchor-authority-contract", "v1"),
@@ -78,6 +79,11 @@ class DependencyKind(StrEnum):
 
 class DependencyAssurance(StrEnum):
     CONTRACT_TEST_ONLY = "CONTRACT_TEST_ONLY"
+
+
+class SourceEventAssurance(StrEnum):
+    SYNTHETIC_TEST_EVENT_IDENTITY = "SYNTHETIC_TEST_EVENT_IDENTITY"
+    CANONICAL_UPSTREAM_OBSERVATION = "CANONICAL_UPSTREAM_OBSERVATION"
 
 
 class EvaluationState(StrEnum):
@@ -295,10 +301,11 @@ class SufficientObservationPolicy(_Model):
 
 
 class SourceEventIdentityRecord(_Model):
-    """Canonical, resolver-owned identity for one provider event (contract-test only)."""
+    """Synthetic Step5 fixture index; never authority for event independence."""
 
     resolver_version: Literal[SOURCE_EVENT_RESOLVER_VERSION] = SOURCE_EVENT_RESOLVER_VERSION
-    assurance: Literal[DependencyAssurance.CONTRACT_TEST_ONLY]
+    assurance: Literal[SourceEventAssurance.SYNTHETIC_TEST_EVENT_IDENTITY]
+    canonical_upstream_observation_digest: None = None
     provider_ref: str = Field(pattern=OPAQUE)
     instrument_ref: str = Field(pattern=OPAQUE)
     dataset_ref: str = Field(pattern=OPAQUE)
@@ -352,7 +359,7 @@ class SourceEventIdentityRecord(_Model):
 
 
 class DependencyArtifactRecord(_Model):
-    """Canonical resolver record; its content, not its reference, establishes membership."""
+    """Legacy local wrapper. It is never accepted as resolver membership or truth."""
 
     resolver_version: Literal[DEPENDENCY_RESOLVER_VERSION] = DEPENDENCY_RESOLVER_VERSION
     assurance: Literal[DependencyAssurance.CONTRACT_TEST_ONLY]
@@ -436,7 +443,7 @@ class ContractTestSourceEventResolver:
                 if reference in index and index[reference] != item:
                     raise ObservationPolicyError("conflicting source-event alias")
                 index[reference] = item
-        self._records = index
+        self._records = MappingProxyType(index)
 
     def resolve(self, reference: str) -> SourceEventIdentityRecord | None:
         return self._records.get(reference)
@@ -445,14 +452,47 @@ class ContractTestSourceEventResolver:
 class ContractTestDependencyArtifactResolver:
     resolver_version = DEPENDENCY_RESOLVER_VERSION
 
-    def __init__(self, records: tuple[DependencyArtifactRecord, ...]):
-        resolved = tuple(_deep(DependencyArtifactRecord, item) for item in records)
-        if len({item.artifact_digest for item in resolved}) != len(resolved):
-            raise ObservationPolicyError("duplicate dependency artifact")
-        self._records = {item.artifact_digest: item for item in resolved}
+    def __init__(self, canonical_artifacts: tuple[Any, ...]):
+        """Accept only owning-module artifacts; current APIs lack Step5's full bindings.
+
+        The owning validators and hashes are checked here.  None of the PR38--42
+        artifacts currently carries every provider/dataset/route/entity/capability/
+        policy/source-event/payload binding required by Step5, so they are deliberately
+        not promoted to resolver membership.  This is an explicit fail-closed adapter.
+        """
+        from governance.durable_custody import RestoreVerificationEvidence
+        from governance.external_trust_verifier import (
+            AuthorityRegistryEvidence,
+            IndependentVerificationResult,
+        )
+        from governance.legal_governance import (
+            LegalAdmissionDecision,
+            validate_legal_admission_decision,
+        )
+
+        validators = {
+            IndependentVerificationResult: ("result_hash", IndependentVerificationResult.model_validate),
+            AuthorityRegistryEvidence: ("evidence_hash", AuthorityRegistryEvidence.model_validate),
+            LegalAdmissionDecision: ("decision_hash", validate_legal_admission_decision),
+            RestoreVerificationEvidence: ("evidence_hash", RestoreVerificationEvidence.model_validate),
+        }
+        checked: list[str] = []
+        try:
+            for supplied in canonical_artifacts:
+                artifact_type = type(supplied)
+                if artifact_type not in validators:
+                    raise TypeError
+                hash_field, validator = validators[artifact_type]
+                canonical = validator(BaseModel.model_dump(supplied, mode="json"))
+                _hash(canonical, hash_field)
+                checked.append(getattr(canonical, hash_field))
+        except BaseException:  # noqa: BLE001
+            raise ObservationPolicyError("invalid canonical dependency artifact") from None
+        self._unsupported_canonical_digests = tuple(sorted(checked))
 
     def resolve(self, reference: str) -> DependencyArtifactRecord | None:
-        return self._records.get(reference)
+        del reference
+        return None
 
 
 class DependencyArtifactReference(_Model):
@@ -559,7 +599,7 @@ class ObservationEvidence(_Model):
         return self
 
     def underlying_event_identity(self) -> str:
-        """Reliable source identity dominates wrappers, provenance and payload."""
+        """Local grouping key only; it does not establish independent event identity."""
         return typed_hash({
             "contract": CONTRACT_VERSION,
             "policy_id": self.policy_id,
@@ -607,7 +647,7 @@ class SufficiencyAssessment(_Model):
     assessed_at: dt.datetime
     state: EvaluationState
     gate_results: tuple[GateEvaluation, ...]
-    contract_validation_state: Literal["CONTRACT_TEST_VALIDATED"]
+    contract_validation_state: Literal["CONTRACT_MECHANICS_VALIDATED"]
     package_assurance: Literal["LOCAL_PACKAGE_COMPLETENESS_ONLY"]
     real_policy_approval: Literal[ProvisioningState.NOT_PROVISIONED]
     real_provider_admission: Literal[ProvisioningState.NOT_PROVISIONED]
@@ -641,10 +681,10 @@ def evaluate_sufficiency(
         rule = _deep(SufficientObservationPolicy, policy)
         evidence = tuple(_deep(ObservationEvidence, item) for item in observations)
         _utc(assessed_at)
-        if (source_event_resolver is None
+        if (type(source_event_resolver) is not ContractTestSourceEventResolver
                 or source_event_resolver.resolver_version != rule.source_event_resolver_version):
             source_event_resolver = None
-        if (dependency_artifact_resolver is None
+        if (type(dependency_artifact_resolver) is not ContractTestDependencyArtifactResolver
                 or dependency_artifact_resolver.resolver_version != rule.dependency_resolver_version):
             dependency_artifact_resolver = None
         results = tuple(
@@ -656,10 +696,10 @@ def evaluate_sufficiency(
             )
         )
         states = {item.state for item in results}
-        if EvaluationState.NOT_PROVISIONED in states:
-            overall = EvaluationState.NOT_PROVISIONED
-        elif EvaluationState.REVIEW_REQUIRED in states:
+        if EvaluationState.REVIEW_REQUIRED in states:
             overall = EvaluationState.REVIEW_REQUIRED
+        elif EvaluationState.NOT_PROVISIONED in states:
+            overall = EvaluationState.NOT_PROVISIONED
         elif EvaluationState.INSUFFICIENT in states:
             overall = EvaluationState.INSUFFICIENT
         else:
@@ -671,7 +711,7 @@ def evaluate_sufficiency(
             assessed_at=assessed_at,
             state=overall,
             gate_results=results,
-            contract_validation_state="CONTRACT_TEST_VALIDATED",
+            contract_validation_state="CONTRACT_MECHANICS_VALIDATED",
             package_assurance="LOCAL_PACKAGE_COMPLETENESS_ONLY",
             real_policy_approval=ProvisioningState.NOT_PROVISIONED,
             real_provider_admission=ProvisioningState.NOT_PROVISIONED,
@@ -710,7 +750,14 @@ def _evaluate_gate(policy, criterion, evidence, now, event_resolver, artifact_re
         reasons.update(item_reasons)
         if event is not None and ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED in item_reasons:
             conflicted_event_keys.add(event.canonical_event_key)
-        if not item_reasons and not policy_unavailable and event is not None:
+        mechanics_only = item_reasons <= {
+            ReasonCode.SOURCE_EVENT_NOT_PROVISIONED,
+            ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED,
+            ReasonCode.TRUST_NOT_PROVISIONED,
+            ReasonCode.LEGAL_NOT_PROVISIONED,
+            ReasonCode.CUSTODY_NOT_PROVISIONED,
+        }
+        if mechanics_only and not policy_unavailable and event is not None:
             candidates.append((item, event))
     if not evidence:
         reasons.add(ReasonCode.NO_OBSERVATIONS)
@@ -780,8 +827,8 @@ def _evaluate_gate(policy, criterion, evidence, now, event_resolver, artifact_re
         ReasonCode.DISTINCT_SESSIONS_BELOW_MINIMUM, ReasonCode.DISTINCT_DATES_BELOW_MINIMUM,
         ReasonCode.TIME_SPAN_BELOW_MINIMUM,
     ))
-    state = (EvaluationState.NOT_PROVISIONED if dependency_not_provisioned else
-             EvaluationState.REVIEW_REQUIRED if review else
+    state = (EvaluationState.REVIEW_REQUIRED if review else
+             EvaluationState.NOT_PROVISIONED if dependency_not_provisioned else
              EvaluationState.INSUFFICIENT if insufficient else
              EvaluationState.SUFFICIENT_FOR_EXTERNAL_VERIFICATION)
     return GateEvaluation(
@@ -800,6 +847,8 @@ def _observation_reasons(policy, criterion, item, now, event_resolver, artifact_
         reasons.add(ReasonCode.SOURCE_EVENT_NOT_PROVISIONED)
     else:
         event = _deep(SourceEventIdentityRecord, event)
+        if event.assurance is SourceEventAssurance.SYNTHETIC_TEST_EVENT_IDENTITY:
+            reasons.add(ReasonCode.SOURCE_EVENT_NOT_PROVISIONED)
         expected_event = (
             item.provider_ref, item.instrument_ref, item.dataset_ref, item.observation_type,
             item.session_ref, item.session_date, item.window_start, item.window_end,
@@ -858,6 +907,33 @@ def _observation_reasons(policy, criterion, item, now, event_resolver, artifact_
         if artifact is None:
             reasons.add(_dependency_code(kind, provisioned=False))
             continue
+        expected_binding = (
+            item.provider_ref, item.dataset_ref, item.route_ref, item.instrument_ref,
+            item.capability_id, item.policy_id, item.policy_version,
+            event.canonical_event_key if event is not None else item.source_event_ref_digest,
+            item.payload_digest,
+        )
+        wrapper_binding = (
+            artifact.provider_ref, artifact.dataset_ref, artifact.route_ref,
+            artifact.entity_ref, artifact.capability_id, artifact.policy_id,
+            artifact.policy_version, artifact.source_event_ref_digest,
+            artifact.payload_digest,
+        )
+        if event is not None and wrapper_binding != expected_binding:
+            reasons.add(ReasonCode.DEPENDENCY_BINDING_MISMATCH)
+            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED)
+            reasons.add(_dependency_code(kind, provisioned=True))
+            continue
+        if artifact.available_at > now or artifact.verified_at > now:
+            reasons.add(ReasonCode.DEPENDENCY_NOT_AVAILABLE_AS_OF)
+            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED)
+            reasons.add(_dependency_code(kind, provisioned=True))
+            continue
+        if (now < artifact.effective_at or now >= artifact.expires_at
+                or artifact.revoked_at is not None and now >= artifact.revoked_at):
+            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED)
+            reasons.add(_dependency_code(kind, provisioned=True))
+            continue
         record = None if artifact_resolver is None else artifact_resolver.resolve(
             artifact.artifact_digest
         )
@@ -914,10 +990,11 @@ def admit_real_policy(*args: Any, **kwargs: Any) -> None:
 
 
 def build_contract_test_source_event_record(**values: Any) -> SourceEventIdentityRecord:
-    """Build a fully bound canonical fixture record; this grants no REAL assurance."""
+    """Build a synthetic mechanics fixture; it cannot establish event independence."""
     values = dict(values)
     values["resolver_version"] = SOURCE_EVENT_RESOLVER_VERSION
-    values["assurance"] = DependencyAssurance.CONTRACT_TEST_ONLY
+    values["assurance"] = SourceEventAssurance.SYNTHETIC_TEST_EVENT_IDENTITY
+    values["canonical_upstream_observation_digest"] = None
     values["canonical_event_key"] = typed_hash({
         "provider": values["provider_ref"],
         "instrument": values["instrument_ref"],
@@ -929,21 +1006,9 @@ def build_contract_test_source_event_record(**values: Any) -> SourceEventIdentit
 
 
 def build_contract_test_dependency_artifact(**values: Any) -> DependencyArtifactRecord:
-    """Adapt validated PR38-42 contract-test content into a scoped resolver record."""
-    values = dict(values)
-    values["resolver_version"] = DEPENDENCY_RESOLVER_VERSION
-    values["assurance"] = DependencyAssurance.CONTRACT_TEST_ONLY
-    values["canonical_schema"] = (
-        f"{values['source_contract']}.{values['source_contract_version']}"
-    )
-    values["contract_provenance_digest"] = typed_hash({
-        "kind": values["kind"],
-        "source_contract": values["source_contract"],
-        "source_contract_version": values["source_contract_version"],
-        "canonical_schema": values["canonical_schema"],
-        "assurance": DependencyAssurance.CONTRACT_TEST_ONLY,
-    })
-    return _seal_record(DependencyArtifactRecord, "artifact_digest", values)
+    """Removed insecure factory: local metadata cannot mint dependency truth."""
+    del values
+    raise ObservationPolicyError("canonical upstream dependency artifact required")
 
 
 T = TypeVar("T", bound=BaseModel)
