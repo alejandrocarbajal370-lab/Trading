@@ -2,6 +2,11 @@
 
 Status: **ACCEPTED; FROZEN PROJECT MANDATE; INTENDED ARCHITECTURE NOT IMPLEMENTED**
 
+> Active interpretation: ADR 0023 preserves this ADR's human-only and canonical-ledger boundary
+> but supersedes its Broker X statement/file-ingestion assumptions. Broker X/GBM is fully
+> disconnected from CORSO; real operations are represented only through structured manual CORSO
+> Data Intake. The historical text below is retained as the decision record.
+
 ## Decision and supersession
 
 CORSO is a research, portfolio-intelligence, monitoring, analysis and decision-support system. It

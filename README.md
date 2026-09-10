@@ -9,10 +9,11 @@ mandate: `human_execution_required=true`, `execution_authority=HUMAN_ONLY`, and
 execute it manually at the future real custodian/broker, **Broker X**.
 
 IBKR's production role is `MARKET_DATA_RESEARCH` with read-only access where applicable; IBKR Paper
-is only for temporary paper trading, testing and validation. PostgreSQL is the intended canonical
-portfolio ledger. Broker X statements, CSV, XLSX, Google Sheets and manual entry are ingestion
-interfaces that become canonical only after validation and reconciliation. CORSO and the
-dashboard consume that canonical layer read-only.
+is the official future simulated-trading test environment only. PostgreSQL is the intended
+canonical portfolio ledger. Broker X/GBM has no connection to CORSO: no API, files, uploads,
+scraping, stored credentials or order routing. Human-executed real operations are recorded only by
+structured manual entry through the future CORSO Data Intake mini-app, then validated and
+reconciled. CORSO and the dashboard consume the canonical layer read-only.
 
 CORSO is prohibited from submitting, modifying, cancelling or transmitting orders; moving or
 withdrawing cash; changing banking instructions; or exposing Account Management/cash-movement
@@ -35,6 +36,16 @@ after market- and asset-specific methodologies are separately designed, validate
 may US Equity, Mexican Equity, applicable US/global Fixed Income, Mexican Fixed Income and eligible
 cash/low-risk sleeves feed governed multi-asset portfolio construction. This future scope is recorded in
 [`docs/adr/0022-corso-fixed-income-and-multi-asset-future-scope.md`](docs/adr/0022-corso-fixed-income-and-multi-asset-future-scope.md).
+
+The canonical target direction is split into an
+[Investment OS Engine North Star](docs/scope/corso-investment-os-north-star.md) and a
+[Dashboard Multi-Asset Experience North Star](docs/scope/corso-dashboard-north-star.md), adopted by
+[ADR 0023](docs/adr/0023-corso-engine-and-dashboard-north-star-alignment.md). Fixed Income is an
+`ACTIVE SECONDARY DEVELOPMENT TRACK` in direction only: it remains unimplemented and does not
+bypass Step 6, external gates, provider admission, PIT/data governance or separate work
+authorization. The dashboard is also a future, unimplemented interaction layer; it owns no model
+logic and has exactly seven primary tabs: Overview, Portfolio, Research, Operations, Intelligence,
+Scenarios and Audit.
 
 The governed capture foundation is defined in
 [`docs/adr/0021-step6-governed-evidence-capture-foundation.md`](docs/adr/0021-step6-governed-evidence-capture-foundation.md).
@@ -235,8 +246,8 @@ External Data
     -> Model QA
     -> Governed Research / Portfolio Intelligence
     -> Human Review
-    -> Human Manual Execution at Broker X (outside CORSO)
-    -> Validated Statement / CSV / XLSX / Sheet / Manual Import
+    -> Human Manual Execution at Broker X (outside and disconnected from CORSO)
+    -> Structured Manual CORSO Data Intake
     -> PostgreSQL Canonical Ledger / Reconciliation
     -> Validation Outputs
     -> CORSO / Dashboard
