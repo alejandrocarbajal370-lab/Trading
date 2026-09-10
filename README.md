@@ -1,6 +1,38 @@
 # Trading
 
-## Approved sequence — Step 3
+## Frozen production architecture
+
+Aurora is a research, portfolio-intelligence, monitoring, analysis and decision-support system. It
+is not a real-execution bot. Production authority is permanently separated under the current
+mandate: `human_execution_required=true`, `execution_authority=HUMAN_ONLY`, and
+`live_execution_enabled=false`. Aurora may propose a trade or rebalance, but only a human may
+execute it manually at the future real custodian/broker, **Broker X**.
+
+IBKR's production role is `MARKET_DATA_RESEARCH` with read-only access where applicable; IBKR Paper
+is only for temporary paper trading, testing and validation. PostgreSQL is the intended canonical
+portfolio ledger. Broker X statements, CSV, XLSX, Google Sheets and manual entry are ingestion
+interfaces that become canonical only after validation and reconciliation. Aurora and the
+dashboard consume that canonical layer read-only.
+
+Aurora is prohibited from submitting, modifying, cancelling or transmitting orders; moving or
+withdrawing cash; changing banking instructions; or exposing Account Management/cash-movement
+capabilities. Compromise of GitHub, the dashboard or research engine must not itself enable any of
+those actions. See the frozen mandate and supersession rule in
+[`docs/adr/0020-aurora-human-only-execution-and-canonical-portfolio-ledger.md`](docs/adr/0020-aurora-human-only-execution-and-canonical-portfolio-ledger.md).
+
+## Current governed roadmap
+
+Step 5 is **CLOSED** and Step 6 is **NOT STARTED**. The preserved sequence is: Step 6 evidence →
+close external gates → Provider Admission REAL → SEC + IBKR to QVM REAL → auxiliary cross-checks →
+shortlist → governed backtesting → portfolio construction → IBKR Paper validation → production
+manual execution at Broker X by a human. No production auto-execution phase exists under the
+current mandate.
+
+## Historical implementation record (through Step 5)
+
+The block-by-block descriptions below preserve the repository's implementation history. Their
+contemporaneous uses of “current”, “next” or “later” are historical and do not override ADR 0020,
+the current roadmap above, or the permanent human-only production execution boundary.
 
 Steps 1 and 2 closed in PRs #39 and #40. The exact `NEXT_BLOCK` is **Durable Custody + WORM +
 Replay** (`AUTHORIZED_TO_IMPLEMENT`; `CONTRACT_TEST_ONLY`; REAL `NOT_PROVISIONED`). It binds
@@ -174,8 +206,10 @@ implemented capabilities.
 - Validate edge before building production complexity.
 - No leverage, margin borrowing, short selling, or live swing sleeve in V1.
 - Critical data/integrity failures mean `NO_TRADE`.
-- PostgreSQL will be the operational source of truth; DuckDB/Parquet will hold research history.
-- Excel and Streamlit are reporting layers, never execution sources.
+- PostgreSQL is the intended canonical portfolio ledger/state/truth; DuckDB/Parquet may hold
+  research history.
+- Google Sheets, CSV, XLSX and manual entry are ingestion interfaces only until validated and
+  reconciled; dashboards and reporting layers consume canonical data read-only.
 - Every model run receives a reproducible `run_id` and validation manifest.
 - System Health answers “did the machine run correctly today?”; Model Quality answers “does the strategy still have evidence?”
 
@@ -187,15 +221,13 @@ External Data
     -> Data Health
     -> Financial / Factor Calculations
     -> Model QA
-    -> Signals
-    -> Portfolio
-    -> Risk
+    -> Governed Research / Portfolio Intelligence
     -> Human Review
-    -> Execution
-    -> Broker
-    -> Ledger / Reconciliation
+    -> Human Manual Execution at Broker X (outside Aurora)
+    -> Validated Statement / CSV / XLSX / Sheet / Manual Import
+    -> PostgreSQL Canonical Ledger / Reconciliation
     -> Validation Outputs
-    -> Dashboard / Excel
+    -> Aurora / Dashboard
 ```
 
 ## Development
@@ -647,4 +679,6 @@ canonical storage identity and retention chronology, and produces only
 and declarations never fabricate external custody, WORM, legal approval, a trust root or an
 independent verifier.
 
-This repository is not authorized for unattended live trading. Live execution is a later gated phase after research, backtesting, paper trading, reconciliation, and operational validation.
+This repository does not contain a production auto-execution phase. Real execution is
+`HUMAN_ONLY`, manual at Broker X and outside Aurora. Changing that mandate requires a formal future
+mandate and superseding ADR; it cannot be enabled by a runtime toggle.
