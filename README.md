@@ -2,23 +2,23 @@
 
 ## Frozen production architecture
 
-Aurora is a research, portfolio-intelligence, monitoring, analysis and decision-support system. It
+CORSO is a research, portfolio-intelligence, monitoring, analysis and decision-support system. It
 is not a real-execution bot. Production authority is permanently separated under the current
 mandate: `human_execution_required=true`, `execution_authority=HUMAN_ONLY`, and
-`live_execution_enabled=false`. Aurora may propose a trade or rebalance, but only a human may
+`live_execution_enabled=false`. CORSO may propose a trade or rebalance, but only a human may
 execute it manually at the future real custodian/broker, **Broker X**.
 
 IBKR's production role is `MARKET_DATA_RESEARCH` with read-only access where applicable; IBKR Paper
 is only for temporary paper trading, testing and validation. PostgreSQL is the intended canonical
 portfolio ledger. Broker X statements, CSV, XLSX, Google Sheets and manual entry are ingestion
-interfaces that become canonical only after validation and reconciliation. Aurora and the
+interfaces that become canonical only after validation and reconciliation. CORSO and the
 dashboard consume that canonical layer read-only.
 
-Aurora is prohibited from submitting, modifying, cancelling or transmitting orders; moving or
+CORSO is prohibited from submitting, modifying, cancelling or transmitting orders; moving or
 withdrawing cash; changing banking instructions; or exposing Account Management/cash-movement
 capabilities. Compromise of GitHub, the dashboard or research engine must not itself enable any of
 those actions. See the frozen mandate and supersession rule in
-[`docs/adr/0020-aurora-human-only-execution-and-canonical-portfolio-ledger.md`](docs/adr/0020-aurora-human-only-execution-and-canonical-portfolio-ledger.md).
+[`docs/adr/0020-corso-human-only-execution-and-canonical-portfolio-ledger.md`](docs/adr/0020-corso-human-only-execution-and-canonical-portfolio-ledger.md).
 
 ## Current governed roadmap
 
@@ -27,6 +27,12 @@ close external gates → Provider Admission REAL → SEC + IBKR to QVM REAL → 
 shortlist → governed backtesting → portfolio construction → IBKR Paper validation → production
 manual execution at Broker X by a human. No production auto-execution phase exists under the
 current mandate.
+
+The mandatory future multi-asset scope preserves the equity/QVM vertical and adds a separate,
+governed Fixed Income vertical after sufficient foundations and data governance. Only after the
+asset-specific methodologies are separately designed, validated and authorized may their outputs
+feed governed multi-asset portfolio construction. This future scope is recorded in
+[`docs/adr/0021-corso-fixed-income-and-multi-asset-future-scope.md`](docs/adr/0021-corso-fixed-income-and-multi-asset-future-scope.md).
 
 ## Historical implementation record (through Step 5)
 
@@ -223,11 +229,11 @@ External Data
     -> Model QA
     -> Governed Research / Portfolio Intelligence
     -> Human Review
-    -> Human Manual Execution at Broker X (outside Aurora)
+    -> Human Manual Execution at Broker X (outside CORSO)
     -> Validated Statement / CSV / XLSX / Sheet / Manual Import
     -> PostgreSQL Canonical Ledger / Reconciliation
     -> Validation Outputs
-    -> Aurora / Dashboard
+    -> CORSO / Dashboard
 ```
 
 ## Development
@@ -680,5 +686,5 @@ and declarations never fabricate external custody, WORM, legal approval, a trust
 independent verifier.
 
 This repository does not contain a production auto-execution phase. Real execution is
-`HUMAN_ONLY`, manual at Broker X and outside Aurora. Changing that mandate requires a formal future
+`HUMAN_ONLY`, manual at Broker X and outside CORSO. Changing that mandate requires a formal future
 mandate and superseding ADR; it cannot be enabled by a runtime toggle.
