@@ -28,10 +28,12 @@ shortlist → governed backtesting → portfolio construction → IBKR Paper val
 manual execution at Broker X by a human. No production auto-execution phase exists under the
 current mandate.
 
-The mandatory future multi-asset scope preserves the equity/QVM vertical and adds a separate,
-governed Fixed Income vertical after sufficient foundations and data governance. Only after the
-asset-specific methodologies are separately designed, validated and authorized may their outputs
-feed governed multi-asset portfolio construction. This future scope is recorded in
+The mandatory future multi-asset scope preserves the US equity/QVM vertical and explicitly adds
+separate future Mexican Equity and governed Fixed Income capabilities, including Mexican sovereign,
+government, corporate and financial debt, after sufficient foundations and data governance. Only
+after market- and asset-specific methodologies are separately designed, validated and authorized
+may US Equity, Mexican Equity, applicable US/global Fixed Income, Mexican Fixed Income and eligible
+cash/low-risk sleeves feed governed multi-asset portfolio construction. This future scope is recorded in
 [`docs/adr/0022-corso-fixed-income-and-multi-asset-future-scope.md`](docs/adr/0022-corso-fixed-income-and-multi-asset-future-scope.md).
 
 The governed capture foundation is defined in
