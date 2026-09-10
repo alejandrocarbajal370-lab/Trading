@@ -38,6 +38,16 @@ microstructure; liquidity and market depth; transaction costs; FX and reporting-
 and other locally applicable conventions. This scope does not select or provision a local data
 provider, create a Mexican security master, or implement a Mexican Equity model.
 
+Any future Mexican Equity universe, including an index or universe proxy used for research,
+backtesting or selection, must preserve historical constituent membership point-in-time. A current
+security master or a current constituent list is not sufficient. Governed membership must include
+`effective_from` / `effective_to` or equivalent point-in-time semantics and, where applicable,
+preserve universe entries and exits, ticker or listing changes, mergers, spin-offs, delistings and
+share-class changes. The universe must never be reconstructed retrospectively using only current
+constituents. Any future Mexican Equity backtest or selection must fail closed when historical
+constituent coverage is insufficient. This requirement explicitly prevents survivorship bias and
+look-ahead in universe construction; it does not create or populate a security master.
+
 Mexican Equity remains **FUTURE / NOT IMPLEMENTED / NOT AUTHORIZED**.
 
 ## Future Fixed Income model scope
@@ -127,6 +137,44 @@ applicable and identify the actual curve used.
 This scope does not select or provision local data providers, a Mexican debt security master, local
 curves, a Mexican tax engine or a Mexican debt valuation/risk model. Mexican Fixed Income remains
 **FUTURE / NOT IMPLEMENTED / NOT AUTHORIZED**.
+
+### Future nominal versus real/inflation-linked methodology
+
+The future Mexican Fixed Income layer must explicitly distinguish nominal debt, including CETES
+and Bonos M where methodologically applicable, from real, inflation-linked or indexed debt,
+including Udibonos. It must preserve and must not mix nominal versus real yield basis; nominal
+versus real/reference curves; inflation/indexation basis; accrued and indexed-principal mechanics
+where applicable; and duration, DV01 and other risk sensitivities consistent with the instrument's
+basis. Expected-inflation or breakeven decomposition must be governed when methodologically
+applicable.
+
+Comparisons and spread attribution must not combine incompatible nominal and real bases. Any
+conversion or comparison between nominal and real/inflation-linked instruments requires a governed
+methodology and appropriate point-in-time inputs; inflation assumptions or breakevens must never be
+silently supplied by default. This section authorizes no pricing, curve construction or risk-model
+implementation.
+
+## Future local-asset versus MXN base-currency return governance
+
+Any future cross-currency performance, comparison or portfolio layer must preserve two distinct
+return concepts:
+
+- `LOCAL_ASSET_RETURN`: the asset return in its own currency and applicable local-return basis; and
+- `BASE_CURRENCY_RETURN_MXN`: the asset return expressed in the portfolio's MXN base/reporting
+  currency.
+
+For non-MXN assets, a governed decomposition must separately identify FX return with point-in-time
+lineage and combine it consistently with local asset return. Where appropriate for the instrument,
+period and return convention, the conceptual relationship is
+`R_MXN = (1 + R_LOCAL) * (1 + R_FX) - 1`; the exact convention must be documented and governed
+before use. A USD or other local-currency return must never be compared directly with an MXN return
+without consistent conversion.
+
+Future performance attribution must distinguish asset return, FX contribution and combined
+base-currency return. Fees, taxes and cash flows must be incorporated in the appropriate governed
+layer without omission or double counting. Any future optimization or portfolio comparison must
+operate in a coherent reporting/base currency while retaining local asset return for diagnosis and
+attribution. This requirement implements no performance engine, optimizer or portfolio comparison.
 
 ## Future portfolio objective
 
