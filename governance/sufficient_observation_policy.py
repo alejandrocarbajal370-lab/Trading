@@ -18,9 +18,17 @@ from governance.canonical import typed_hash
 from governance.ibkr_external_attestation import ProvisioningState
 from governance.phase7e import EvidenceGate, GateState
 
-CONTRACT_VERSION = "governed-sufficient-observation-policy-v1"
+CONTRACT_VERSION = "governed-sufficient-observation-policy-v2"
 SHA256 = r"^[0-9a-f]{64}$"
 IDENTIFIER = r"^[a-z0-9][a-z0-9._:-]{1,127}$"
+OPAQUE = r"^opaque:v1:[0-9a-f]{64}$"
+COUNTING_SEMANTICS_VERSION = "source-event-dominant-v2"
+DEPENDENCY_CONTRACTS = {
+    "TRUST_VERIFIER": ("external-trust-attestation-independent-verifier", "v1"),
+    "AUTHORITY_REGISTRY": ("trust-anchor-authority-contract", "v1"),
+    "LEGAL_RIGHT": ("licensing-legal-governance", "v2"),
+    "CUSTODY_WORM_REPLAY": ("durable-custody-worm-replay", "v1"),
+}
 
 
 class ObservationPolicyError(ValueError):
@@ -59,6 +67,17 @@ class DependencyState(StrEnum):
     REVOKED = "REVOKED"
 
 
+class DependencyKind(StrEnum):
+    TRUST_VERIFIER = "TRUST_VERIFIER"
+    AUTHORITY_REGISTRY = "AUTHORITY_REGISTRY"
+    LEGAL_RIGHT = "LEGAL_RIGHT"
+    CUSTODY_WORM_REPLAY = "CUSTODY_WORM_REPLAY"
+
+
+class DependencyAssurance(StrEnum):
+    CONTRACT_TEST_ONLY = "CONTRACT_TEST_ONLY"
+
+
 class EvaluationState(StrEnum):
     INSUFFICIENT = "INSUFFICIENT"
     REVIEW_REQUIRED = "REVIEW_REQUIRED"
@@ -78,6 +97,7 @@ class ReasonCode(StrEnum):
     BEFORE_POLICY_EFFECTIVE = "BEFORE_POLICY_EFFECTIVE"
     OUTSIDE_POLICY_WINDOW = "OUTSIDE_POLICY_WINDOW"
     FUTURE_OBSERVATION = "FUTURE_OBSERVATION"
+    EVIDENCE_NOT_AVAILABLE_AS_OF = "EVIDENCE_NOT_AVAILABLE_AS_OF"
     STALE_OBSERVATION = "STALE_OBSERVATION"
     MISSING_PROVENANCE = "MISSING_PROVENANCE"
     TRUST_NOT_PROVISIONED = "TRUST_NOT_PROVISIONED"
@@ -86,6 +106,8 @@ class ReasonCode(StrEnum):
     LEGAL_REVIEW_REQUIRED = "LEGAL_REVIEW_REQUIRED"
     CUSTODY_NOT_PROVISIONED = "CUSTODY_NOT_PROVISIONED"
     CUSTODY_REVIEW_REQUIRED = "CUSTODY_REVIEW_REQUIRED"
+    DEPENDENCY_BINDING_MISMATCH = "DEPENDENCY_BINDING_MISMATCH"
+    DEPENDENCY_NOT_AVAILABLE_AS_OF = "DEPENDENCY_NOT_AVAILABLE_AS_OF"
     COUNT_BELOW_MINIMUM = "COUNT_BELOW_MINIMUM"
     DISTINCT_SESSIONS_BELOW_MINIMUM = "DISTINCT_SESSIONS_BELOW_MINIMUM"
     DISTINCT_DATES_BELOW_MINIMUM = "DISTINCT_DATES_BELOW_MINIMUM"
@@ -175,6 +197,7 @@ class GateCriterion(_Model):
     def validate_value(self):
         _ids(self.criterion_id, self.capability_id, *self.allowed_provider_refs,
              *self.allowed_dataset_refs, *self.required_provenance_fields)
+        _opaque_values(*self.allowed_provider_refs, *self.allowed_dataset_refs)
         if CLASS_GATE[self.observation_class] is not self.gate:
             raise ValueError
         if not self.allowed_provider_refs or not self.allowed_dataset_refs or not self.allowed_modes:
@@ -195,14 +218,14 @@ class SufficientObservationPolicy(_Model):
     contract_version: Literal[CONTRACT_VERSION] = CONTRACT_VERSION
     policy_id: str = Field(pattern=IDENTIFIER)
     policy_version: str = Field(pattern=IDENTIFIER)
-    counting_semantics_version: str = Field(pattern=IDENTIFIER)
+    counting_semantics_version: Literal[COUNTING_SEMANTICS_VERSION] = COUNTING_SEMANTICS_VERSION
     status: PolicyStatus
     created_at: dt.datetime
     reviewed_at: dt.datetime | None = None
     effective_from: dt.datetime
     effective_to: dt.datetime | None = None
-    jurisdiction_context_ref: str = Field(pattern=IDENTIFIER)
-    use_context_ref: str = Field(pattern=IDENTIFIER)
+    jurisdiction_context_ref: str = Field(pattern=OPAQUE)
+    use_context_ref: str = Field(pattern=OPAQUE)
     criteria: tuple[GateCriterion, ...]
     maker_actor_hash: str = Field(pattern=SHA256)
     reviewer_actor_hash: str | None = Field(default=None, pattern=SHA256)
@@ -220,7 +243,8 @@ class SufficientObservationPolicy(_Model):
     @model_validator(mode="after")
     def validate_value(self):
         _ids(self.policy_id, self.policy_version, self.counting_semantics_version,
-             self.jurisdiction_context_ref, self.use_context_ref, self.exception_policy_ref)
+             self.exception_policy_ref)
+        _opaque_values(self.jurisdiction_context_ref, self.use_context_ref)
         for value in (self.created_at, self.reviewed_at, self.effective_from, self.effective_to,
                       self.revoked_at):
             if value is not None:
@@ -257,6 +281,52 @@ class SufficientObservationPolicy(_Model):
         return self
 
 
+class DependencyArtifactReference(_Model):
+    """Typed, scoped reference to independently validated contract-test evidence.
+
+    It deliberately has no externally-verified state: repository-local material can
+    only establish contract-test semantics.
+    """
+    kind: DependencyKind
+    source_contract: str = Field(pattern=IDENTIFIER)
+    source_contract_version: str = Field(pattern=IDENTIFIER)
+    artifact_digest: str = Field(pattern=SHA256)
+    source_event_ref_digest: str = Field(pattern=SHA256)
+    payload_digest: str = Field(pattern=SHA256)
+    provider_ref: str = Field(pattern=OPAQUE)
+    dataset_ref: str = Field(pattern=OPAQUE)
+    route_ref: str = Field(pattern=OPAQUE)
+    entity_ref: str = Field(pattern=OPAQUE)
+    capability_id: str = Field(pattern=IDENTIFIER)
+    policy_id: str = Field(pattern=IDENTIFIER)
+    policy_version: str = Field(pattern=IDENTIFIER)
+    available_at: dt.datetime
+    effective_at: dt.datetime
+    verified_at: dt.datetime
+    expires_at: dt.datetime
+    revoked_at: dt.datetime | None = None
+    assurance: Literal[DependencyAssurance.CONTRACT_TEST_ONLY]
+    reference_hash: str = Field(pattern=SHA256)
+
+    @model_validator(mode="after")
+    def validate_value(self):
+        _ids(self.source_contract, self.source_contract_version, self.capability_id,
+             self.policy_id, self.policy_version)
+        if (self.source_contract, self.source_contract_version) != DEPENDENCY_CONTRACTS[self.kind]:
+            raise ValueError
+        _opaque_values(self.provider_ref, self.dataset_ref, self.route_ref, self.entity_ref)
+        for value in (self.available_at, self.effective_at, self.verified_at,
+                      self.expires_at, self.revoked_at):
+            if value is not None:
+                _utc(value)
+        if not self.available_at <= self.effective_at <= self.verified_at < self.expires_at:
+            raise ValueError
+        if self.revoked_at is not None and self.revoked_at < self.available_at:
+            raise ValueError
+        _hash(self, "reference_hash")
+        return self
+
+
 class ObservationEvidence(_Model):
     observation_ref: str = Field(pattern=IDENTIFIER)
     policy_id: str = Field(pattern=IDENTIFIER)
@@ -266,14 +336,16 @@ class ObservationEvidence(_Model):
     gate: EvidenceGate
     observation_class: ObservationClass
     capability_id: str = Field(pattern=IDENTIFIER)
-    provider_ref: str = Field(pattern=IDENTIFIER)
-    instrument_ref: str = Field(pattern=IDENTIFIER)
-    dataset_ref: str = Field(pattern=IDENTIFIER)
+    provider_ref: str = Field(pattern=OPAQUE)
+    instrument_ref: str = Field(pattern=OPAQUE)
+    dataset_ref: str = Field(pattern=OPAQUE)
+    route_ref: str = Field(pattern=OPAQUE)
     observation_type: str = Field(pattern=IDENTIFIER)
     session_ref: str = Field(pattern=IDENTIFIER)
     session_date: dt.date
     window_start: dt.datetime
     window_end: dt.datetime
+    available_at: dt.datetime
     market_data_mode: MarketDataMode
     payload_digest: str = Field(pattern=SHA256)
     provenance_digest: str = Field(pattern=SHA256)
@@ -282,38 +354,37 @@ class ObservationEvidence(_Model):
     local_wrapper_digest: str = Field(pattern=SHA256)
     present_provenance_fields: tuple[str, ...]
     missing_fraction_ppm: int = Field(ge=0, le=1_000_000)
-    trust_state: DependencyState
-    authority_registry_state: DependencyState
-    legal_state: DependencyState
-    custody_state: DependencyState
-    dependency_valid_from: dt.datetime
-    dependency_valid_to: dt.datetime | None = None
-    dependency_revoked_at: dt.datetime | None = None
+    dependency_artifacts: tuple[DependencyArtifactReference, ...]
     evidence_hash: str = Field(pattern=SHA256)
 
     @model_validator(mode="after")
     def validate_value(self):
         _ids(self.observation_ref, self.policy_id, self.policy_version,
              self.counting_semantics_version, self.capability_id, self.provider_ref,
-             self.instrument_ref, self.dataset_ref, self.observation_type, self.session_ref,
+             self.observation_type, self.session_ref,
              *self.present_provenance_fields)
-        for value in (self.window_start, self.window_end, self.dependency_valid_from,
-                      self.dependency_valid_to, self.dependency_revoked_at):
+        _opaque_values(self.provider_ref, self.instrument_ref, self.dataset_ref, self.route_ref)
+        object.__setattr__(self, "dependency_artifacts", tuple(
+            _deep(DependencyArtifactReference, item) for item in self.dependency_artifacts
+        ))
+        for value in (self.window_start, self.window_end, self.available_at):
             if value is not None:
                 _utc(value)
         if self.window_start > self.window_end:
             raise ValueError
         if self.session_date != self.window_start.date():
             raise ValueError
-        if self.dependency_valid_to is not None and self.dependency_valid_from >= self.dependency_valid_to:
+        if self.available_at < self.window_end:
+            raise ValueError
+        if len({item.kind for item in self.dependency_artifacts}) != len(self.dependency_artifacts):
             raise ValueError
         if CLASS_GATE[self.observation_class] is not self.gate:
             raise ValueError
         _hash(self, "evidence_hash")
         return self
 
-    def semantic_identity(self) -> str:
-        """Underlying event identity; local wrapper and caller alias are intentionally absent."""
+    def underlying_event_identity(self) -> str:
+        """Reliable source identity dominates wrappers, provenance and payload."""
         return typed_hash({
             "contract": CONTRACT_VERSION,
             "policy_id": self.policy_id,
@@ -323,15 +394,23 @@ class ObservationEvidence(_Model):
             "instrument": self.instrument_ref,
             "dataset": self.dataset_ref,
             "type": self.observation_type,
-            "session": self.session_ref,
-            "session_date": self.session_date,
-            "window_start": self.window_start,
-            "window_end": self.window_end,
-            "mode": self.market_data_mode,
-            "payload": self.payload_digest,
+            "source_event": self.source_event_ref_digest,
+        })
+
+    def representation_identity(self) -> str:
+        return typed_hash({
+            "underlying": self.underlying_event_identity(),
             "provenance": self.provenance_digest,
             "attestation": self.attestation_ref_digest,
-            "source_event": self.source_event_ref_digest,
+            "wrapper": self.local_wrapper_digest,
+        })
+
+    def conflict_identity(self) -> str:
+        return typed_hash({
+            "underlying": self.underlying_event_identity(), "session": self.session_ref,
+            "session_date": self.session_date, "window_start": self.window_start,
+            "window_end": self.window_end, "mode": self.market_data_mode,
+            "payload": self.payload_digest,
         })
 
 
@@ -451,27 +530,26 @@ def _evaluate_gate(policy, criterion, evidence, now):
     if len(datasets) > 1 and not criterion.allow_cross_dataset_aggregation:
         reasons.add(ReasonCode.DATASET_MISMATCH)
         candidates = []
-    by_identity: dict[str, ObservationEvidence] = {}
-    for item in sorted(candidates, key=lambda x: (x.semantic_identity(), x.evidence_hash)):
-        identity = item.semantic_identity()
-        if identity in by_identity:
+    by_event: dict[str, list[ObservationEvidence]] = {}
+    for item in sorted(candidates, key=lambda x: (
+        x.underlying_event_identity(), x.conflict_identity(), x.representation_identity(),
+        x.evidence_hash,
+    )):
+        by_event.setdefault(item.underlying_event_identity(), []).append(item)
+    unique: list[ObservationEvidence] = []
+    duplicate_count = 0
+    for event_identity, representations in sorted(by_event.items()):
+        conflicts = {item.conflict_identity() for item in representations}
+        duplicate_count += len(representations) - 1
+        if len(conflicts) > 1:
+            reasons.add(ReasonCode.SAME_WINDOW_CONFLICT)
+            continue
+        if len(representations) > 1:
             reasons.add(ReasonCode.DUPLICATE_OBSERVATION)
-        else:
-            by_identity[identity] = item
-    unique = list(by_identity.values())
-    windows: dict[tuple[Any, ...], set[str]] = {}
-    for item in unique:
-        key = (item.provider_ref, item.instrument_ref, item.dataset_ref, item.observation_type,
-               item.window_start, item.window_end, item.market_data_mode)
-        windows.setdefault(key, set()).add(item.payload_digest)
-    conflicting = {key for key, payloads in windows.items() if len(payloads) > 1}
-    if conflicting:
-        reasons.add(ReasonCode.SAME_WINDOW_CONFLICT)
-        unique = [item for item in unique if (
-            item.provider_ref, item.instrument_ref, item.dataset_ref, item.observation_type,
-            item.window_start, item.window_end, item.market_data_mode
-        ) not in conflicting]
-    identities = tuple(sorted(item.semantic_identity() for item in unique))
+        unique.append(min(representations, key=lambda item: (
+            item.representation_identity(), item.evidence_hash
+        )))
+    identities = tuple(sorted(item.underlying_event_identity() for item in unique))
     sessions = len({item.session_ref for item in unique})
     dates = len({item.session_date for item in unique})
     if len(unique) < criterion.minimum_observation_count:
@@ -508,7 +586,7 @@ def _evaluate_gate(policy, criterion, evidence, now):
         gate=criterion.gate, state=state,
         reason_codes=tuple(sorted(reasons, key=str)), accepted_count=len(unique),
         distinct_sessions=sessions, distinct_dates=dates,
-        duplicate_count=len(candidates) - len(by_identity),
+        duplicate_count=duplicate_count,
         accepted_identity_digests=identities,
     )
 
@@ -529,6 +607,8 @@ def _observation_reasons(policy, criterion, item, now):
         reasons.add(ReasonCode.MODE_MISMATCH)
     if item.window_end > now:
         reasons.add(ReasonCode.FUTURE_OBSERVATION)
+    if item.available_at > now:
+        reasons.add(ReasonCode.EVIDENCE_NOT_AVAILABLE_AS_OF)
     if item.window_start < policy.effective_from and not criterion.allow_grandfathering:
         reasons.add(ReasonCode.BEFORE_POLICY_EFFECTIVE)
     if policy.effective_to is not None and item.window_end >= policy.effective_to:
@@ -541,30 +621,44 @@ def _observation_reasons(policy, criterion, item, now):
         reasons.add(ReasonCode.MISSING_PROVENANCE)
     if item.missing_fraction_ppm > criterion.maximum_missing_fraction_ppm:
         reasons.add(ReasonCode.MISSINGNESS_EXCEEDED)
-    _dependency_reason(reasons, item.trust_state, "trust", required=True)
+    required = {DependencyKind.TRUST_VERIFIER}
     if criterion.require_authority_registry:
-        _dependency_reason(reasons, item.authority_registry_state, "trust", required=True)
+        required.add(DependencyKind.AUTHORITY_REGISTRY)
     if criterion.require_legal_rights:
-        _dependency_reason(reasons, item.legal_state, "legal", required=True)
+        required.add(DependencyKind.LEGAL_RIGHT)
     if criterion.require_custody_worm_replay:
-        _dependency_reason(reasons, item.custody_state, "custody", required=True)
-    if (item.dependency_valid_from > item.window_end
-            or item.dependency_valid_to is not None and now >= item.dependency_valid_to
-            or item.dependency_revoked_at is not None and now >= item.dependency_revoked_at):
-        reasons.add(ReasonCode.TRUST_REVIEW_REQUIRED)
+        required.add(DependencyKind.CUSTODY_WORM_REPLAY)
+    artifacts = {artifact.kind: artifact for artifact in item.dependency_artifacts}
+    for kind in required:
+        artifact = artifacts.get(kind)
+        if artifact is None:
+            reasons.add(_dependency_code(kind, provisioned=False))
+            continue
+        expected = (item.provider_ref, item.dataset_ref, item.route_ref, item.instrument_ref,
+                    item.capability_id, item.policy_id, item.policy_version,
+                    item.source_event_ref_digest, item.payload_digest)
+        actual = (artifact.provider_ref, artifact.dataset_ref, artifact.route_ref,
+                  artifact.entity_ref, artifact.capability_id, artifact.policy_id,
+                  artifact.policy_version, artifact.source_event_ref_digest,
+                  artifact.payload_digest)
+        if actual != expected:
+            reasons.add(ReasonCode.DEPENDENCY_BINDING_MISMATCH)
+            reasons.add(_dependency_code(kind, provisioned=True))
+        if artifact.available_at > now or artifact.verified_at > now:
+            reasons.add(ReasonCode.DEPENDENCY_NOT_AVAILABLE_AS_OF)
+            reasons.add(_dependency_code(kind, provisioned=True))
+        if (now < artifact.effective_at or now >= artifact.expires_at
+                or artifact.revoked_at is not None and now >= artifact.revoked_at):
+            reasons.add(_dependency_code(kind, provisioned=True))
     return reasons
 
 
-def _dependency_reason(reasons, state, kind, *, required):
-    if not required:
-        return
-    if state in {DependencyState.NOT_PROVISIONED, DependencyState.NOT_REQUIRED}:
-        reasons.add(getattr(ReasonCode, f"{kind.upper()}_NOT_PROVISIONED"))
-    elif state not in {
-        DependencyState.CONTRACT_TEST_VALIDATED,
-        DependencyState.EXTERNALLY_VERIFIED,
-    }:
-        reasons.add(getattr(ReasonCode, f"{kind.upper()}_REVIEW_REQUIRED"))
+def _dependency_code(kind: DependencyKind, *, provisioned: bool) -> ReasonCode:
+    prefix = "LEGAL" if kind is DependencyKind.LEGAL_RIGHT else (
+        "CUSTODY" if kind is DependencyKind.CUSTODY_WORM_REPLAY else "TRUST"
+    )
+    suffix = "REVIEW_REQUIRED" if provisioned else "NOT_PROVISIONED"
+    return ReasonCode[f"{prefix}_{suffix}"]
 
 
 def admit_real_policy(*args: Any, **kwargs: Any) -> None:
@@ -588,6 +682,17 @@ def seal_contract_test(expected: type[T], hash_field: str, **values: Any) -> T:
         return expected(**values, **{hash_field: digest})
     except BaseException:  # noqa: BLE001
         raise ObservationPolicyError("invalid sufficient-observation value") from None
+
+
+def opaque_reference(raw: str) -> str:
+    """Sanctioned boundary: immediately reduce a raw reference to an opaque digest."""
+    try:
+        if raw.startswith("opaque:v1:"):
+            _opaque_values(raw)
+            return raw
+        return f"opaque:v1:{typed_hash(raw)}"
+    except BaseException:  # noqa: BLE001
+        raise ObservationPolicyError("invalid sensitive reference") from None
 
 
 def _deep(expected: type[T], value: Any) -> T:
@@ -623,9 +728,17 @@ def _utc(value: dt.datetime) -> None:
         raise ValueError
 
 
+def _opaque_values(*values: str) -> None:
+    if any(not value.startswith("opaque:v1:") or len(value) != 74
+           or any(character not in "0123456789abcdef" for character in value[10:])
+           for value in values):
+        raise ValueError
+
+
 _SEAL_FIELDS: dict[type[BaseModel], str] = {
     GateCriterion: "criterion_hash",
     SufficientObservationPolicy: "content_hash",
     ObservationEvidence: "evidence_hash",
+    DependencyArtifactReference: "reference_hash",
     SufficiencyAssessment: "assessment_hash",
 }

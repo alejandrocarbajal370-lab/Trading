@@ -29,14 +29,15 @@ expiry and revocation stop future counting under the unavailable policy.
 
 ## Observation identity and deterministic counting
 
-Semantic identity binds the exact policy/counting version, provider/source, instrument, dataset,
-observation type, session/date/window, market-data mode, payload digest, provenance digest,
-attestation reference and source-event reference. Caller aliases and local wrapper digests are
-deliberately excluded, so repeated storage, replay or repackaging of one underlying event cannot
-increase a count. Duplicate reason and count reporting is stable. Same scope and time window with
-different payload digests is an explicit conflict: all conflicting versions are withheld and the
-gate requires review. Ordering is canonical and independent of input order; the evaluator is pure
-and immutable, so parallel calls cannot create or double-count persistent state.
+Counting uses `source-event-dominant-v2`, which is bound into the policy content hash and every
+observation. The underlying-event key binds policy/counting version, provider, instrument, dataset,
+observation type and the required source-event digest. Representation identity separately binds
+provenance, attestation and local-wrapper digests. Conflict identity separately binds payload,
+mode, session/date and window. Thus additional wrappers, provenance or attestation references for
+one source event never increase count, sessions, dates or span. If any representation of that event
+disagrees on payload, mode, session/date or window, the entire source event is excluded and the gate
+requires review. A missing or malformed source-event digest fails model construction; local wrapper
+identity is never used as a fallback. Ordering is canonical and independent of input order.
 
 Providers and datasets are allow-listed per criterion. Multiple providers, datasets or modes do not
 combine unless that exact criterion explicitly allows the aggregation. Policy v1 observations do
@@ -52,24 +53,34 @@ gate, observation class, capability, provider, dataset and mode before counting.
 
 Each criterion independently defines minimum observations, sessions, dates and span, maximum age,
 permitted missingness, required provenance fields, trust/authority requirements, legal rights and
-custody/WORM/replay requirements. A missing or `NOT_PROVISIONED` dependency yields
-`NOT_PROVISIONED`; revoked, expired, ambiguous or contract-review material yields
-`REVIEW_REQUIRED`; a numeric/coverage shortfall yields `INSUFFICIENT`. Machine-readable reason
-codes accompany every gate result. There is no silent fallback from absent provenance, rights,
-trust, custody, a provider, dataset or market-data mode.
+custody/WORM/replay requirements. Critical dependency states are not caller-supplied enums.
+`ObservationEvidence` requires separately content-addressed, typed artifact references for
+trust/verifier, authority registry, legal right and custody/WORM/replay when the criterion requires
+them. Each reference binds provider, dataset, route, entity/instrument, capability and policy
+version, source-event and payload digests, plus an allow-listed PR38–42 source-contract identity,
+artifact digest and lifecycle. Missing artifacts yield
+`NOT_PROVISIONED`; binding mismatch, future availability/verification, expiry or revocation yields
+`REVIEW_REQUIRED`. These references are deliberately limited to `CONTRACT_TEST_ONLY`; no local
+hash, fixture, seal or reference can assert external verification.
 
-All timestamps use strict UTC. Future observations, stale observations, observations outside the
-policy window, and pre-effective observations where grandfathering is disabled do not count.
-Dependency evidence must have existed for the observation and remain current and unrevoked at the
-assessment time. Point-in-time meaning and freshness are thus evaluated against the selected policy,
-not the wall clock implicitly and not whichever policy happens to be newest.
+All timestamps use strict UTC. Observation event/window time is distinct from evidence
+`available_at`, and dependency availability/effective/verification times are distinct again.
+Evidence available after `assessed_at` does not count; availability exactly at `assessed_at` does.
+Evidence availability before the event/window ends is invalid. Dependency artifacts must be
+available and verified no later than assessment and be effective, unexpired and unrevoked then.
+This prevents post-hoc evidence from entering a PIT assessment merely by carrying an older market
+window. It does not claim an externally trusted clock: all successful fixtures remain local
+contract-test semantics.
 
 ## Privacy and safety boundary
 
-Public models contain opaque references and digests, never account IDs, TIN/RFC values, addresses,
-credentials, tokens, secrets or raw privileged material. Model representations are redacted and
-validation errors do not reflect hostile inputs. Content addressing proves deterministic integrity,
-not authenticity or external authority.
+Fields whose contract is a sensitive reference accept only `opaque:v1:<sha256>` values. The
+sanctioned `opaque_reference` factory immediately and deterministically reduces raw input to that
+form before public DTO construction. Direct construction with a raw value fails with a constant,
+non-reflective error. Consequently those designated fields retain and serialize only opaque
+digests; the implementation makes no broader claim about arbitrary non-reference text fields.
+Model representations are redacted. Content addressing proves deterministic integrity, not
+authenticity or external authority.
 
 REAL policy approval, authority/counsel, trust/verifier, legal/licensing, custody/WORM/durable
 replay and provider admission remain `NOT_PROVISIONED`. Gate #2 and all 10/10 gates remain
