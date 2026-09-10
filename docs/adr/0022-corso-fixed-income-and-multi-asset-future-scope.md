@@ -33,10 +33,14 @@ According to instrument type and governed data availability, the future model mu
 - appropriate yield measures, including current yield, YTM, and YTC/YTW when applicable;
 - cash-flow schedule, day-count convention and settlement convention;
 - duration, modified duration and convexity;
-- benchmark/reference curve and methodologically appropriate spread measures such as G-spread,
-  Z-spread or OAS only when sufficient data exists;
+- benchmark/reference curve, plus a distinct risk-free or near-risk-free reference curve when
+  methodologically applicable, and appropriate spread measures such as G-spread, Z-spread or OAS
+  only when sufficient data exists;
 - credit quality and ratings as auxiliary evidence, never unquestioned truth;
 - issuer fundamentals, leverage, coverage, liquidity and default-risk indicators;
+- recovery rate, governed recovery assumptions, loss-given-default (`LGD = 1 - recovery`, unless a
+  future instrument-specific definition or policy requires otherwise), and expected-loss or
+  credit-loss decomposition where methodologically applicable;
 - covenant, call, put, convertible and subordination features when applicable;
 - embedded optionality when applicable;
 - FX exposure and MXN-reporting decomposition when applicable;
@@ -51,6 +55,40 @@ validated separately before it can support ranking or capital allocation. Sovere
 investment-grade corporate, high-yield, floating-rate, callable, convertible, subordinated,
 AT1/CoCo and other debt types may require different methodologies; one universal score must not be
 assumed.
+
+### Future recovery and credit-loss governance
+
+Recovery must be modelled separately from observed market data and from issuer default-probability
+or hazard assumptions. Future valuation, spread, expected-loss and risk calculations that depend
+on recovery must preserve the recovery input's provenance, source, version, timestamp and
+assumptions; those assumptions must be source-governed and point-in-time aware where applicable.
+They must never be silently hardcoded as universal constants.
+
+The future framework must account for recovery seniority and capital-structure dependence and,
+where relevant, distinguish senior secured, senior unsecured, subordinated, preferred/hybrid,
+AT1/CoCo, and distressed or restructured debt. The exact framework may differ by instrument,
+jurisdiction, seniority, collateral, restructuring regime and data availability. Future authorized
+stress or scenario models may vary recovery assumptions explicitly. A separately governed
+methodology and ADR are required before production use; this ADR implements no recovery estimation
+or recovery model.
+
+### Future reference-curve governance
+
+A benchmark/reference curve is not automatically a risk-free curve. Future methodology must define
+and govern risk-free or near-risk-free reference selection per relevant currency, market and
+instrument context, including OIS or an equivalent reference where appropriate. Sovereign or other
+reference curves may be used when justified, but must not be silently treated as risk-free.
+
+Every future curve-dependent calculation must identify its actual reference curve and preserve its
+source, observation timestamp, point-in-time provenance, curve version and methodology. Where an
+implementation requires them, it must also govern currency-specific curve conventions and tenor,
+interpolation and bootstrap conventions. G-spread, Z-spread and OAS must identify the curve actually
+used rather than assume `benchmark == risk-free`. Analysis should distinguish spread versus the
+selected benchmark, spread versus the selected risk-free or near-risk-free reference, and credit,
+liquidity and option components where analytically possible. Cross-currency comparisons must not
+silently treat different sovereign or reference curves as equivalent risk-free bases.
+
+No current vendor, country curve, rate or universal curve methodology is selected by this scope.
 
 ## Future portfolio objective
 
