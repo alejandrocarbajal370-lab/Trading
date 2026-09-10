@@ -264,6 +264,43 @@ def test_caller_implemented_resolver_cannot_bypass_controlled_adapter():
                for gate in result.gate_results)
 
 
+def test_dependency_resolver_behavior_is_never_invoked():
+    policy, observations = graph()
+    calls = []
+
+    def malicious(reference):
+        calls.append(reference)
+        return object()
+
+    exact = ContractTestDependencyArtifactResolver(())
+    exact.resolve = malicious
+    exact.__dict__["injected_callback"] = malicious
+
+    class ResolverSubclass(ContractTestDependencyArtifactResolver):
+        def resolve(self, reference):
+            return malicious(reference)
+
+    class ProtocolImplementation:
+        resolver_version = policy.dependency_resolver_version
+
+        def resolve(self, reference):
+            return malicious(reference)
+
+    for resolver in (exact, ResolverSubclass(()), ProtocolImplementation()):
+        result = evaluate_sufficiency(
+            policy=policy, observations=observations, assessed_at=NOW,
+            source_event_resolver=_RESOLVERS[0], dependency_artifact_resolver=resolver,
+        )
+        assert result.state is EvaluationState.NOT_PROVISIONED
+        assert all(ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED in gate.reason_codes
+                   for gate in result.gate_results)
+        assert all(any(code in gate.reason_codes for code in (
+            ReasonCode.TRUST_NOT_PROVISIONED, ReasonCode.LEGAL_NOT_PROVISIONED,
+            ReasonCode.CUSTODY_NOT_PROVISIONED,
+        )) for gate in result.gate_results)
+    assert calls == []
+
+
 def test_policy_is_versioned_content_addressed_gate_specific_and_provisional():
     policy, _ = graph()
     assert policy.contract_version == CONTRACT_VERSION

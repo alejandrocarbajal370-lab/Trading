@@ -678,19 +678,20 @@ def evaluate_sufficiency(
 ) -> SufficiencyAssessment:
     """Deterministically evaluate contract evidence without making a REAL admission."""
     try:
+        # Dependency admission is disabled until a complete canonical upstream
+        # adapter exists. The compatibility argument must never influence an
+        # assessment through caller-controlled dispatch.
+        del dependency_artifact_resolver
         rule = _deep(SufficientObservationPolicy, policy)
         evidence = tuple(_deep(ObservationEvidence, item) for item in observations)
         _utc(assessed_at)
         if (type(source_event_resolver) is not ContractTestSourceEventResolver
                 or source_event_resolver.resolver_version != rule.source_event_resolver_version):
             source_event_resolver = None
-        if (type(dependency_artifact_resolver) is not ContractTestDependencyArtifactResolver
-                or dependency_artifact_resolver.resolver_version != rule.dependency_resolver_version):
-            dependency_artifact_resolver = None
         results = tuple(
             sorted(
                 (_evaluate_gate(rule, criterion, evidence, assessed_at,
-                                source_event_resolver, dependency_artifact_resolver)
+                                source_event_resolver)
                  for criterion in rule.criteria),
                 key=lambda item: item.gate.value,
             )
@@ -729,7 +730,7 @@ def evaluate_sufficiency(
         raise ObservationPolicyError("invalid sufficient-observation evaluation") from None
 
 
-def _evaluate_gate(policy, criterion, evidence, now, event_resolver, artifact_resolver):
+def _evaluate_gate(policy, criterion, evidence, now, event_resolver):
     reasons: set[ReasonCode] = set()
     candidates: list[tuple[ObservationEvidence, SourceEventIdentityRecord]] = []
     conflicted_event_keys: set[str] = set()
@@ -745,7 +746,7 @@ def _evaluate_gate(policy, criterion, evidence, now, event_resolver, artifact_re
         if item.gate is not criterion.gate or item.observation_class is not criterion.observation_class:
             continue
         item_reasons, event = _observation_reasons(
-            policy, criterion, item, now, event_resolver, artifact_resolver
+            policy, criterion, item, now, event_resolver
         )
         reasons.update(item_reasons)
         if event is not None and ReasonCode.SOURCE_EVENT_REVIEW_REQUIRED in item_reasons:
@@ -840,7 +841,7 @@ def _evaluate_gate(policy, criterion, evidence, now, event_resolver, artifact_re
     )
 
 
-def _observation_reasons(policy, criterion, item, now, event_resolver, artifact_resolver):
+def _observation_reasons(policy, criterion, item, now, event_resolver):
     reasons: set[ReasonCode] = set()
     event = None if event_resolver is None else event_resolver.resolve(item.source_event_ref_digest)
     if event is None:
@@ -903,9 +904,12 @@ def _observation_reasons(policy, criterion, item, now, event_resolver, artifact_
         required.add(DependencyKind.CUSTODY_WORM_REPLAY)
     artifacts = {artifact.kind: artifact for artifact in item.dependency_artifacts}
     for kind in required:
+        # References remain mechanics diagnostics only. Current PR38--42 models
+        # cannot establish membership, regardless of any supplied resolver.
+        reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED)
+        reasons.add(_dependency_code(kind, provisioned=False))
         artifact = artifacts.get(kind)
         if artifact is None:
-            reasons.add(_dependency_code(kind, provisioned=False))
             continue
         expected_binding = (
             item.provider_ref, item.dataset_ref, item.route_ref, item.instrument_ref,
@@ -934,45 +938,6 @@ def _observation_reasons(policy, criterion, item, now, event_resolver, artifact_
             reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED)
             reasons.add(_dependency_code(kind, provisioned=True))
             continue
-        record = None if artifact_resolver is None else artifact_resolver.resolve(
-            artifact.artifact_digest
-        )
-        if record is None:
-            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_NOT_PROVISIONED)
-            reasons.add(_dependency_code(kind, provisioned=False))
-            continue
-        record = _deep(DependencyArtifactRecord, record)
-        reference_content = BaseModel.model_dump(
-            artifact, mode="python", exclude={"reference_hash", "artifact_digest"}
-        )
-        record_content = BaseModel.model_dump(
-            record, mode="python", exclude={
-                "resolver_version", "canonical_schema", "contract_provenance_digest",
-                "artifact_digest",
-            }
-        )
-        if reference_content != record_content:
-            reasons.add(ReasonCode.DEPENDENCY_BINDING_MISMATCH)
-            reasons.add(ReasonCode.DEPENDENCY_ARTIFACT_REVIEW_REQUIRED)
-            reasons.add(_dependency_code(kind, provisioned=True))
-            continue
-        expected = (item.provider_ref, item.dataset_ref, item.route_ref, item.instrument_ref,
-                    item.capability_id, item.policy_id, item.policy_version,
-                    event.canonical_event_key if event is not None else item.source_event_ref_digest,
-                    item.payload_digest)
-        actual = (artifact.provider_ref, artifact.dataset_ref, artifact.route_ref,
-                  artifact.entity_ref, artifact.capability_id, artifact.policy_id,
-                  artifact.policy_version, artifact.source_event_ref_digest,
-                  artifact.payload_digest)
-        if actual != expected:
-            reasons.add(ReasonCode.DEPENDENCY_BINDING_MISMATCH)
-            reasons.add(_dependency_code(kind, provisioned=True))
-        if artifact.available_at > now or artifact.verified_at > now:
-            reasons.add(ReasonCode.DEPENDENCY_NOT_AVAILABLE_AS_OF)
-            reasons.add(_dependency_code(kind, provisioned=True))
-        if (now < artifact.effective_at or now >= artifact.expires_at
-                or artifact.revoked_at is not None and now >= artifact.revoked_at):
-            reasons.add(_dependency_code(kind, provisioned=True))
     return reasons, event
 
 

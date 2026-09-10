@@ -60,21 +60,19 @@ gate, observation class, capability, provider, dataset and mode before counting.
 Each criterion independently defines minimum observations, sessions, dates and span, maximum age,
 permitted missingness, required provenance fields, trust/authority requirements, legal rights and
 custody/WORM/replay requirements. Critical dependency states are not caller-supplied enums, and a
-caller digest or Step5 wrapper is never authority. The old public dependency-record factory now
-fails closed and `DependencyArtifactRecord` is a legacy, non-member wrapper. The resolver accepts
-only exact owning-module types: PR40 `IndependentVerificationResult` and
-`AuthorityRegistryEvidence`, PR41 `RestoreVerificationEvidence`, and PR42
-`LegalAdmissionDecision`. It reconstructs each through its owning validator and recomputes its
-owning hash. Arbitrary dictionaries, subclasses, local Step5 records, forged schema/provenance,
-JSON/reseal/model-copy/model-construct products cannot create membership.
+caller digest or Step5 wrapper is never authority. Step5 dependency admission is currently
+fail-closed and always `NOT_PROVISIONED`. No caller-provided resolver or wrapper establishes
+dependency authority. The old public dependency-record factory fails closed, and
+`DependencyArtifactRecord` remains a legacy, non-member wrapper.
 
-Those canonical artifacts do not carry every Step5 provider, dataset, route, entity, capability,
-policy, canonical source-event and payload binding, and some lack a compatible expiry/replacement
-lifecycle. Step5 therefore records the validated digest only as an unsupported capability and does
-not resolve it as a satisfied dependency. All four kinds remain `NOT_PROVISIONED`. Wrapper hashes
-protect wrapper consistency only. A future adapter may promote a dependency only when the owning
-canonical artifact exposes all applicable bindings and current-as-of semantics; missing facts are
-never synthesized locally.
+Existing PR38--42 canonical artifacts do not carry every Step5 provider, dataset, route, entity,
+capability, policy, canonical source-event and payload binding, and some lack a compatible
+expiry/replacement lifecycle. Step5 does not invoke or consult caller-provided resolver behavior
+during assessment. Resolver and dependency fixtures may exercise mechanics only; they do not
+participate in sufficiency admission. All four dependency kinds remain `NOT_PROVISIONED`. Wrapper
+hashes protect wrapper consistency only. A future canonical upstream adapter may enable admission
+only after it supplies all applicable bindings and current-as-of semantics; missing facts are never
+synthesized locally.
 
 All timestamps use strict UTC. Observation event/window time is distinct from evidence
 `available_at`, and dependency availability/effective/verification times are distinct again.
