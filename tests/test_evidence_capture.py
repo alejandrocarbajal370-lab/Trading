@@ -29,6 +29,7 @@ from governance.external_evidence_verification import (
 from governance.phase7e import EvidenceGate, GateState
 
 NOW = dt.datetime(2026, 9, 10, 12, tzinfo=dt.UTC)
+EVALUATED_AT = NOW + dt.timedelta(minutes=3)
 
 
 def upstream(gate=EvidenceGate.REAL_FX, variant="v1", observed_at=NOW):
@@ -44,6 +45,7 @@ def capture(gate=EvidenceGate.REAL_FX, variant="v1", observed_at=NOW):
     return capture_contract_test_observation(
         upstream(gate, variant, observed_at), available_at=observed_at + dt.timedelta(minutes=1),
         captured_at=observed_at + dt.timedelta(minutes=2),
+        evaluated_at=observed_at + dt.timedelta(minutes=3),
     )
 
 
@@ -82,7 +84,9 @@ def test_arbitrary_caller_digest_ref_schema_or_version_cannot_become_truth():
         forged = dict(raw)
         forged[field] = value
         with pytest.raises(EvidenceCaptureError):
-            capture_contract_test_observation(forged, available_at=NOW, captured_at=NOW)
+            capture_contract_test_observation(
+                forged, available_at=NOW, captured_at=NOW, evaluated_at=NOW
+            )
 
 
 def test_duplicate_replay_alias_counts_once_and_order_is_deterministic():
@@ -107,14 +111,59 @@ def test_same_semantic_slot_different_payload_requires_review():
     (NOW.replace(tzinfo=None), NOW),
     (NOW + dt.timedelta(minutes=1), NOW.replace(tzinfo=None)),
 ])
-def test_utc_pit_boundaries_and_no_lookahead(available, captured):
+def test_utc_and_internal_chronology_fail_closed(available, captured):
     with pytest.raises(EvidenceCaptureError):
-        capture_contract_test_observation(upstream(), available_at=available, captured_at=captured)
+        capture_contract_test_observation(
+            upstream(), available_at=available, captured_at=captured,
+            evaluated_at=EVALUATED_AT,
+        )
+
+
+def test_non_utc_evaluation_time_fails_closed():
+    with pytest.raises(EvidenceCaptureError):
+        capture_contract_test_observation(
+            upstream(), available_at=NOW, captured_at=NOW,
+            evaluated_at=NOW.replace(tzinfo=None),
+        )
+
+
+def test_capture_entirely_in_2099_fails_closed_against_deterministic_evaluation_time():
+    future = dt.datetime(2099, 1, 1, tzinfo=dt.UTC)
+    with pytest.raises(EvidenceCaptureError) as caught:
+        capture_contract_test_observation(
+            upstream(observed_at=future), available_at=future, captured_at=future,
+            evaluated_at=NOW,
+        )
+    assert caught.value.reason == "PIT_FUTURE_TIMESTAMP"
+
+
+@pytest.mark.parametrize("future_field", ("observed_at", "available_at", "captured_at"))
+def test_each_relevant_capture_timestamp_future_fails_closed(future_field):
+    times = {"observed_at": NOW, "available_at": NOW, "captured_at": NOW}
+    times[future_field] = EVALUATED_AT + dt.timedelta(microseconds=1)
+    with pytest.raises(EvidenceCaptureError) as caught:
+        capture_contract_test_observation(
+            upstream(observed_at=times["observed_at"]),
+            available_at=times["available_at"], captured_at=times["captured_at"],
+            evaluated_at=EVALUATED_AT,
+        )
+    assert caught.value.reason == "PIT_FUTURE_TIMESTAMP"
 
 
 def test_exact_pit_boundary_is_accepted():
-    item = capture_contract_test_observation(upstream(), available_at=NOW, captured_at=NOW)
+    item = capture_contract_test_observation(
+        upstream(), available_at=NOW, captured_at=NOW, evaluated_at=NOW
+    )
     assert item.available_at == item.captured_at == NOW
+    assert item.evaluated_at == NOW
+
+
+def test_past_capture_and_repeat_evaluation_are_deterministic():
+    kwargs = {"available_at": NOW, "captured_at": NOW, "evaluated_at": EVALUATED_AT}
+    first = capture_contract_test_observation(upstream(), **kwargs)
+    second = capture_contract_test_observation(upstream(), **kwargs)
+    assert first == second
+    assert first.record_digest == second.record_digest
 
 
 def test_copy_construct_json_and_reseal_cannot_promote_assurance_or_lifecycle():

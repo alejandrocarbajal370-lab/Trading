@@ -33,6 +33,10 @@ SAFE_REF = r"^[a-z0-9][a-z0-9._:-]{1,127}$"
 class EvidenceCaptureError(ValueError):
     """Untrusted capture material failed closed without echoing its contents."""
 
+    def __init__(self, reason: str = "INVALID_GOVERNED_EVIDENCE_CAPTURE") -> None:
+        self.reason = reason
+        super().__init__(reason)
+
 
 class CaptureState(StrEnum):
     INCOMPLETE = "INCOMPLETE"
@@ -124,6 +128,7 @@ class EvidenceCaptureRecord(_Model):
     observed_at: dt.datetime
     available_at: dt.datetime
     captured_at: dt.datetime
+    evaluated_at: dt.datetime
     expires_at: None = None
     revoked_at: None = None
     replacement_ref: None = None
@@ -139,9 +144,13 @@ class EvidenceCaptureRecord(_Model):
     def validate_value(self):
         if CLASS_BY_GATE.get(self.gate) is not self.evidence_class:
             raise ValueError
-        for value in (self.observed_at, self.available_at, self.captured_at):
+        for value in (self.observed_at, self.available_at, self.captured_at, self.evaluated_at):
             _utc(value)
         if not self.observed_at <= self.available_at <= self.captured_at:
+            raise ValueError
+        if any(value > self.evaluated_at for value in (
+            self.observed_at, self.available_at, self.captured_at
+        )):
             raise ValueError
         required = (
             "capability_id", "custody_ref", "entity_or_instrument_ref",
@@ -187,7 +196,8 @@ class Step5CaptureProjection(_Model):
 
 
 def capture_contract_test_observation(
-    upstream: Any, *, available_at: dt.datetime, captured_at: dt.datetime
+    upstream: Any, *, available_at: dt.datetime, captured_at: dt.datetime,
+    evaluated_at: dt.datetime,
 ) -> EvidenceCaptureRecord:
     """Capture only a validator-owned canonical fixture observation."""
     try:
@@ -209,10 +219,16 @@ def capture_contract_test_observation(
         )
         if actual != expected or item.material_digest not in expectation.accepted_artifact_digests:
             raise ValueError
+        _utc(item.observed_at)
         _utc(available_at)
         _utc(captured_at)
+        _utc(evaluated_at)
+        if any(value > evaluated_at for value in (
+            item.observed_at, available_at, captured_at
+        )):
+            raise EvidenceCaptureError("PIT_FUTURE_TIMESTAMP")
         if not item.observed_at <= available_at <= captured_at:
-            raise ValueError
+            raise EvidenceCaptureError("PIT_CHRONOLOGY_INVALID")
         values = {
             "evidence_class": CLASS_BY_GATE[item.gate], "gate": item.gate,
             "upstream_contract": item.version,
@@ -225,7 +241,7 @@ def capture_contract_test_observation(
                                            "identity": item.adapter_identity_hash}),
             "source_event_state": SourceEventState.SYNTHETIC_TEST_ONLY,
             "observed_at": item.observed_at, "available_at": available_at,
-            "captured_at": captured_at,
+            "captured_at": captured_at, "evaluated_at": evaluated_at,
             "lifecycle_status": LifecycleStatus.CURRENT_LOCAL_OBSERVATION,
             "payload_digest": item.material_digest,
             "counting_semantics": "NOT_PRODUCTION_COUNTABLE",

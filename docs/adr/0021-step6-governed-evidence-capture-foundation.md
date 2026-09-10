@@ -50,9 +50,14 @@ Step 5. This local key is never described as provider event independence.
 
 ## PIT and lifecycle
 
-All timestamps must be UTC and satisfy `observed_at <= available_at <= captured_at`; equality is
-accepted. `available_at` is capture metadata supplied at the boundary, not a claim of provider
-publication time. A future, non-UTC or chronologically impossible value fails closed. The current
+All timestamps must be UTC and satisfy
+`observed_at <= available_at <= captured_at <= evaluated_at`; equality is accepted.
+`evaluated_at` is an explicit, caller-injected current-as-of cutoff that is sealed into the capture;
+validation does not read the wall clock. Each of `observed_at`, `available_at` and `captured_at`
+must be no later than that cutoff. `available_at` is capture metadata supplied at the boundary, not
+a claim of provider publication time. A value after the cutoff fails closed with
+`PIT_FUTURE_TIMESTAMP`; an internally impossible chronology fails with `PIT_CHRONOLOGY_INVALID`.
+Non-UTC values also fail closed. The current
 upstream fixture has no compatible expiry/revocation/replacement lifecycle, so capture cannot
 invent one. Future adapters must validate those fields through their owning upstream validators
 and evaluate them current-as-of without look-ahead.
