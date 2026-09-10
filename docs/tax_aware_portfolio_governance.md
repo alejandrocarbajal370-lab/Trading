@@ -13,7 +13,9 @@ turnover without tax-lot state and an approximate realization cost. The governed
 3. backtesting is explicitly authorized and validated;
 4. Tax Lot & Tax-Aware Portfolio Governance is implemented and separately activated; then
 5. portfolio optimizer/rebalancing may be considered, followed only later by separately governed
-   broker order generation and live execution.
+   human-reviewed proposals and Broker X execution constraints. It does not authorize broker order
+   generation or live execution; under ADR 0020, real execution is manual and `HUMAN_ONLY` outside
+   Aurora.
 
 This document does not change `governance.roadmap.NEXT_BLOCK`, the REAL route, QVM admission or any
 readiness gate. The machine-readable future scope is
