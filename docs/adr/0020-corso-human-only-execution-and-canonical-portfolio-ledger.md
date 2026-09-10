@@ -113,7 +113,8 @@ The governed sequence is preserved:
 11. Production manual execution at Broker X by a human.
 
 There is no production auto-execution phase under the current mandate. Sequence position does not
-authorize implementation or relax a gate. Step 6 is `NOT STARTED`.
+authorize implementation or relax a gate. ADR 0021 supersedes the former pre-foundation state:
+**Step 6: STARTED — FOUNDATION ONLY; NO GATES CLOSED**.
 
 ## Current safety state and implementation boundary
 
@@ -129,5 +130,5 @@ authorize implementation or relax a gate. Step 6 is `NOT STARTED`.
 
 This ADR records architecture only. It does not implement PostgreSQL, Broker X, the Broker
 Execution Profile, canonical portfolio ingestion or reconciliation, portfolio construction,
-backtesting, provider admission, QVM REAL, order handling or execution. **Paso 6: NOT STARTED. NO
-EXECUTION IMPLEMENTED.**
+backtesting, provider admission, QVM REAL, order handling or execution. **Step 6: STARTED —
+FOUNDATION ONLY; NO GATES CLOSED. NO EXECUTION IMPLEMENTED.**

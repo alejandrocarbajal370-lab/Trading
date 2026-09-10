@@ -106,7 +106,9 @@ PR38--42 APIs, canonical event independence and complete dependency bindings are
 the state is unreachable and evaluations fail closed as `NOT_PROVISIONED` (or
 `REVIEW_REQUIRED` for conflicts or tampering).
 
-Step 6—capturing sufficient authentic evidence—has not started. This change does not capture bulk
-or REAL evidence, close a gate, admit a provider, score QVM, create a shortlist, backtest, construct
-or rebalance a portfolio, produce targets, place orders, mutate an account, or enable any execution
-path.
+At the acceptance time of this ADR, Step 6—capturing sufficient authentic evidence—had not started.
+That historical state is superseded by ADR 0021; the active state is **Step 6: STARTED — FOUNDATION
+ONLY; NO GATES CLOSED**. Neither this change nor that foundation captures bulk or REAL evidence,
+closes a gate, admits a provider, scores QVM, creates a shortlist, backtests, constructs or
+rebalances a portfolio, produces targets, places orders, mutates an account, or enables any
+execution path.

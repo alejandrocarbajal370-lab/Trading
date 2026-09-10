@@ -63,12 +63,13 @@ generate and compare governed candidates such as 20/80, 30/70, 40/60, 50/50 and 
 > Minimize probability of permanent capital loss → maximize return subject to that.
 
 Once the required models, data and methods have been separately authorized and validated, a future
-comparison should consider governed expected-return assumptions; volatility and other risk;
+engine must compare alternative Fixed Income/Equity weights under an explicit objective function
+and governed constraints. That comparison should consider expected-return assumptions; volatility and other risk;
 drawdown and permanent-loss considerations; cross-asset correlation and diversification;
 duration/interest-rate, credit/default and FX risks; liquidity; concentration; cash requirements;
 authorized tax-aware effects; transaction costs and turnover; stress/scenario behavior;
 appropriate risk-adjusted and after-cost/after-tax metrics; portfolio constraints; and the user
-mandate.
+mandate. This requirement defines future scope only and does not create real portfolio construction.
 
 ## Target architecture
 
