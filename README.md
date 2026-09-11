@@ -57,21 +57,23 @@ The block-by-block descriptions below preserve the repository's implementation h
 contemporaneous uses of “current”, “next” or “later” are historical and do not override ADR 0020,
 the current roadmap above, or the permanent human-only production execution boundary.
 
-Steps 1 and 2 closed in PRs #39 and #40. The exact `NEXT_BLOCK` is **Durable Custody + WORM +
-Replay** (`AUTHORIZED_TO_IMPLEMENT`; `CONTRACT_TEST_ONLY`; REAL `NOT_PROVISIONED`). It binds
+Steps 1 and 2 closed in PRs #39 and #40. Their then-authorized successor was **Durable Custody +
+WORM + Replay** (`CONTRACT_TEST_ONLY`; REAL `NOT_PROVISIONED`). It binds
 backend/deployment, immutable-retention policy, raw and derived custody receipts, atomic persistent
 replay, access audit and restore evidence transitively to the ADR 0015/0016 graph. A content hash,
 SQLite, chmod, Git or locally signed JSON is never WORM or REAL custody. See ADR 0017.
 
-The named successor is **Licensing/legal**, but it remains
-`NOT_AUTHORIZED / ARCHITECTURAL_DECISION_REQUIRED`. All 10/10 gates remain `OPEN_EXTERNAL`; REAL
+Its then-named successor was **Licensing/legal**. Both blocks have since been integrated through
+PRs #41 and #42. All 10/10 gates remain `OPEN_EXTERNAL`; REAL
 trust, provider admission, `QVM_NOT_READY`, `INSUFFICIENT_REAL_DATA`, and `NO_TRADE` remain fixed.
 
 Systematic Equity Research & Portfolio Engine built with a capital-preservation-first mandate.
 
 Phases 6 and 7A/7B/7C/7D/7E/7F are integrated; Phase 7F was squash merged as PR #25.
-The current authorized block is the contract-only **Durable Custody + WORM + Replay** foundation
-described in `docs/adr/0017-durable-custody-worm-replay-foundation.md`.
+The exact `NEXT_BLOCK` is the fail-closed **Step 6 External-Gate Remediation — Pending Canonical
+Scheduling** placeholder. It carries no implementation scope or authorization. The completed
+contract-only **Durable Custody + WORM + Replay** foundation is described in
+`docs/adr/0017-durable-custody-worm-replay-foundation.md`.
 **Phase 7G — Governed External Provisioning Foundation** is proposed in draft form as a
 contract-test-only boundary in
 [`docs/adr/0002-phase7g-governed-external-provisioning.md`](docs/adr/0002-phase7g-governed-external-provisioning.md).
@@ -659,14 +661,14 @@ portfolio, backtest, broker action, or execution. `NO_TRADE` remains active and
 
 ## Safety
 
-The exact `NEXT_BLOCK` is **Durable Custody + WORM + Replay**,
-with `AUTHORIZED_TO_IMPLEMENT`, `CONTRACT_TEST_ONLY`, `AFTER_CURRENT_BLOCK_MERGED`, and
-`NEW_PR_REQUIRED`. It validates transitive contract bindings and lifecycle separation without
+The current `NEXT_BLOCK` is **Step 6 External-Gate Remediation — Pending Canonical Scheduling**,
+with `NOT_AUTHORIZED`, `NO_IMPLEMENTATION_AUTHORIZED`, and empty scope. Durable Custody + WORM +
+Replay was completed by PR #41; it validates transitive contract bindings and lifecycle separation without
 installing a REAL custody backend, WORM control or replay service. A contract-test success never closes
 a REAL gate: 10/10 remain `OPEN_EXTERNAL`, while provider admission, custody/WORM/replay,
-legal/licensing and external trust remain `NOT_PROVISIONED`. The named successor is
-**Licensing/legal**, still `NOT_AUTHORIZED / ARCHITECTURAL_DECISION_REQUIRED`; QVM remains
-blocked. See ADR 0017.
+legal/licensing and external trust remain `NOT_PROVISIONED`. Licensing/legal was completed by PR
+#42; Step 5 by PR #43; and Step 6 foundation by PR #45. No later specific block is canonically
+scheduled, so QVM remains blocked. See ADRs 0017–0021.
 
 The completed PR #37 block was **External Trust Backend Provisioning Contract Foundation**. It
 binds the PR #35/#36 graph to a digest-only external backend and seven independent principal

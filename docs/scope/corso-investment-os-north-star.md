@@ -24,6 +24,14 @@ data -> information -> research -> investment intelligence -> risk understanding
 
 Production execution remains external and `HUMAN_ONLY`.
 
+Future Engine/Ledger work may consume GBM facts only through the deferred, versioned Broker
+Execution Profile and `HUMAN_VALIDATED_MANUAL_ENTRY` / `MANUAL_STRUCTURED_INPUT` Data Intake
+contract defined by ADR 0023. It must preserve exact fractional quantities, original currency,
+separate execution/settlement timestamps, observed fees/tax/events, linked corrections, lots under
+`corso_lot_id`, provenance and manual-assisted reconciliation. Broker-specific executability and
+metadata never become universal model-eligibility rules. No ledger or Data Intake is implemented
+or authorized here.
+
 ## Governing principles
 
 1. `Signal != Risk != Confidence != Position Size`.

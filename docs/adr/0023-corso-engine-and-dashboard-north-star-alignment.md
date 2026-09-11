@@ -52,9 +52,54 @@ advanced engines and finally a separately authorized Portfolio Engine.
 
 That target sequence is subordinate to the current real roadmap. It cannot bypass Step 6 external
 gates, REAL provider admission, PIT/data governance or later explicit authorizations. The current
-machine-readable `NEXT_BLOCK` remains **Durable Custody + WORM + Replay**, `CONTRACT_TEST_ONLY`,
-`NEW_PR_REQUIRED`; REAL activation remains unauthorized. Its named successor Licensing/legal
-remains `NOT_AUTHORIZED / ARCHITECTURAL_DECISION_REQUIRED`.
+machine-readable `NEXT_BLOCK` is **Step 6 External-Gate Remediation — Pending Canonical
+Scheduling**. It is a fail-closed placeholder with `PENDING_CANONICAL_SCHEDULING`,
+`NO_IMPLEMENTATION_AUTHORIZED`, empty implementation scope and REAL activation unauthorized.
+The repository does not canonically select a more specific successor after the already integrated
+Durable Custody + WORM + Replay (PR #41), Licensing/legal (PR #42), Step 5 (PR #43) and Step 6
+foundation (PR #45), so no phase is invented here.
+
+## Deferred GBM Broker Execution Profile
+
+GBM is the selected Broker X but remains completely disconnected from CORSO: no API, scraping,
+browser automation, credentials, sessions/tokens, CSV/XLSX/Excel, PDF, screenshots, photos, OCR,
+broker reports, file upload, automated ingestion or order routing. The only future path is
+`HUMAN_VALIDATED_MANUAL_ENTRY` / `MANUAL_STRUCTURED_INPUT` through Data Intake; real operations
+must never be hard-coded. This is deferred target scope only and implements neither Data Intake nor
+a ledger.
+
+A future versioned Broker Execution Profile and validation metadata must keep broker particulars
+out of universal core rules and must:
+
+- distinguish `GBM_TRADING_MX` and `GBM_TRADING_USA` as account/broker environments or account
+  types, with manual `strategy_id` where applicable; keep universe/model eligibility separate from
+  GBM executability;
+- support Trading USA fractional shares with exact `DECIMAL`/`NUMERIC` quantity as source of truth,
+  never `INTEGER` or `FLOAT`; record DriveWealth only as optional intermediary/custodian metadata
+  when relevant, while GBM remains the broker;
+- preserve original currency, at minimum MXN/USD, without destructive presentation conversion;
+  preserve separate `proposal_timestamp`, `manual_order_timestamp`, `execution_timestamp`,
+  `trade_date` and `settlement_date` when available;
+- represent settled, unsettled, available-to-trade and available-to-withdraw cash separately only
+  when reliable support exists; treat manually observed fees/commissions as facts and broker fee
+  schedules only as versioned validation references that never overwrite execution facts;
+- record tax, W-8BEN and withholding only as observed metadata/events—CORSO is not a tax engine;
+- provide an event taxonomy including `DIVIDEND`, `STOCK_DIVIDEND`, `SPLIT`, `REVERSE_SPLIT`,
+  `SPIN_OFF`, `MERGER`, `TENDER`, `RETURN_OF_CAPITAL`, `SYMBOL_CHANGE`, `CASH_IN_LIEU` and applicable
+  FI-specific events; a split is never a fabricated purchase;
+- maintain future lots/cost basis under `corso_lot_id` without relying on GBM cost basis for
+  reconstruction; reconciliation is manual-assisted and differences become
+  `RECONCILIATION_EXCEPTION`, never silent correction;
+- correct promoted history only through linked `CORRECTION`, `REVERSAL`, `VOID` or `SUPERSESSION`,
+  never physical deletion; mark suspected duplicates `POTENTIAL_DUPLICATE` without automatic
+  deduplication; and
+- preserve minimum provenance `source_type=MANUAL_ENTRY`, `external_source=GBM`,
+  `entered_by=HUMAN`, never `GBM_API`, under the truth hierarchy Real World Execution → Human
+  Validated Input → Canonical Ledger → Calculated State → Investment Intelligence. Higher layers
+  never rewrite lower layers to force agreement.
+
+Fractionals, DriveWealth, order types, fees, funding, settlement, W-8BEN and similar details belong
+in that versionable profile/validation metadata, not in universal core logic.
 
 ## Classification of existing architecture
 

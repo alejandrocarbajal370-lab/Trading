@@ -131,6 +131,13 @@ economic facts through CORSO Data Intake. This policy supersedes earlier canonic
 assumptions about `BROKER_X_FILE`, statements or CSV/XLSX ingestion while preserving the valid
 append-only validation, reconciliation, provenance and audit architecture.
 
+For future Operations views, ADR 0023's deferred GBM Broker Execution Profile is authoritative.
+The UI must distinguish Trading MX/USA, original MXN/USD values, exact fractional quantities,
+timestamps, supported cash states, observed fees/tax/corporate actions, lots, provenance,
+reconciliation exceptions, linked corrections and potential-duplicate warnings without silently
+normalizing, correcting or deduplicating them. It must separately show model/universe eligibility
+and broker executability. This adds no Data Intake or ledger implementation authorization.
+
 ## Environments and execution boundary
 
 The interface preserves three explicit semantics:
