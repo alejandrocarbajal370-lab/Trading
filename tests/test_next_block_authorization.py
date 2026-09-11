@@ -5,12 +5,9 @@ from pydantic import ValidationError
 
 from governance.phase7e import EvidenceGate, GateState
 from governance.roadmap import (
-    AFTER_NEXT_BLOCK,
     FUTURE_TAX_AWARE_CAPABILITY,
     NEXT_BLOCK,
     ImplementationAuthorization,
-    MergeOrder,
-    NextBlockScope,
     RoadmapBlock,
     TaxAwareDependency,
     TaxAwareScope,
@@ -21,36 +18,29 @@ from governance.roadmap import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_durable_custody_foundation_follows_external_trust():
-    assert NEXT_BLOCK.name == RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY
-    assert (
-        NEXT_BLOCK.current_block
-        == RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
-    )
-    assert NEXT_BLOCK.current_block.value != NEXT_BLOCK.name.value
+def test_next_block_fails_closed_pending_canonical_scheduling():
+    assert NEXT_BLOCK.name == RoadmapBlock.STEP6_EXTERNAL_GATE_REMEDIATION_PENDING_CANONICAL_SCHEDULING
+    assert NEXT_BLOCK.scheduling_state == "PENDING_CANONICAL_SCHEDULING"
     assert (
         NEXT_BLOCK.foundation_implementation
-        == ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
+        == ImplementationAuthorization.NOT_AUTHORIZED
     )
-    assert NEXT_BLOCK.implementation_authorized is True
+    assert NEXT_BLOCK.implementation_authorized is False
     assert NEXT_BLOCK.real_external_activation == ImplementationAuthorization.NOT_AUTHORIZED
     assert NEXT_BLOCK.activation_real is False
-    assert NEXT_BLOCK.operating_mode == "CONTRACT_TEST_ONLY"
+    assert NEXT_BLOCK.operating_mode == "NO_IMPLEMENTATION_AUTHORIZED"
     assert NEXT_BLOCK.operating_mode_real is False
-    assert NEXT_BLOCK.merge_order == MergeOrder.AFTER_CURRENT_BLOCK_MERGED
-    assert NEXT_BLOCK.successor_pr == "NEW_PR_REQUIRED"
-    assert NEXT_BLOCK.scope == tuple(NextBlockScope)
-    assert NEXT_BLOCK.evidence_states == ("CONTRACT_TEST_ONLY", "NOT_PROVISIONED")
+    assert NEXT_BLOCK.scope == ()
 
 
-def test_roadmap_rejects_self_reference_or_missing_foundation_authorization():
+def test_roadmap_rejects_unscheduled_implementation_authorization_or_scope():
     raw = NEXT_BLOCK.model_dump(mode="python")
-    raw["name"] = raw["current_block"]
+    raw["implementation_authorized"] = True
     with pytest.raises(ValidationError):
         type(NEXT_BLOCK).model_validate(raw)
 
     raw = NEXT_BLOCK.model_dump(mode="python")
-    raw["foundation_implementation"] = ImplementationAuthorization.NOT_AUTHORIZED
+    raw["scope"] = ("FABRICATED_SCOPE",)
     with pytest.raises(ValidationError):
         type(NEXT_BLOCK).model_validate(raw)
 
@@ -67,19 +57,16 @@ def test_roadmap_json_copy_construct_and_direct_validation_fail_closed():
             validate_next_block(forged)
 
 
-def test_readme_adr_and_machine_readable_successor_agree_exactly():
+def test_readme_adr_and_machine_readable_next_block_agree_exactly():
     readme = (ROOT / "README.md").read_text()
-    adr = (ROOT / "docs/adr/0017-durable-custody-worm-replay-foundation.md").read_text()
+    adr = (ROOT / "docs/adr/0023-corso-engine-and-dashboard-north-star-alignment.md").read_text()
     for document in (readme, adr):
         normalized = " ".join(document.split())
         assert NEXT_BLOCK.name.value in normalized
         assert NEXT_BLOCK.foundation_implementation.value in document
         assert NEXT_BLOCK.real_external_activation.value in document
         assert NEXT_BLOCK.operating_mode in document
-        assert NEXT_BLOCK.merge_order.value in document
-        assert NEXT_BLOCK.successor_pr in document
     assert "exact `NEXT_BLOCK`" in readme
-    assert "named successor" in adr
 
 
 def test_next_foundation_preserves_all_frozen_safety_states():
@@ -98,14 +85,6 @@ def test_next_foundation_preserves_all_frozen_safety_states():
     assert NEXT_BLOCK.signals_generated is False
     assert NEXT_BLOCK.live_execution_enabled is False
     assert NEXT_BLOCK.backtesting == "NOT_AUTHORIZED"
-
-
-def test_licensing_legal_successor_is_named_but_unauthorized():
-    assert AFTER_NEXT_BLOCK.after == NEXT_BLOCK.name
-    assert AFTER_NEXT_BLOCK.name == RoadmapBlock.LICENSING_LEGAL
-    assert AFTER_NEXT_BLOCK.implementation_authorized is False
-    assert AFTER_NEXT_BLOCK.activation_real is False
-    assert AFTER_NEXT_BLOCK.decision_state == "ARCHITECTURAL_DECISION_REQUIRED"
 
 
 def test_tax_aware_governance_is_future_only_and_does_not_replace_next_block():

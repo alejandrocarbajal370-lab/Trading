@@ -18,6 +18,9 @@ class FutureCapabilityStatus(StrEnum):
 
 
 class RoadmapBlock(StrEnum):
+    STEP6_EXTERNAL_GATE_REMEDIATION_PENDING_CANONICAL_SCHEDULING = (
+        "Step 6 External-Gate Remediation — Pending Canonical Scheduling"
+    )
     EXTERNAL_PROVIDER_ADAPTER_DURABLE_VERIFICATION_INTERFACE_FOUNDATION = (
         "External Provider Adapter & Durable Verification Interface Foundation"
     )
@@ -114,42 +117,22 @@ class TaxAwareScope(StrEnum):
     )
 
 
-class NextBlockScope(StrEnum):
-    DURABLE_BACKEND_DEPLOYMENT_EVIDENCE = "DURABLE_BACKEND_DEPLOYMENT_EVIDENCE"
-    IMMUTABLE_WORM_POLICY_EVIDENCE = "IMMUTABLE_WORM_POLICY_EVIDENCE"
-    RAW_DERIVED_CUSTODY_RECEIPTS = "RAW_DERIVED_CUSTODY_RECEIPTS"
-    PERSISTENT_ATOMIC_REPLAY = "PERSISTENT_ATOMIC_REPLAY"
-    RESTORE_CONTINUITY_INTEGRITY_EVIDENCE = "RESTORE_CONTINUITY_INTEGRITY_EVIDENCE"
-    ACCESS_AUDIT_EVIDENCE = "ACCESS_AUDIT_EVIDENCE"
-    TRANSITIVE_STEP_1_STEP_2_BINDING = "TRANSITIVE_STEP_1_STEP_2_BINDING"
-    NO_LOCAL_SELF_ATTESTED_REAL_WORM = "NO_LOCAL_SELF_ATTESTED_REAL_WORM"
-
-
-class MergeOrder(StrEnum):
-    AFTER_CURRENT_BLOCK_MERGED = "AFTER_CURRENT_BLOCK_MERGED"
-
-
 class NextBlockAuthorization(BaseModel):
-    """Code-owned authorization to build a foundation, never to activate REAL."""
+    """Fail-closed placeholder until canonical scheduling names a Step 6 block."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    current_block: Literal[
-        RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION
+    name: Literal[
+        RoadmapBlock.STEP6_EXTERNAL_GATE_REMEDIATION_PENDING_CANONICAL_SCHEDULING
     ]
-    name: Literal[RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY]
-    foundation_implementation: Literal[
-        ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT
-    ]
-    implementation_authorized: Literal[True]
+    scheduling_state: Literal["PENDING_CANONICAL_SCHEDULING"]
+    foundation_implementation: Literal[ImplementationAuthorization.NOT_AUTHORIZED]
+    implementation_authorized: Literal[False]
     real_external_activation: Literal[ImplementationAuthorization.NOT_AUTHORIZED]
     activation_real: Literal[False]
-    operating_mode: Literal["CONTRACT_TEST_ONLY"]
+    operating_mode: Literal["NO_IMPLEMENTATION_AUTHORIZED"]
     operating_mode_real: Literal[False]
-    merge_order: Literal[MergeOrder.AFTER_CURRENT_BLOCK_MERGED]
-    successor_pr: Literal["NEW_PR_REQUIRED"]
-    scope: tuple[NextBlockScope, ...]
-    evidence_states: tuple[Literal["CONTRACT_TEST_ONLY", "NOT_PROVISIONED"], ...]
+    scope: tuple[Any, ...] = ()
     gate_states: tuple[tuple[EvidenceGate, Literal[GateState.OPEN_EXTERNAL]], ...]
     trust_root: Literal["NOT_PROVISIONED"]
     durable_replay: Literal["NOT_PROVISIONED"]
@@ -165,12 +148,10 @@ class NextBlockAuthorization(BaseModel):
 
     @model_validator(mode="after")
     def validate_authorization_boundary(self):
-        if self.current_block.value == self.name.value:
-            raise ValueError("roadmap successor cannot reference the current block")
-        if not self.scope:
-            raise ValueError("roadmap successor must have implementable scope")
-        if self.foundation_implementation is not ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT:
-            raise ValueError("roadmap successor must be explicitly authorized to implement")
+        if self.foundation_implementation is not ImplementationAuthorization.NOT_AUTHORIZED:
+            raise ValueError("unscheduled roadmap work must remain unauthorized")
+        if self.implementation_authorized or self.scope:
+            raise ValueError("unscheduled roadmap work cannot carry implementation scope")
         if self.real_external_activation is not ImplementationAuthorization.NOT_AUTHORIZED:
             raise ValueError("REAL activation must remain forbidden")
         if self.gate_states != tuple(
@@ -181,18 +162,15 @@ class NextBlockAuthorization(BaseModel):
 
 
 NEXT_BLOCK = NextBlockAuthorization(
-    current_block=RoadmapBlock.EXTERNAL_TRUST_ATTESTATION_INDEPENDENT_VERIFIER_REAL_FOUNDATION,
-    name=RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY,
-    foundation_implementation=ImplementationAuthorization.AUTHORIZED_TO_IMPLEMENT,
-    implementation_authorized=True,
+    name=RoadmapBlock.STEP6_EXTERNAL_GATE_REMEDIATION_PENDING_CANONICAL_SCHEDULING,
+    scheduling_state="PENDING_CANONICAL_SCHEDULING",
+    foundation_implementation=ImplementationAuthorization.NOT_AUTHORIZED,
+    implementation_authorized=False,
     real_external_activation=ImplementationAuthorization.NOT_AUTHORIZED,
     activation_real=False,
-    operating_mode="CONTRACT_TEST_ONLY",
+    operating_mode="NO_IMPLEMENTATION_AUTHORIZED",
     operating_mode_real=False,
-    merge_order=MergeOrder.AFTER_CURRENT_BLOCK_MERGED,
-    successor_pr="NEW_PR_REQUIRED",
-    scope=tuple(NextBlockScope),
-    evidence_states=("CONTRACT_TEST_ONLY", "NOT_PROVISIONED"),
+    scope=(),
     gate_states=tuple((gate, GateState.OPEN_EXTERNAL) for gate in EvidenceGate),
     trust_root="NOT_PROVISIONED",
     durable_replay="NOT_PROVISIONED",
@@ -205,29 +183,6 @@ NEXT_BLOCK = NextBlockAuthorization(
     signals_generated=False,
     live_execution_enabled=False,
     backtesting="NOT_AUTHORIZED",
-)
-
-
-class AfterNextBlockCandidate(BaseModel):
-    """Named sequence step without implementation or activation authorization."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    after: Literal[
-        RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY
-    ]
-    name: Literal[RoadmapBlock.LICENSING_LEGAL]
-    implementation_authorized: Literal[False]
-    activation_real: Literal[False]
-    decision_state: Literal["ARCHITECTURAL_DECISION_REQUIRED"]
-
-
-AFTER_NEXT_BLOCK = AfterNextBlockCandidate(
-    after=RoadmapBlock.DURABLE_CUSTODY_WORM_REPLAY,
-    name=RoadmapBlock.LICENSING_LEGAL,
-    implementation_authorized=False,
-    activation_real=False,
-    decision_state="ARCHITECTURAL_DECISION_REQUIRED",
 )
 
 

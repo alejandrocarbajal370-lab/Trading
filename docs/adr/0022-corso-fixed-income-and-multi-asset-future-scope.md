@@ -1,6 +1,6 @@
 # ADR 0022 — CORSO Fixed Income and Multi-Asset Future Scope
 
-Status: **ACCEPTED SCOPE; FUTURE / NOT IMPLEMENTED / NOT AUTHORIZED**
+Status: **ACCEPTED SCOPE; ACTIVE SECONDARY DEVELOPMENT TRACK IN DIRECTION; NOT IMPLEMENTED / NOT AUTHORIZED**
 
 ## Decision
 
@@ -22,6 +22,10 @@ Investment OS with three distinct capabilities:
 Fixed Income is a parallel future vertical, not a replacement for QVM. This ADR records required
 scope only. It does not authorize implementation, scoring, ranking, capital allocation, portfolio
 construction, recommendations or backtesting.
+
+ADR 0023 refines “parallel future vertical” to `ACTIVE SECONDARY DEVELOPMENT TRACK` as a roadmap
+priority/direction label only. The label does not change the current Step 6 sequence, create an
+implementation authorization, or claim that any Fixed Income engine exists.
 
 ## Future Mexican Equity scope
 
