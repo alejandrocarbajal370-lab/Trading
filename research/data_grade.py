@@ -1,4 +1,4 @@
-"""Fail-closed admission contract for research-only backtesting inputs.
+"""Fail-closed admission for research-only backtesting inputs.
 
 This module is deliberately independent from Step 6 ``EvidenceGate``/``GateState``.
 Research admission is not production admission and carries no execution authority.
@@ -7,9 +7,13 @@ Research admission is not production admission and carries no execution authorit
 from __future__ import annotations
 
 from enum import StrEnum
+from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from research.datasets import DatasetVersionError, verify_dataset, verify_universe_snapshot
+from research.registry import DatasetRegistration, RegistryValidationError
 
 
 class ResearchDataGrade(StrEnum):
@@ -18,58 +22,9 @@ class ResearchDataGrade(StrEnum):
     FAILED_RESEARCH_DATA = "FAILED_RESEARCH_DATA"
 
 
-class ResearchControlState(StrEnum):
-    SATISFIED = "SATISFIED"
-    NOT_REQUIRED = "NOT_REQUIRED"
-    INSUFFICIENT = "INSUFFICIENT"
-    FAILED = "FAILED"
-
-
 class ResearchBacktestingAuthorization(StrEnum):
     RESEARCH_BACKTESTING_AUTHORIZED = "RESEARCH_BACKTESTING_AUTHORIZED"
     RESEARCH_BACKTESTING_NOT_AUTHORIZED = "RESEARCH_BACKTESTING_NOT_AUTHORIZED"
-
-
-class ResearchGradeEvidence(BaseModel):
-    """Versioned evidence for one complete research dataset snapshot."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    contract_version: Literal["research-grade-evidence-v1"] = "research-grade-evidence-v1"
-    dataset_id: str = Field(min_length=1)
-    snapshot_id: str = Field(min_length=1)
-    dataset_checksums: tuple[str, ...] = Field(min_length=1)
-    lineage: tuple[str, ...] = Field(min_length=1)
-    reproducibility_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    pit_no_lookahead: ResearchControlState
-    provenance_lineage: ResearchControlState
-    dataset_identity_checksums: ResearchControlState
-    reproducibility: ResearchControlState
-    restatement_handling: ResearchControlState
-    universe_survivorship: ResearchControlState
-    corporate_action_handling: ResearchControlState
-    no_silent_imputation: ResearchControlState
-
-    @model_validator(mode="after")
-    def validate_evidence(self) -> Self:
-        if any(not item.strip() for item in self.lineage):
-            raise ValueError("research lineage cannot contain blank entries")
-        if any(
-            len(value) != 64 or any(character not in "0123456789abcdef" for character in value)
-            for value in self.dataset_checksums
-        ):
-            raise ValueError("dataset checksums must be lowercase sha256 values")
-        always_required = (
-            self.pit_no_lookahead,
-            self.provenance_lineage,
-            self.dataset_identity_checksums,
-            self.reproducibility,
-            self.universe_survivorship,
-            self.no_silent_imputation,
-        )
-        if ResearchControlState.NOT_REQUIRED in always_required:
-            raise ValueError("mandatory research controls cannot be NOT_REQUIRED")
-        return self
 
 
 class ResearchGradeAdmission(BaseModel):
@@ -103,6 +58,10 @@ class ResearchGradeAdmission(BaseModel):
         )
         if admitted != authorized:
             raise ValueError("research backtesting authority must exactly match RESEARCH_GRADE")
+        if admitted:
+            raise ValueError(
+                "RESEARCH_GRADE is unavailable until every control has canonical verification"
+            )
         expected_consumers = ("RESEARCH", "RESEARCH_BACKTESTING") if admitted else ("RESEARCH",)
         if self.permitted_consumers != expected_consumers:
             raise ValueError("research consumer boundary does not match admission state")
@@ -113,51 +72,63 @@ class ResearchGradeAdmission(BaseModel):
         return self
 
 
-_CONTROL_NAMES = (
-    "pit_no_lookahead",
-    "provenance_lineage",
-    "dataset_identity_checksums",
-    "reproducibility",
-    "restatement_handling",
-    "universe_survivorship",
-    "corporate_action_handling",
-    "no_silent_imputation",
+_UNVERIFIABLE_CONTROLS = (
+    "pit_no_lookahead:not_canonically_verifiable",
+    "provenance_lineage:not_content_bound",
+    "reproducibility:not_canonically_verifiable",
+    "restatement_handling:applicability_not_canonically_verifiable",
+    "corporate_action_handling:applicability_not_canonically_verifiable",
+    "no_silent_imputation:not_canonically_verifiable",
 )
 
 
-def assess_research_grade(evidence: ResearchGradeEvidence) -> ResearchGradeAdmission:
-    """Derive research-only backtesting authority from complete, typed evidence."""
+def assess_research_grade(
+    registration: DatasetRegistration,
+    *,
+    registry_root: Path,
+    universe_snapshot_dir: Path | None = None,
+) -> ResearchGradeAdmission:
+    """Verify canonical artifacts and fail closed for controls the repo cannot yet prove.
 
-    evidence = ResearchGradeEvidence.model_validate(evidence.model_dump())
-    reasons = tuple(
-        f"{name}:{getattr(evidence, name).value}"
-        for name in _CONTROL_NAMES
-        if getattr(evidence, name)
-        not in {
-            ResearchControlState.SATISFIED,
-            ResearchControlState.NOT_REQUIRED,
-        }
-    )
-    failed = any(getattr(evidence, name) is ResearchControlState.FAILED for name in _CONTROL_NAMES)
+    Caller-declared control states, fingerprints, and ``NOT_REQUIRED`` reasons are not
+    accepted. Dataset identity is recomputed from the registered file by the existing
+    dataset verifier. A supplied universe snapshot is likewise checked by the existing
+    canonical verifier. Those primitives do not yet prove every research-grade control,
+    so a valid current artifact remains insufficient rather than earning authorization.
+    """
+
+    reasons: list[str] = []
+    failed = False
+    try:
+        verify_dataset(registration, registry_root=registry_root, mismatch_policy="fail")
+    except (DatasetVersionError, RegistryValidationError, OSError) as error:
+        failed = True
+        reasons.append(f"dataset_identity_checksums:failed:{error}")
+
+    if universe_snapshot_dir is None:
+        reasons.append("universe_survivorship:verified_snapshot_required")
+    else:
+        try:
+            verify_universe_snapshot(universe_snapshot_dir)
+        except (DatasetVersionError, OSError) as error:
+            failed = True
+            reasons.append(f"universe_survivorship:failed:{error}")
+
+    reasons.extend(_UNVERIFIABLE_CONTROLS)
     grade = (
         ResearchDataGrade.FAILED_RESEARCH_DATA
         if failed
         else ResearchDataGrade.INSUFFICIENT_RESEARCH_DATA
-        if reasons
-        else ResearchDataGrade.RESEARCH_GRADE
     )
-    authorized = grade is ResearchDataGrade.RESEARCH_GRADE
     return ResearchGradeAdmission(
-        dataset_id=evidence.dataset_id,
-        snapshot_id=evidence.snapshot_id,
+        dataset_id=registration.dataset_id,
+        snapshot_id=registration.snapshot_id,
         research_data_grade=grade,
         research_backtesting_authorization=(
-            ResearchBacktestingAuthorization.RESEARCH_BACKTESTING_AUTHORIZED
-            if authorized
-            else ResearchBacktestingAuthorization.RESEARCH_BACKTESTING_NOT_AUTHORIZED
+            ResearchBacktestingAuthorization.RESEARCH_BACKTESTING_NOT_AUTHORIZED
         ),
-        reasons=reasons,
-        permitted_consumers=("RESEARCH", "RESEARCH_BACKTESTING") if authorized else ("RESEARCH",),
+        reasons=tuple(reasons),
+        permitted_consumers=("RESEARCH",),
     )
 
 

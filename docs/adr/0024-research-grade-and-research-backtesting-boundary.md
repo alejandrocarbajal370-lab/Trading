@@ -15,8 +15,8 @@ deliberately explicit: `RESEARCH_BACKTESTING_AUTHORIZED`. Existing production-fa
 
 ## Research-grade admission
 
-Admission evaluates one complete, identified dataset snapshot. It requires immutable dataset
-checksums, non-empty lineage, a reproducibility fingerprint, and explicit control states for:
+Admission evaluates one complete, identified dataset snapshot from canonical repository artifacts.
+It requires independently verifiable evidence for:
 
 - PIT chronology and no look-ahead;
 - provenance and lineage;
@@ -27,11 +27,18 @@ checksums, non-empty lineage, a reproducibility fingerprint, and explicit contro
 - corporate-action handling; and
 - prohibition of silent imputation.
 
-PIT/no-lookahead, provenance, identity/checksums, reproducibility, universe/survivorship and no
-silent imputation are always required. Restatement and corporate-action handling may be
-`NOT_REQUIRED` only when explicitly inapplicable to that dataset. Any `INSUFFICIENT` control yields
-`INSUFFICIENT_RESEARCH_DATA`; any `FAILED` control yields `FAILED_RESEARCH_DATA`. Both deny research
-backtesting and carry exact reasons. Missing, malformed, extra or ambiguous fields fail validation.
+Caller-declared control states, hashes, fingerprints, lineage strings, and `NOT_REQUIRED` reasons
+are not evidence. Dataset checksums are recomputed against the registered file through
+`research/datasets.py`; governed universe snapshots are verified through the same existing module.
+A checksum or snapshot verification error yields `FAILED_RESEARCH_DATA`.
+
+The repository does not yet expose canonical artifacts that jointly verify PIT/no-lookahead,
+content-bound lineage, reproducibility, restatement applicability and handling, corporate-action
+applicability and handling, and absence of silent imputation. Therefore even currently valid
+dataset and universe artifacts yield `INSUFFICIENT_RESEARCH_DATA`. There is intentionally no
+positive authorization path until every required condition can be machine-verified. A conditional
+control may be treated as not applicable only when a future canonical artifact makes that
+determination; free-form caller justification is never sufficient.
 
 `RESEARCH_GRADE` permits exactly `RESEARCH` and `RESEARCH_BACKTESTING` consumers. This ADR creates
 no backtesting engine and does not assert that any existing dataset has passed admission.

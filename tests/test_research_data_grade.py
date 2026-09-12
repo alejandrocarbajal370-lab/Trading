@@ -1,3 +1,7 @@
+import hashlib
+import json
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -7,76 +11,111 @@ from research.data_grade import (
     ResearchBacktestingAuthorization,
     ResearchDataGrade,
     ResearchGradeAdmission,
-    ResearchGradeEvidence,
     assess_research_grade,
     require_production_grade,
 )
+from research.registry import DatasetRegistration
 
 
-def _evidence(**changes: object) -> ResearchGradeEvidence:
-    values = {
-        "dataset_id": "qvm-research-dataset",
-        "snapshot_id": "qvm-research-dataset-2026-09-11",
-        "dataset_checksums": ("a" * 64, "b" * 64),
-        "lineage": ("governed universe", "PIT accounting", "PIT prices and FX"),
-        "reproducibility_fingerprint": "c" * 64,
-        "pit_no_lookahead": "SATISFIED",
-        "provenance_lineage": "SATISFIED",
-        "dataset_identity_checksums": "SATISFIED",
-        "reproducibility": "SATISFIED",
-        "restatement_handling": "SATISFIED",
-        "universe_survivorship": "SATISFIED",
-        "corporate_action_handling": "SATISFIED",
-        "no_silent_imputation": "SATISFIED",
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _registration(path: Path, sha256: str | None = None) -> DatasetRegistration:
+    return DatasetRegistration(
+        dataset_id="qvm-research-dataset",
+        snapshot_id="qvm-research-dataset-2026-09-11",
+        path=path.name,
+        sha256=sha256 or _sha256(path),
+        lineage=("caller text is not proof",),
+    )
+
+
+def _universe_snapshot(root: Path) -> Path:
+    directory = root / "universe"
+    directory.mkdir()
+    membership = directory / "universe_membership.csv"
+    validation = directory / "universe_validation.json"
+    membership.write_text("symbol,as_of\nAAA,2025-01-01\n", encoding="utf-8")
+    validation.write_text(json.dumps({"status": "PASS"}), encoding="utf-8")
+    metadata = {
+        "as_of": "2025-01-01",
+        "membership_sha256": _sha256(membership),
+        "validation_sha256": _sha256(validation),
+        "ruleset": {"version": "test-v1"},
+        "trade_decision": "NO_TRADE",
+        "live_execution_enabled": False,
     }
-    values.update(changes)
-    return ResearchGradeEvidence.model_validate(values)
+    (directory / "snapshot_metadata.json").write_text(json.dumps(metadata), encoding="utf-8")
+    return directory
 
 
-def test_complete_evidence_authorizes_only_research_backtesting() -> None:
-    result = assess_research_grade(_evidence())
-    assert result.research_data_grade is ResearchDataGrade.RESEARCH_GRADE
-    assert result.research_backtesting_authorization is (
-        ResearchBacktestingAuthorization.RESEARCH_BACKTESTING_AUTHORIZED
-    )
-    assert result.permitted_consumers == ("RESEARCH", "RESEARCH_BACKTESTING")
-    assert not result.production_grade
-    assert not result.portfolio_authorized and not result.execution_authorized
-    assert result.trade_decision == "NO_TRADE" and not result.signals_generated
-    assert result.execution_authority == "HUMAN_ONLY"
-    assert result.human_execution_required and not result.live_execution_enabled
-
-
-@pytest.mark.parametrize("state", ["INSUFFICIENT", "FAILED"])
-def test_missing_or_failed_control_denies_research_backtesting(state: str) -> None:
-    result = assess_research_grade(_evidence(pit_no_lookahead=state))
-    expected = (
-        ResearchDataGrade.FAILED_RESEARCH_DATA
-        if state == "FAILED"
-        else ResearchDataGrade.INSUFFICIENT_RESEARCH_DATA
-    )
-    assert result.research_data_grade is expected
+def test_random_registered_hash_cannot_authorize(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("value\n1\n", encoding="utf-8")
+    result = assess_research_grade(_registration(dataset, "a" * 64), registry_root=tmp_path)
+    assert result.research_data_grade is ResearchDataGrade.FAILED_RESEARCH_DATA
+    assert "dataset_identity_checksums:failed:" in result.reasons[0]
     assert result.research_backtesting_authorization is (
         ResearchBacktestingAuthorization.RESEARCH_BACKTESTING_NOT_AUTHORIZED
     )
-    assert result.permitted_consumers == ("RESEARCH",)
-    assert result.reasons == (f"pit_no_lookahead:{state}",)
 
 
-def test_conditional_controls_may_be_explicitly_not_required() -> None:
+def test_content_mutation_after_registration_fails(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("value\n1\n", encoding="utf-8")
+    registration = _registration(dataset)
+    dataset.write_text("value\n2\n", encoding="utf-8")
+    result = assess_research_grade(registration, registry_root=tmp_path)
+    assert result.research_data_grade is ResearchDataGrade.FAILED_RESEARCH_DATA
+
+
+def test_valid_canonical_artifacts_remain_insufficient_until_every_control_is_verified(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("value\n1\n", encoding="utf-8")
     result = assess_research_grade(
-        _evidence(restatement_handling="NOT_REQUIRED", corporate_action_handling="NOT_REQUIRED")
+        _registration(dataset),
+        registry_root=tmp_path,
+        universe_snapshot_dir=_universe_snapshot(tmp_path),
     )
-    assert result.research_data_grade is ResearchDataGrade.RESEARCH_GRADE
+    assert result.research_data_grade is ResearchDataGrade.INSUFFICIENT_RESEARCH_DATA
+    assert result.research_backtesting_authorization is (
+        ResearchBacktestingAuthorization.RESEARCH_BACKTESTING_NOT_AUTHORIZED
+    )
+    assert "provenance_lineage:not_content_bound" in result.reasons
+    assert "reproducibility:not_canonically_verifiable" in result.reasons
+    assert "restatement_handling:applicability_not_canonically_verifiable" in result.reasons
+    assert "corporate_action_handling:applicability_not_canonically_verifiable" in result.reasons
 
 
-def test_mandatory_control_cannot_be_declared_not_required() -> None:
-    with pytest.raises(ValidationError, match="mandatory research controls"):
-        _evidence(no_silent_imputation="NOT_REQUIRED")
+def test_missing_universe_proof_fails_closed(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("value\n1\n", encoding="utf-8")
+    result = assess_research_grade(_registration(dataset), registry_root=tmp_path)
+    assert result.research_data_grade is ResearchDataGrade.INSUFFICIENT_RESEARCH_DATA
+    assert "universe_survivorship:verified_snapshot_required" in result.reasons
 
 
-def test_admission_cannot_be_forged_into_production_or_execution_authority() -> None:
-    admitted = assess_research_grade(_evidence())
+def test_caller_cannot_construct_research_grade_authorization() -> None:
+    with pytest.raises(ValidationError, match="unavailable until every control"):
+        ResearchGradeAdmission(
+            dataset_id="forged",
+            snapshot_id="forged",
+            research_data_grade="RESEARCH_GRADE",
+            research_backtesting_authorization="RESEARCH_BACKTESTING_AUTHORIZED",
+            reasons=(),
+            permitted_consumers=("RESEARCH", "RESEARCH_BACKTESTING"),
+        )
+
+
+def test_admission_cannot_be_forged_into_production_or_execution_authority(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("value\n1\n", encoding="utf-8")
+    admission = assess_research_grade(_registration(dataset), registry_root=tmp_path)
     for field, value in (
         ("production_grade", True),
         ("implicit_production_promotion", True),
@@ -86,13 +125,17 @@ def test_admission_cannot_be_forged_into_production_or_execution_authority() -> 
         ("live_execution_enabled", True),
     ):
         with pytest.raises(ValidationError):
-            ResearchGradeAdmission.model_validate(admitted.model_dump() | {field: value})
+            ResearchGradeAdmission.model_validate(admission.model_dump() | {field: value})
     with pytest.raises(TypeError, match="never valid production"):
-        require_production_grade(admitted)
+        require_production_grade(admission)
 
 
-def test_research_contract_does_not_change_step6_or_production_backtesting() -> None:
-    assess_research_grade(_evidence())
+def test_research_contract_does_not_change_step6_or_production_backtesting(
+    tmp_path: Path,
+) -> None:
+    dataset = tmp_path / "dataset.csv"
+    dataset.write_text("value\n1\n", encoding="utf-8")
+    assess_research_grade(_registration(dataset), registry_root=tmp_path)
     assert NEXT_BLOCK.backtesting == "NOT_AUTHORIZED"
     assert NEXT_BLOCK.real_route == "QVM_NOT_READY"
     assert NEXT_BLOCK.global_readiness == "INSUFFICIENT_REAL_DATA"
