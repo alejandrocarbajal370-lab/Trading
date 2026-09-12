@@ -514,20 +514,20 @@ def _phase56_chain(
         staleness_policy=FXStalenessPolicy(maximum_sessions=120),
     )
     accounting_values = {
-        "cash_from_operations": 25.0,
-        "capital_expenditures": 5.0,
-        "revenue": 100.0,
-        "net_income": 12.0,
-        "operating_income": 18.0,
-        "ebit": 18.0,
-        "ebitda": 22.0,
-        "total_debt": 30.0,
-        "cash": 10.0,
-        "total_equity": 70.0,
-        "total_assets": 120.0,
+        "cash_from_operations": 25_000_000.0,
+        "capital_expenditures": 5_000_000.0,
+        "revenue": 100_000_000.0,
+        "net_income": 12_000_000.0,
+        "operating_income": 18_000_000.0,
+        "ebit": 18_000_000.0,
+        "ebitda": 22_000_000.0,
+        "total_debt": 30_000_000.0,
+        "cash": 10_000_000.0,
+        "total_equity": 70_000_000.0,
+        "total_assets": 120_000_000.0,
         "tax_rate": 0.25,
-        "market_cap": 240.0,
-        "enterprise_value": 260.0,
+        "market_cap": 240_000_000.0,
+        "enterprise_value": 260_000_000.0,
     }
     accounting_rows = []
     instant_metrics = {"total_debt", "cash", "total_equity", "total_assets"}
@@ -654,8 +654,10 @@ def test_canonical_historical_cut_runs_equity_qvm_end_to_end(tmp_path: Path) -> 
         "roic",
         "fcf_margin",
     }
+    # EUR 20m FCF / EUR 1bn market cap = an economically interpretable 2% yield;
+    # converting both amounts at the same FX rate must leave the ratio unchanged.
     assert result.value.metrics.query("metric == 'fcf_yield'").iloc[0]["value"] == pytest.approx(
-        2.0e-8
+        0.02
     )
     assert result.momentum.metrics.query("metric == 'momentum_12_1'").iloc[0][
         "value"
