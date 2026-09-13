@@ -34,6 +34,7 @@ value-research-run = "research.value_runner:main"
 momentum-research-run = "research.momentum_runner:main"
 qvm-research-run = "research.qvm_runner:main"
 pre-phase6-blind-coverage = "research.pre_phase6_readiness:main"
+pit-equity-qvm-build = "research.pit_dataset:main"
 ibkr-read-only-probe = "governance.ibkr_probe:main"
 
 [tool.setuptools.packages.find]
