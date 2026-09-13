@@ -293,6 +293,11 @@ def integrate_governed_inputs(
             }
         )
     membership = membership.copy(deep=True)
+    # FX conversion can produce fractional base-currency amounts even when a provider's
+    # original market-cap column contains only integers (strict pandas dtypes reject that write).
+    membership["market_cap"] = pd.to_numeric(membership["market_cap"], errors="raise").astype(
+        "float64"
+    )
     membership["original_market_cap"] = membership["market_cap"]
     membership["original_market_cap_currency"] = membership["market_cap_currency"]
     membership["base_currency"] = base
