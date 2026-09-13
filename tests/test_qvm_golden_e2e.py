@@ -1,6 +1,7 @@
 import datetime
 import json
 import math
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -49,6 +50,7 @@ from governance.research_chain import (
     seal_factor_output,
 )
 from research.datasets import file_sha256
+from research.equity_qvm import run_equity_qvm_research
 from research.phase6_qvm import run_phase6_qvm_research
 from research.pre_phase6_readiness import admit_sealed_for_phase6
 from research.qvm_runner import run_qvm_research
@@ -512,20 +514,20 @@ def _phase56_chain(
         staleness_policy=FXStalenessPolicy(maximum_sessions=120),
     )
     accounting_values = {
-        "cash_from_operations": 25.0,
-        "capital_expenditures": 5.0,
-        "revenue": 100.0,
-        "net_income": 12.0,
-        "operating_income": 18.0,
-        "ebit": 18.0,
-        "ebitda": 22.0,
-        "total_debt": 30.0,
-        "cash": 10.0,
-        "total_equity": 70.0,
-        "total_assets": 120.0,
+        "cash_from_operations": 25_000_000.0,
+        "capital_expenditures": 5_000_000.0,
+        "revenue": 100_000_000.0,
+        "net_income": 12_000_000.0,
+        "operating_income": 18_000_000.0,
+        "ebit": 18_000_000.0,
+        "ebitda": 22_000_000.0,
+        "total_debt": 30_000_000.0,
+        "cash": 10_000_000.0,
+        "total_equity": 70_000_000.0,
+        "total_assets": 120_000_000.0,
         "tax_rate": 0.25,
-        "market_cap": 240.0,
-        "enterprise_value": 260.0,
+        "market_cap": 240_000_000.0,
+        "enterprise_value": 260_000_000.0,
     }
     accounting_rows = []
     instant_metrics = {"total_debt", "cash", "total_equity", "total_assets"}
@@ -636,6 +638,72 @@ def test_phase56_governed_adapters_execute_real_factor_engines(tmp_path: Path) -
     )
     assert evaluation.health["phase6_eligible"] is True
     assert evaluation.health["governance_mode"] == "phase5.6_cross_layer_verified"
+
+
+def test_canonical_historical_cut_runs_equity_qvm_end_to_end(tmp_path: Path) -> None:
+    result = run_equity_qvm_research(
+        cross_layer=_phase56_chain(tmp_path),
+        experiment_id="equity-qvm-pilot",
+        benchmark_symbol="SPY",
+    )
+
+    assert {batch.factor for batch in result.batches} == {"Quality", "Value", "Momentum"}
+    assert result.admission.expected_symbols == ("AAA",)
+    assert result.qvm.admission_artifact_hash == result.admission.admission_artifact_hash
+    assert set(result.quality.metrics.query("status == 'PASS'")["metric"]) >= {
+        "roic",
+        "fcf_margin",
+    }
+    # EUR 20m FCF / EUR 1bn market cap = an economically interpretable 2% yield;
+    # converting both amounts at the same FX rate must leave the ratio unchanged.
+    assert result.value.metrics.query("metric == 'fcf_yield'").iloc[0]["value"] == pytest.approx(
+        0.02
+    )
+    assert result.momentum.metrics.query("metric == 'momentum_12_1'").iloc[0][
+        "value"
+    ] == pytest.approx(0.25971383103540874)
+    assert result.qvm.trade_decision == "NO_TRADE"
+    assert result.qvm.live_execution_enabled is False
+    assert result.qvm.real_data_readiness == "NOT_READY"
+
+
+def test_equity_qvm_runner_rejects_future_accounting_data(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    future = chain.accounting_data.metadata.model_copy(
+        update={"available_at": chain.manifest.as_of + datetime.timedelta(seconds=1)}
+    )
+    changed = replace(
+        chain,
+        accounting_data=chain.accounting_data.__class__(chain.accounting_data.frame, future),
+    )
+    with pytest.raises(CrossLayerGovernanceError, match="accounting availability exceeds as_of"):
+        run_equity_qvm_research(
+            cross_layer=changed,
+            experiment_id="equity-qvm-pilot",
+            benchmark_symbol="SPY",
+        )
+
+
+def test_equity_qvm_runner_rejects_checksum_mutation(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    chain.market_data.frame.loc[chain.market_data.frame.index[0], "adjusted_close"] += 1.0
+    with pytest.raises(CrossLayerGovernanceError, match="checksum mismatch"):
+        run_equity_qvm_research(
+            cross_layer=chain,
+            experiment_id="equity-qvm-pilot",
+            benchmark_symbol="SPY",
+        )
+
+
+def test_equity_qvm_runner_rejects_universe_mismatch(tmp_path: Path) -> None:
+    chain = _phase56_chain(tmp_path)
+    chain.universe_membership.loc[0, "symbol"] = "ZZZ"
+    with pytest.raises(CrossLayerGovernanceError, match="eligible symbols hash mismatch"):
+        run_equity_qvm_research(
+            cross_layer=chain,
+            experiment_id="equity-qvm-pilot",
+            benchmark_symbol="SPY",
+        )
 
 
 def _admission_batches(tmp_path: Path):
