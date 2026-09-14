@@ -1,6 +1,7 @@
 import datetime
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import pandas as pd
@@ -53,6 +54,9 @@ def _raw_pilot(tmp_path: Path, *, symbols: int = 100) -> Path:
                 "source": "licensed-file-export",
                 "source_timestamp": "2025-03-14T16:00:00Z",
                 "available_at": "2025-03-14T16:05:00Z",
+                "membership_as_of": AS_OF.isoformat(),
+                "membership_source": "licensed-file-export",
+                "membership_snapshot_id": "pit-membership-2025-03-15",
             }
             for index, symbol in enumerate(names)
         ]
@@ -65,7 +69,9 @@ def _raw_pilot(tmp_path: Path, *, symbols: int = 100) -> Path:
     for symbol_index, symbol in enumerate([*names, "SPY"]):
         growth = 0.00015 + symbol_index * 0.000002
         for day_index, day in enumerate(sessions):
-            adjusted = 50.0 * (1.0 + growth) ** day_index
+            adjusted = 50.0 * (1.0 + growth) ** day_index * math.exp(
+                0.006 * math.sin(day_index * 0.37 + symbol_index * 0.11)
+            )
             price_rows.append(
                 {
                     "symbol": symbol,
@@ -181,6 +187,17 @@ def _raw_pilot(tmp_path: Path, *, symbols: int = 100) -> Path:
         "trading_calendar": "XNYS",
         "maximum_price_staleness_sessions": 0,
         "maximum_fx_staleness_sessions": 1,
+        "universe_snapshot": {
+            "claim": "PROVIDER_SUPPLIED_PIT_SNAPSHOT",
+            "snapshot_id": "pit-membership-2025-03-15",
+            "source": "licensed-file-export",
+            "as_of": AS_OF.isoformat(),
+        },
+        "price_adjustment": {
+            "series_usage": "FACTOR_RESEARCH_ONLY",
+            "adjustment_scope": "SPLIT_AND_CASH_DIVIDEND",
+            "portfolio_return_eligible": False,
+        },
         "universe_rules": {"allowed_exchanges": ["NYSE"]},
         "required_fundamentals": sorted(FUNDAMENTALS),
         "files": files,
@@ -204,6 +221,17 @@ def test_real_file_importer_builds_order_independent_100_security_qvm_cut(
     assert report["trade_decision"] == "NO_TRADE"
     assert report["live_execution_enabled"] is False
     assert report["real_data_readiness"] == "NOT_READY"
+    assert report["survivorship_free_history_verified"] is False
+    assert report["portfolio_return_ready"] is False
+    assert report["remaining_backtest_blockers"] == [
+        "SURVIVORSHIP_SAFE_PIT_HISTORICAL_INPUTS",
+        "BACKTEST_ENGINE_IMPLEMENTATION",
+    ]
+
+    volatility_adjusted = result.research.momentum.metrics.query(
+        "metric == 'volatility_adjusted_momentum_12_1'"
+    )["value"].abs()
+    assert volatility_adjusted.max() < 1_000
 
     market_path = tmp_path / "market_data.csv"
     shuffled = pd.read_csv(market_path).sample(frac=1, random_state=7)
@@ -222,6 +250,58 @@ def test_real_file_importer_builds_order_independent_100_security_qvm_cut(
         rebuilt.cross_layer.manifest.cross_layer_fingerprint
         == result.dataset.cross_layer.manifest.cross_layer_fingerprint
     )
+
+
+def test_importer_requires_cutoff_bound_universe_provenance(tmp_path: Path) -> None:
+    manifest = _raw_pilot(tmp_path, symbols=1)
+    path = tmp_path / "universe.csv"
+    universe = pd.read_csv(path)
+    universe.loc[0, "membership_as_of"] = "2025-03-14T23:59:00Z"
+    universe.to_csv(path, index=False)
+    document = json.loads(manifest.read_text())
+    document["files"]["universe"]["sha256"] = _sha(path)
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(DatasetVersionError, match="bound to manifest as_of"):
+        build_pit_equity_dataset(manifest_path=manifest, output_root=tmp_path / "outputs")
+
+
+def test_split_and_dividend_series_is_research_only_and_rejects_double_adjustment(
+    tmp_path: Path,
+) -> None:
+    manifest = _raw_pilot(tmp_path, symbols=1)
+    path = tmp_path / "market_data.csv"
+    market = pd.read_csv(path)
+    market["corporate_action_type"] = market["corporate_action_type"].astype("object")
+    symbol_rows = market.index[market["symbol"] == "S000"]
+    split_row, dividend_row = symbol_rows[-40], symbol_rows[-20]
+    market.loc[split_row, ["corporate_action_status", "corporate_action_type"]] = [
+        "APPLIED",
+        "SPLIT",
+    ]
+    market.loc[split_row, "raw_close"] = market.loc[split_row, "adjusted_close"] / 0.5
+    market.loc[split_row, "adjustment_factor"] = 0.5
+    market.loc[dividend_row, ["corporate_action_status", "corporate_action_type"]] = [
+        "APPLIED",
+        "DIVIDEND",
+    ]
+    market.loc[dividend_row, "raw_close"] = market.loc[dividend_row, "adjusted_close"] / 0.99
+    market.loc[dividend_row, "adjustment_factor"] = 0.99
+    market.to_csv(path, index=False)
+    document = json.loads(manifest.read_text())
+    document["files"]["market_data"]["sha256"] = _sha(path)
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+
+    result = build_pit_equity_dataset(manifest_path=manifest, output_root=tmp_path / "valid")
+    source_manifest = json.loads((result.output_dir / "source_manifest.json").read_text())
+    assert source_manifest["price_adjustment"]["series_usage"] == "FACTOR_RESEARCH_ONLY"
+    assert source_manifest["research_limitations"]["portfolio_return_ready"] is False
+
+    market.loc[split_row, "adjusted_close"] *= 0.5
+    market.to_csv(path, index=False)
+    document["files"]["market_data"]["sha256"] = _sha(path)
+    manifest.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="raw and adjusted close do not reconcile"):
+        build_pit_equity_dataset(manifest_path=manifest, output_root=tmp_path / "invalid")
 
 
 def test_importer_rejects_source_file_tamper(tmp_path: Path) -> None:

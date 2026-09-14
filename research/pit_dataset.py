@@ -24,6 +24,16 @@ from universe.validation import UniverseRules
 
 PIT_RESEARCH_DATASET_SCHEMA = "pit-equity-research-files-v1"
 REQUIRED_FILES = ("universe", "market_data", "accounting", "fx")
+UNIVERSE_PROVENANCE_COLUMNS = (
+    "membership_as_of",
+    "membership_source",
+    "membership_snapshot_id",
+)
+PRICE_ADJUSTMENT_SCOPES = {"SPLIT_ONLY", "SPLIT_AND_CASH_DIVIDEND"}
+BACKTEST_BLOCKERS = (
+    "SURVIVORSHIP_SAFE_PIT_HISTORICAL_INPUTS",
+    "BACKTEST_ENGINE_IMPLEMENTATION",
+)
 
 
 @dataclass(frozen=True)
@@ -82,6 +92,71 @@ def _verified_sources(
     return paths, hashes
 
 
+def _validate_universe_provenance(
+    frame: pd.DataFrame, *, manifest: dict[str, Any], as_of: datetime.datetime, source: str
+) -> None:
+    missing = sorted(set(UNIVERSE_PROVENANCE_COLUMNS) - set(frame.columns))
+    if missing:
+        raise DatasetVersionError(
+            "universe membership provenance missing fields: " + ", ".join(missing)
+        )
+    declaration = manifest.get("universe_snapshot")
+    if not isinstance(declaration, dict):
+        raise DatasetVersionError("universe_snapshot provenance declaration is required")
+    if declaration.get("claim") != "PROVIDER_SUPPLIED_PIT_SNAPSHOT":
+        raise DatasetVersionError(
+            "universe_snapshot claim must be PROVIDER_SUPPLIED_PIT_SNAPSHOT"
+        )
+    snapshot_id = str(declaration.get("snapshot_id", "")).strip()
+    if not snapshot_id:
+        raise DatasetVersionError("universe_snapshot snapshot_id is required")
+    declared_as_of = _aware(declaration.get("as_of"), field="universe_snapshot.as_of")
+    if declared_as_of != as_of:
+        raise DatasetVersionError("universe_snapshot as_of must equal manifest as_of")
+    if str(declaration.get("source", "")).strip() != source:
+        raise DatasetVersionError("universe_snapshot source must equal manifest source")
+
+    row_as_of = pd.to_datetime(frame["membership_as_of"], errors="raise", utc=True)
+    if not (row_as_of == pd.Timestamp(as_of)).all():
+        raise DatasetVersionError("every universe row must be bound to manifest as_of")
+    if not (frame["membership_source"].astype(str).str.strip() == source).all():
+        raise DatasetVersionError("every universe row must be bound to manifest source")
+    if not (frame["membership_snapshot_id"].astype(str).str.strip() == snapshot_id).all():
+        raise DatasetVersionError("every universe row must be bound to universe snapshot_id")
+
+
+def _validate_price_adjustment_declaration(
+    frame: pd.DataFrame, *, manifest: dict[str, Any]
+) -> dict[str, Any]:
+    declaration = manifest.get("price_adjustment")
+    if not isinstance(declaration, dict):
+        raise DatasetVersionError("price_adjustment declaration is required")
+    if declaration.get("series_usage") != "FACTOR_RESEARCH_ONLY":
+        raise DatasetVersionError("price_adjustment series_usage must be FACTOR_RESEARCH_ONLY")
+    scope = declaration.get("adjustment_scope")
+    if scope not in PRICE_ADJUSTMENT_SCOPES:
+        raise DatasetVersionError(
+            "price_adjustment adjustment_scope must explicitly declare SPLIT_ONLY or "
+            "SPLIT_AND_CASH_DIVIDEND"
+        )
+    if declaration.get("portfolio_return_eligible") is not False:
+        raise DatasetVersionError("adjusted prices must not be marked portfolio-return eligible")
+    required_columns = {"corporate_action_status", "corporate_action_type"}
+    if not required_columns <= set(frame.columns):
+        raise DatasetVersionError("market data lacks corporate-action fields")
+    action_types = set(
+        frame.loc[
+            frame["corporate_action_status"].astype(str) == "APPLIED",
+            "corporate_action_type",
+        ]
+        .dropna()
+        .astype(str)
+    )
+    if scope == "SPLIT_ONLY" and action_types & {"DIVIDEND", "SPLIT_AND_DIVIDEND"}:
+        raise DatasetVersionError("dividend action conflicts with SPLIT_ONLY adjustment scope")
+    return declaration
+
+
 def build_pit_equity_dataset(*, manifest_path: Path, output_root: Path) -> PITDatasetBuild:
     """Build one canonical PIT cross-section from checksum-pinned provider CSV files."""
     manifest_path = manifest_path.resolve()
@@ -96,6 +171,15 @@ def build_pit_equity_dataset(*, manifest_path: Path, output_root: Path) -> PITDa
     version = str(manifest.get("dataset_version", "")).strip()
     if not source or not version:
         raise DatasetVersionError("source and dataset_version are required")
+
+    universe_frame = pd.read_csv(paths["universe"])
+    _validate_universe_provenance(
+        universe_frame, manifest=manifest, as_of=as_of, source=source
+    )
+    market_frame = pd.read_csv(paths["market_data"])
+    price_adjustment = _validate_price_adjustment_declaration(
+        market_frame, manifest=manifest
+    )
 
     rules_payload = manifest.get("universe_rules", {})
     if not isinstance(rules_payload, dict):
@@ -113,7 +197,7 @@ def build_pit_equity_dataset(*, manifest_path: Path, output_root: Path) -> PITDa
     )
 
     market = govern_market_data(
-        pd.read_csv(paths["market_data"]),
+        market_frame,
         source=source,
         dataset_version=version,
         available_at=available_at,
@@ -166,6 +250,13 @@ def build_pit_equity_dataset(*, manifest_path: Path, output_root: Path) -> PITDa
         "schema_version": PIT_RESEARCH_DATASET_SCHEMA,
         "source_files_sha256": source_hashes,
         "cross_layer_fingerprint": result.manifest.cross_layer_fingerprint,
+        "universe_snapshot": manifest["universe_snapshot"],
+        "price_adjustment": price_adjustment,
+        "research_limitations": {
+            "survivorship_free_history_verified": False,
+            "portfolio_return_ready": False,
+            "remaining_backtest_blockers": list(BACKTEST_BLOCKERS),
+        },
         "trade_decision": "NO_TRADE",
         "live_execution_enabled": False,
         "real_data_readiness": "NOT_READY",
@@ -223,6 +314,11 @@ def build_and_run_pit_qvm(*, manifest_path: Path, output_root: Path) -> PITQVMBu
         "trade_decision": research.qvm.trade_decision,
         "live_execution_enabled": research.qvm.live_execution_enabled,
         "real_data_readiness": research.qvm.real_data_readiness,
+        "universe_claim": "PROVIDER_SUPPLIED_PIT_SNAPSHOT",
+        "survivorship_free_history_verified": False,
+        "price_series_usage": "FACTOR_RESEARCH_ONLY",
+        "portfolio_return_ready": False,
+        "remaining_backtest_blockers": list(BACKTEST_BLOCKERS),
     }
     coverage_path = dataset.output_dir / "qvm_coverage.json"
     coverage_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
