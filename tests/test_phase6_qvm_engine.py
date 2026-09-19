@@ -148,6 +148,8 @@ def test_artifact_lineage_fields_are_mutation_resistant() -> None:
     artifact = _hashed(Phase6ResearchArtifact, {
         "admission_contract_version": "sealed-pre-phase6-admission-v2",
         "admission_artifact_hash": "a" * 64, "qvm_sealed_lineage_hash": "b" * 64,
+        "as_of": datetime.datetime(2025, 1, 31, tzinfo=datetime.UTC),
+        "cross_layer_fingerprint": "e" * 64,
         "factor_batch_hashes": {"Quality": "c" * 64},
         "metric_registry_identity": metric_semantics_registry_identity(),
         "peer_assignment_hash": "d" * 64,

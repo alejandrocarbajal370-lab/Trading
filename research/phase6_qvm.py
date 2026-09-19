@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import math
 from collections import defaultdict
 from enum import StrEnum
@@ -271,6 +272,8 @@ class Phase6ResearchArtifact(ResearchModel):
     admission_contract_version: Literal["sealed-pre-phase6-admission-v2"]
     admission_artifact_hash: str
     qvm_sealed_lineage_hash: str
+    as_of: datetime.datetime
+    cross_layer_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     factor_batch_hashes: dict[str, str]
     metric_registry_identity: str
     peer_assignment_hash: str
@@ -675,6 +678,8 @@ def run_phase6_qvm_research(
         "admission_contract_version": validated_admission.contract_version,
         "admission_artifact_hash": validated_admission.admission_artifact_hash,
         "qvm_sealed_lineage_hash": validated_admission.qvm_sealed_lineage_hash,
+        "as_of": first.as_of,
+        "cross_layer_fingerprint": first.cross_layer_fingerprint,
         "factor_batch_hashes": dict(sorted(validated_admission.factor_batch_hashes.items())),
         "metric_registry_identity": validated_admission.metric_registry_identity,
         "peer_assignment_hash": first.peer_assignment_hash,
