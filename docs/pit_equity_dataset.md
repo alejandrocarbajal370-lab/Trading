@@ -81,12 +81,9 @@ them suitable for portfolio returns: dividend timing/reinvestment, delisting ret
 accounting are intentionally absent. `source_manifest.json` and `qvm_coverage.json` record
 `portfolio_return_ready: false` so downstream consumers cannot silently infer otherwise.
 
-Two blockers remain before the first legitimate backtest:
+One external blocker remains before the first legitimate backtest:
 
 1. Real licensed or otherwise authorized, survivorship-safe PIT historical inputs with sufficient
    coverage for Research Grade.
-2. A backtest engine implementing historical cutoff iteration, portfolio/cohort formation,
-   rebalance transitions, delisting handling, transaction costs, portfolio and benchmark returns,
-   and statistics.
-
-Neither blocker is resolved by this importer. Real-data readiness remains `NOT_READY`.
+The Backtest Engine V1 can exercise those mechanics with deterministic fixtures, but it does not
+resolve or weaken that data blocker. Real-data readiness remains `NOT_READY`.
