@@ -225,7 +225,6 @@ def test_real_file_importer_builds_order_independent_100_security_qvm_cut(
     assert report["portfolio_return_ready"] is False
     assert report["remaining_backtest_blockers"] == [
         "SURVIVORSHIP_SAFE_PIT_HISTORICAL_INPUTS",
-        "BACKTEST_ENGINE_IMPLEMENTATION",
     ]
 
     volatility_adjusted = result.research.momentum.metrics.query(

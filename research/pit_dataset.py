@@ -32,7 +32,6 @@ UNIVERSE_PROVENANCE_COLUMNS = (
 PRICE_ADJUSTMENT_SCOPES = {"SPLIT_ONLY", "SPLIT_AND_CASH_DIVIDEND"}
 BACKTEST_BLOCKERS = (
     "SURVIVORSHIP_SAFE_PIT_HISTORICAL_INPUTS",
-    "BACKTEST_ENGINE_IMPLEMENTATION",
 )
 
 
@@ -248,6 +247,7 @@ def build_pit_equity_dataset(*, manifest_path: Path, output_root: Path) -> PITDa
     output_dir = write_governed_inputs(result, output_root=output_root / "canonical")
     source_manifest = {
         "schema_version": PIT_RESEARCH_DATASET_SCHEMA,
+        "as_of": as_of.isoformat(),
         "source_files_sha256": source_hashes,
         "cross_layer_fingerprint": result.manifest.cross_layer_fingerprint,
         "universe_snapshot": manifest["universe_snapshot"],
